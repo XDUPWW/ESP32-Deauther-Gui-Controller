@@ -8,6 +8,9 @@
 
 两块代码是一体的：上位机和触摸屏都只是"发协议行"，固件是唯一的权威控制面。
 
+本项目是 [tesa-klebeband/ESP32-Deauther](https://github.com/tesa-klebeband/ESP32-Deauther)
+的改造版（GPLv3），改动明细见文末[许可与致谢](#9-许可与致谢)。
+
 > **仅限自有网络与授权测试。** 详见文末[免责声明](#免责声明)。
 
 ---
@@ -118,7 +121,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ```
 .
 ├── README.md                     ← 你正在看的这个文件
-├── LICENSE                       ← GPLv3（继承上游）
+├── LICENSE                       ← GPLv3（继承上游 ESP32-Deauther）
 ├── .gitignore
 ├── firmware/                     ← 固件（ESP-IDF 工程）
 │   ├── README.md                 ← 构建 / 协议 / 界面 / 故障排查
@@ -227,14 +230,20 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 
 ## 9. 许可与致谢
 
-本项目是 [XDUPWW/ESP32-Deauther-Gui-Controller](https://github.com/XDUPWW/ESP32-Deauther-Gui-Controller)
-的改造版，代码与思路来自以下 GPLv3 工程：
+本项目是 **[tesa-klebeband/ESP32-Deauther](https://github.com/tesa-klebeband/ESP32-Deauther) 的改造版**：
+基础 deauth 实现、raw frame 注入、原始 Web 界面的思路都来自它，之后移植到 ESP-IDF、
+去掉 Web 控制台改为串口协议、加了 Probe 泛洪、双频支持、触摸屏界面和 Windows 上位机。
 
-| 上游 | 用到了什么 |
+代码与思路来自以下 GPLv3 工程：
+
+| 工程 | 用到了什么 |
 | --- | --- |
-| [tesa-klebeband/ESP32-Deauther](https://github.com/tesa-klebeband/ESP32-Deauther) | 基础 deauth 实现、raw frame 注入、原始 Web 界面 |
+| [tesa-klebeband/ESP32-Deauther](https://github.com/tesa-klebeband/ESP32-Deauther) | **基础** deauth 实现、raw frame 注入、原始 Web 界面 |
 | [isiy0/ESP32-Deauther-EvilTwin](https://github.com/isiy0/ESP32-Deauther-EvilTwin) | Evil Twin / 钓鱼页面 / DNS 劫持 |
 | [aligngl/ESP32-Deauther-red](https://github.com/aligngl/ESP32-Deauther-red) | 模块化结构、攻击统计 |
 | [LVGL](https://github.com/lvgl/lvgl) / [esp_lvgl_port](https://github.com/espressif/esp-bsp) / [esp_lcd_ili9341](https://github.com/espressif/esp-bsp) | 触摸屏界面与显示驱动 |
 
 按 **GNU GPL v3** 发布，见 [LICENSE](LICENSE)。二次分发请保留本文件与 LICENSE。
+
+发布地址：[XDUPWW/ESP32-Deauther-Gui-Controller](https://github.com/XDUPWW/ESP32-Deauther-Gui-Controller)
+（本项目自己的托管仓库，不是上游）。
