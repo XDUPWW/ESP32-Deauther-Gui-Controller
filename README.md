@@ -123,6 +123,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ├── README.md                     ← 你正在看的这个文件
 ├── LICENSE                       ← GPLv3（继承上游 ESP32-Deauther）
 ├── .gitignore
+├── TODO.md                       ← 路线图：PMKID / CSA / 企业网络 / Android / BLE
 ├── firmware/                     ← 固件（ESP-IDF 工程）
 │   ├── README.md                 ← 构建 / 协议 / 界面 / 故障排查
 │   ├── 代码框架与攻击原理.md        ← 802.11 背景 + 攻击原理 + 代码框架
@@ -212,7 +213,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 
 上述 1、2 与 UART 丢行已记入[待修清单](firmware/测试报告.md#71-待修清单已记录尚未动手)，暂未动手。
 
-细节见 [测试报告](firmware/测试报告.md)。
+细节见 [测试报告](firmware/测试报告.md)。后续要做的能力（PMKID 抓取、CSA 注入、企业网络凭据、Android 上位机、BLE 广播泛洪）见 [TODO.md](TODO.md)。
 
 ---
 
