@@ -1,0 +1,12 @@
+.pio
+.vscode
+
+# ESP-IDF outputs
+build*/
+managed_components/
+sdkconfig
+sdkconfig*.old
+
+# Checked-in configuration must stay tracked
+!sdkconfig.defaults
+!sdkconfig.c5

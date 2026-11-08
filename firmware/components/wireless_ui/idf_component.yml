@@ -1,0 +1,17 @@
+dependencies:
+  idf: ">=5.3"
+
+  lvgl/lvgl:
+    version: "^9.4"
+    rules:
+      - if: "target == esp32"
+
+  espressif/esp_lvgl_port:
+    version: "^2.7"
+    rules:
+      - if: "target == esp32"
+
+  espressif/esp_lcd_ili9341:
+    version: "^2.0"
+    rules:
+      - if: "target == esp32"

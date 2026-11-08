@@ -1,0 +1,45 @@
+# arduino-esp32 as an ESP-IDF component requires 1000 Hz FreeRTOS tick
+CONFIG_FREERTOS_HZ=1000
+
+# Run the Arduino setup()/loop() from app_main
+CONFIG_AUTOSTART_ARDUINO=y
+CONFIG_ARDUINO_RUNNING_CORE=1
+CONFIG_ARDUINO_LOOP_STACK_SIZE=8192
+
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# 4 MB flash, custom partition table with SPIFFS partition
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# Wi-Fi promiscuous mode / raw 802.11 frame injection
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=16
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=64
+
+# arduino-esp32's NetworkClientSecure requires PSK ciphersuites to be compiled in,
+# otherwise its source turns into a fatal #warning.
+CONFIG_MBEDTLS_PSK_MODES=y
+CONFIG_MBEDTLS_KEY_EXCHANGE_PSK=y
+
+# A blocking Wi-Fi scan keeps the idle task from running for a few seconds, which
+# made the task watchdog dump a backtrace into the serial protocol stream.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# Keep the serial protocol stream readable: hide ESP_LOG info/debug noise.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+
+# Local LVGL touch UI (ESP32-2432S028R: ILI9341 + XPT2046). The option depends on
+# IDF_TARGET_ESP32, so building for ESP32-C5 simply leaves it out.
+CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT=y
+
+# LVGL 9 tuning for a 320x240 screen on a plain ESP32 (no PSRAM)
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_MEM_SIZE_KILOBYTES=64
+# SSIDs are frequently CJK; the default Montserrat font has no such glyphs.
+# LVGL's built-in CJK subset is 191 KB; the project ships its own ~60 KB subset.
+# CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_16_CJK is not set
+CONFIG_WIRELESS_UI_CJK_CUSTOM=y
+CONFIG_LV_DEF_REFR_PERIOD=33
+CONFIG_LV_USE_LOG=n

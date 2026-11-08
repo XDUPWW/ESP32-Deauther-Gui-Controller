@@ -1,0 +1,31 @@
+# ---- ESP-IDF build outputs -------------------------------------------------
+build/
+build_*/
+*.bin
+*.elf
+*.map
+
+# `idf.py set-target` regenerates sdkconfig; sdkconfig.defaults / sdkconfig.c5 are
+# the files that belong in git.
+sdkconfig
+sdkconfig.old
+
+# Component manager downloads (restored by `idf.py build`)
+managed_components/
+
+# ---- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+
+# ---- Editor / OS -----------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- Local-only reference trees -------------------------------------------
+# The upstream projects this fork was built from, plus the vendor touch demo.
+# They are kept on disk for reference but must not be pushed.
+/ESP32-Deauther-EvilTwin/
+/ESP32-Deauther-red/
+/esp_touch_project/
