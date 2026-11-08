@@ -20,8 +20,8 @@
 | 功能 | 串口命令 | ESP32 | C5 2.4G | C5 5G | 验证状态 |
 | --- | --- | --- | --- | --- | --- |
 | 双频扫描 | `SCAN` | ✅ | ✅ | ✅ | 实测（ESP32 21–44 个 AP，C5 一次上百个） |
-| 单目标 deauth | `DEAUTH <idx>` | ✅ | ✅ | ✅ | 命令/计数验证；命中受射频限制（见 §7） |
-| 全部 AP deauth | `DEAUTH_ALL` | ✅ | ✅ | ✅ | 命令验证 |
+| 单目标 deauth | `DEAUTH <idx>` | ✅ | ✅ | ✅ | 帧上空气已双板验证；客户端是否断开会受对端 PMF/PHY 影响（见 §7） |
+| 全部 AP deauth | `DEAUTH_ALL` | ✅ | ✅ | ✅ | 十秒 `txok=359`、第二块板收到 `deauth=69` |
 | 白名单 deauth | `DEAUTH_ONLY i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
 | 黑名单 deauth | `DEAUTH_EXCEPT i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
 | Probe 泛洪（Beacon + Probe Response） | `PROBE_BROADCAST` | ✅ | ✅ | ✅ | **双板实测**（另一块板扫到 37 个伪造 SSID） |
@@ -201,9 +201,10 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 
 **没有验证 / 别指望**
 
-1. **deauth 实际命中**：测试环境里 `d=0`。根因是 ESP32 的 11n 射频解不出 Wi-Fi 6（HE）PPDU，
-   目标信道上只看得到 beacon / probe response / 广播数据，抓不到 client→AP 帧。换成 2.4G legacy 客户端
-   的 AP 才有机会命中；文档不把它写成"已验证可用"。
+1. **deauth 的可解码性**：11n 射频解不出 Wi-Fi 6（HE）PPDU，所以"哪台客户端在线"看不全：
+   只有 legacy 客户端在跑时 `rxm` 才会涨。现在有两条证据链：`STATUS` 的 `txok/txerr` 证明帧被驱动接受，
+   第二块板的 `RXMIX deauth=` 证明帧真的上了空口；拉不到命中时由 `blind=`（500 ms 广播兜底）继续发。
+   客户端是否真断开取决于对端是否强制 PMF（WPA3 / 802.11w），这段不在固件可控范围。
 2. **Evil Twin 的钓鱼链路**：只验证了命令接线（越界报错、`EVILTWIN_STOP`、`CREDS`），
    克隆热点在 5G 上能否开、凭据回传全链路，都**没实测**。
 3. ~~屏上弹窗的观感~~：已人工确认（描边/圆角/字号/行高/滑动/点击都正常）。

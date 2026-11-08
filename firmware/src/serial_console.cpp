@@ -96,6 +96,7 @@ void print_help() {
   Serial.println("INFO EVILTWIN <idx> / EVILTWIN_STOP / CREDS");
   Serial.println("INFO TOUCH / CALIBRATE             LVGL touch readback / recalibrate");
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
+  Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
 }
 
 // ------------------------------------------------------------------ parsing
@@ -214,6 +215,22 @@ void do_status() {
   Serial.print((unsigned)attack_rx_frames());
   Serial.print(" rxm=");
   Serial.print((unsigned)attack_rx_matches());
+  Serial.print(" txok=");
+  Serial.print((unsigned)attack_tx_ok());
+  Serial.print(" txerr=");
+  Serial.print((unsigned)attack_tx_err());
+  Serial.print(" txerr_nomem=");
+  Serial.print((unsigned)attack_tx_err_nomem());
+  Serial.print(" txerr_inval=");
+  Serial.print((unsigned)attack_tx_err_invalid());
+  Serial.print(" txerr_other=");
+  Serial.print((unsigned)attack_tx_err_other());
+  Serial.print(" txec=");
+  Serial.print(attack_tx_last_err());
+  Serial.print(" txdrop=");
+  Serial.print((unsigned)attack_tx_dropped());
+  Serial.print(" blind=");
+  Serial.print((unsigned)attack_blind_frames());
   Serial.print(" networks=");
   Serial.print(g_scan_count);
   Serial.print(" creds=");
@@ -450,6 +467,40 @@ void do_ui_targets() {
 #endif
 }
 
+// Received-frame mix. Run it on a second board (or right after an attack on this
+// one) to check what the radio actually hears: beacon / probe response / deauth
+// counts plus control and data totals.
+void do_rx_mix() {
+  uint32_t mgmt[16] = {0};
+  uint32_t ctrl = 0;
+  uint32_t data = 0;
+  attack_rx_mix(mgmt, &ctrl, &data);
+  uint32_t other = 0;
+  for (int i = 0; i < 16; i++) {
+    if (i != 0 && i != 1 && i != 2 && i != 4 && i != 5 && i != 8 && i != 11 && i != 12) {
+      other += mgmt[i];
+    }
+  }
+  Serial.print("RXMIX beacon=");
+  Serial.print((unsigned)mgmt[8]);
+  Serial.print(" proberesp=");
+  Serial.print((unsigned)mgmt[5]);
+  Serial.print(" probereq=");
+  Serial.print((unsigned)mgmt[4]);
+  Serial.print(" deauth=");
+  Serial.print((unsigned)mgmt[12]);
+  Serial.print(" auth=");
+  Serial.print((unsigned)mgmt[11]);
+  Serial.print(" assoc=");
+  Serial.print((unsigned)(mgmt[0] + mgmt[1] + mgmt[2]));
+  Serial.print(" other_mgmt=");
+  Serial.print((unsigned)other);
+  Serial.print(" ctrl=");
+  Serial.print((unsigned)ctrl);
+  Serial.print(" data=");
+  Serial.println((unsigned)data);
+}
+
 void do_ui_state() {
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
   Serial.print("UI screen=");
@@ -512,6 +563,8 @@ void dispatch(char* line) {
     do_creds();
   } else if (strcmp(command, "RXLOG") == 0) {
     do_rxlog();
+  } else if (strcmp(command, "RXMIX") == 0) {
+    do_rx_mix();
   } else if (strcmp(command, "TOUCH") == 0) {
     do_touch();
   } else if (strcmp(command, "UITARGETS") == 0) {

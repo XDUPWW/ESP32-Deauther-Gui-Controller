@@ -41,6 +41,18 @@ const char* attack_mode_name(void);
 
 uint32_t attack_deauth_frames(void);
 uint32_t attack_rx_frames(void);
+// Raw injection accounting: ESP_OK vs rejected by the driver.
+uint32_t attack_tx_ok(void);
+uint32_t attack_tx_err(void);
+int attack_tx_last_err(void);
+uint32_t attack_tx_err_nomem(void);
+uint32_t attack_tx_err_invalid(void);
+uint32_t attack_tx_err_other(void);
+uint32_t attack_tx_dropped(void);
+// Broadcast deauth frames sent without any sniffed client (blind fallback).
+uint32_t attack_blind_frames(void);
+// Received frame mix: management subtypes 0..15 (deauth = 12), control and data.
+void attack_rx_mix(uint32_t mgmt_sub[16], uint32_t* ctrl, uint32_t* data);
 uint32_t attack_rx_matches(void);
 int attack_rx_log_count(void);
 bool attack_rx_log_at(int i, uint8_t dest[6], uint8_t src[6], uint8_t bssid[6],

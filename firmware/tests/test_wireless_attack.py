@@ -250,6 +250,35 @@ class FirmwareFunctionalTests(unittest.TestCase):
         line, _ = self.client.command("DEAUTH_ONLY x,y 1", lambda l: l.startswith("ERR "), 3)
         self.assertIsNotNone(line, "非法序号列表应报错")
 
+    def test_deauth_frames_go_out(self):
+        """攻击真的在发帧：txok 增长、driver 没有整片拒收、广播兜底生效。
+
+        这一条是为了守住"deauth_frames 在涨但帧没出去"的那个 bug——
+        之前注入在混杂回调里连发 16 帧，2/3 的调用返回 ESP_ERR_NO_MEM 却被忽略。
+        """
+        self.client.send("SCAN")
+        line, _ = self.client.read_until(lambda l: l.startswith("SCAN_END"), 40)
+        self.assertIsNotNone(line, "扫描超时")
+
+        line, _ = self.client.command("DEAUTH_ALL 7", lambda l: l.startswith("OK DEAUTH_ALL"), 5)
+        self.assertIsNotNone(line, "DEAUTH_ALL 无响应")
+        time.sleep(4.0)
+        line, _ = self.client.command("STATUS", lambda l: l.startswith("STATUS "), 5)
+        self.client.command("STOP", lambda l: l.startswith("OK STOP"), 5)
+        self.assertIsNotNone(line)
+
+        info = protocol.parse_status(line)
+        txok = int(info.get("txok", "0"))
+        txerr = int(info.get("txerr", "0"))
+        blind = int(info.get("blind", "0"))
+        frames = int(info.get("deauth_frames", "0"))
+        print(f"\n  deauth_frames={frames} txok={txok} txerr={txerr} blind={blind}")
+        self.assertGreater(txok, 0, "没有任何一帧被驱动接受（注入路径断了）")
+        self.assertEqual(frames, txok, "deauth_frames 应等于真正被接受的帧数")
+        self.assertGreater(blind, 0, "广播兜底没生效（blind 应为非零）")
+        # 帧在被接受之前可以重试，但失败重试不该比成功次数高一个量级
+        self.assertLess(txerr, txok * 3 + 50, "注入失败率过高，检查退避/束大小")
+
     def test_probe_broadcast_counters(self):
         self.client.command("STOP", lambda l: l.startswith("OK STOP"), 3)
         line, _ = self.client.command("PROBE_BROADCAST", lambda l: l.startswith("OK PROBE_BROADCAST"), 3)

