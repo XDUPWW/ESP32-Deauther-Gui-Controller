@@ -29,3 +29,7 @@ Thumbs.db
 /ESP32-Deauther-EvilTwin/
 /ESP32-Deauther-red/
 /esp_touch_project/
+
+# Blog drafts / reference articles live outside the published repo
+/blog/
+/参考博文/
