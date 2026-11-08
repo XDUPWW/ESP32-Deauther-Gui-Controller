@@ -241,7 +241,6 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 | [tesa-klebeband/ESP32-Deauther](https://github.com/tesa-klebeband/ESP32-Deauther) | **基础** deauth 实现、raw frame 注入、原始 Web 界面 |
 | [isiy0/ESP32-Deauther-EvilTwin](https://github.com/isiy0/ESP32-Deauther-EvilTwin) | Evil Twin / 钓鱼页面 / DNS 劫持 |
 | [aligngl/ESP32-Deauther-red](https://github.com/aligngl/ESP32-Deauther-red) | 模块化结构、攻击统计 |
-| [LVGL](https://github.com/lvgl/lvgl) / [esp_lvgl_port](https://github.com/espressif/esp-bsp) / [esp_lcd_ili9341](https://github.com/espressif/esp-bsp) | 触摸屏界面与显示驱动 |
 
 按 **GNU GPL v3** 发布，见 [LICENSE](LICENSE)。二次分发请保留本文件与 LICENSE。
 
