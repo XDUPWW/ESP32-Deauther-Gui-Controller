@@ -4,6 +4,7 @@ set(SRCS
     "../src/general.cpp"
     "../src/evil_twin.cpp"
     "../src/serial_console.cpp"
+    "../src/csa.cpp"
     "../src/storage.cpp"
 )
 

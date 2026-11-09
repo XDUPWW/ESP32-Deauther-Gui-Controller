@@ -3,6 +3,7 @@
 #include <sdkconfig.h>
 #include <string.h>
 
+#include "csa.h"
 #include "deauth.h"
 #include "definitions.h"
 #include "types.h"
@@ -43,6 +44,10 @@ struct rx_sample_t {
     uint8_t type;
     uint8_t subtype;
     uint16_t len;
+    uint8_t cat;   // action: category (37 = CSA IE found in a beacon)
+    uint8_t act;   // action: action code
+    uint8_t nch;   // CSA: new channel
+    uint8_t cnt;   // CSA: count
 };
 
 const int kRxLogSize = 12;
@@ -118,8 +123,17 @@ uint32_t s_backoff_until_ms = 0;
 volatile uint32_t s_rx_mgmt_sub[16];
 volatile uint32_t s_rx_ctrl = 0;
 volatile uint32_t s_rx_data = 0;
+volatile uint32_t s_rx_action = 0;      // management subtype 13
+volatile uint32_t s_rx_csa_action = 0;  // action category 4 / action 4
+volatile uint32_t s_rx_csa_ie = 0;      // beacon/probe response carrying element 37
 rx_sample_t s_rx_log[kRxLogSize];
 volatile int s_rx_log_count = 0;
+
+bool s_mon_active = false;
+uint32_t s_mon_until = 0;
+uint8_t s_mon_channel = 0;
+uint32_t s_mon_last_hop = 0;
+uint8_t s_mon_hop = 1;
 
 bool s_sta_scan_active = false;
 uint32_t s_sta_scan_deadline = 0;
@@ -280,6 +294,9 @@ void reset_diag_counters(void) {
     s_backoff_until_ms = 0;
     s_rx_ctrl = 0;
     s_rx_data = 0;
+    s_rx_action = 0;
+    s_rx_csa_action = 0;
+    s_rx_csa_ie = 0;
     for (int i = 0; i < 16; i++) {
         s_rx_mgmt_sub[i] = 0;
     }
@@ -429,6 +446,44 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (sig_len <= sizeof(mac_hdr_t)) {
         return;
     }
+    csa_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+
+    // CSA recognition: action frames (cat 4 / act 4) and beacons with IE 37.
+    uint8_t cat = 0;
+    uint8_t act = 0;
+    uint8_t csa_ch = 0;
+    uint8_t csa_cnt = 0;
+    const uint8_t* payload = (const uint8_t*)hdr;
+    if (frame_type == 0 && frame_subtype == 13) {
+        s_rx_action = s_rx_action + 1;
+        if (sig_len >= 29) {
+            cat = payload[24];
+            act = payload[25];
+            csa_ch = payload[27];
+            csa_cnt = payload[28];
+            if (cat == 4 && act == 4) {
+                s_rx_csa_action = s_rx_csa_action + 1;
+            }
+        }
+    } else if (frame_type == 0 && (frame_subtype == 8 || frame_subtype == 5) && sig_len > 36) {
+        const uint8_t* p = payload + 36;
+        const uint8_t* end = payload + sig_len;
+        while (p + 2 <= end) {
+            const uint8_t ie_len = p[1];
+            if (p + 2 + ie_len > end) {
+                break;
+            }
+            if (p[0] == 37 && ie_len == 3) {
+                s_rx_csa_ie = s_rx_csa_ie + 1;
+                cat = 37;
+                csa_ch = p[3];
+                csa_cnt = p[4];
+                break;
+            }
+            p += 2 + ie_len;
+        }
+    }
+
     if (s_rx_log_count < kRxLogSize) {
         rx_sample_t* sample = &s_rx_log[s_rx_log_count];
         memcpy(sample->dest, hdr->dest, 6);
@@ -437,6 +492,10 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         sample->type = frame_type;
         sample->subtype = frame_subtype;
         sample->len = sig_len;
+        sample->cat = cat;
+        sample->act = act;
+        sample->nch = csa_ch;
+        sample->cnt = csa_cnt;
         s_rx_log_count = s_rx_log_count + 1;
     }
 
@@ -666,7 +725,46 @@ bool attack_probe_broadcast() {
     return true;
 }
 
+// Passive monitor window: fixed channel (0 = hop 1..13) for N seconds, with a
+// clean counter slate so a second board can report exactly what it heard.
+void monitor_begin(uint8_t channel, uint16_t seconds) {
+    reset_diag_counters();
+    s_rx_log_count = 0;
+    s_mon_channel = channel;
+    s_mon_hop = 1;
+    s_mon_last_hop = 0;
+    s_mon_until = millis() + (uint32_t)seconds * 1000UL;
+    s_mon_active = true;
+    apply_band_mode();
+    if (channel != 0) {
+        apply_country(channel, false);
+        radio_to_sta();
+        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    } else {
+        apply_country(CHANNEL_MAX, true);
+        radio_to_sta();
+    }
+    start_promiscuous();
+}
+
+bool monitor_active() {
+    return s_mon_active;
+}
+
+uint32_t attack_rx_action() {
+    return s_rx_action;
+}
+
+uint32_t attack_rx_csa_action() {
+    return s_rx_csa_action;
+}
+
+uint32_t attack_rx_csa_ie() {
+    return s_rx_csa_ie;
+}
+
 void attack_stop() {
+    csa_stop();
     esp_wifi_set_promiscuous(false);
     deauth_active = false;
     s_mode = ATTACK_IDLE;
@@ -674,6 +772,20 @@ void attack_stop() {
 
 void attack_step() {
     const uint32_t now = millis();
+    csa_step();
+
+    if (s_mon_active) {
+        if (s_mon_channel == 0 && now - s_mon_last_hop > 150) {
+            s_mon_last_hop = now;
+            s_mon_hop = (s_mon_hop % CHANNEL_MAX) + 1;
+            esp_wifi_set_channel(s_mon_hop, WIFI_SECOND_CHAN_NONE);
+        }
+        if ((int32_t)(now - s_mon_until) >= 0) {
+            s_mon_active = false;
+            esp_wifi_set_promiscuous(false);
+        }
+        return;
+    }
 
     if (s_sta_scan_active) {
         if (now - s_sta_scan_last_hop > 150) {
@@ -892,6 +1004,16 @@ bool attack_rx_log_at(int i, uint8_t dest[6], uint8_t src[6], uint8_t bssid[6], 
     if (subtype) *subtype = s_rx_log[i].subtype;
     if (len) *len = s_rx_log[i].len;
     return true;
+}
+
+void attack_rx_log_info(int i, uint8_t* cat, uint8_t* act, uint8_t* nch, uint8_t* cnt) {
+    if (i < 0 || i >= s_rx_log_count) {
+        return;
+    }
+    if (cat) *cat = s_rx_log[i].cat;
+    if (act) *act = s_rx_log[i].act;
+    if (nch) *nch = s_rx_log[i].nch;
+    if (cnt) *cnt = s_rx_log[i].cnt;
 }
 
 int attack_ap_count() {

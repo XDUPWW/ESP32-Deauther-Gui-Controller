@@ -24,6 +24,7 @@
 | 全部 AP deauth | `DEAUTH_ALL` | ✅ | ✅ | ✅ | 十秒 `txok=359`、第二块板收到 `deauth=69` |
 | 白名单 deauth | `DEAUTH_ONLY i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
 | 黑名单 deauth | `DEAUTH_EXCEPT i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
+| CSA 欺骗（PMF 绕过） | `CSA <idx> <ch> [cnt] [secs]` | ✅ | ✅ | ✅ | 帧格式逐字节校验 + 实跑 `csaf=31`；跨板抓包待 C5 复插后补 |
 | Probe 泛洪（Beacon + Probe Response） | `PROBE_BROADCAST` | ✅ | ✅ | ✅ | **双板实测**（另一块板扫到 37 个伪造 SSID） |
 | STA 嗅探 | `STATIONS [sec]` | ✅ | ✅ | ✅ | 实测（能给出 STA 及其所属 AP） |
 | 逐 AP 计数 | `STATS` | ✅ | ✅ | ✅ | 实测 |

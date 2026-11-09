@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "csa.h"
 #include "deauth.h"
 #include "definitions.h"
 #include "evil_twin.h"
@@ -98,6 +99,10 @@ void print_help() {
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
+  Serial.println("INFO CSA <idx> <ch> [cnt] [secs]   CSA spoof: count down on the AP channel, then clone on <ch>");
+  Serial.println("INFO CSASTOP                       stop the CSA spoof");
+  Serial.println("INFO CSATEST                       dump the CSA action/beacon bytes (format check)");
+  Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
   Serial.println("INFO UIREASON / UI                 LVGL reason popup: open / report state");
 }
 
@@ -283,6 +288,14 @@ void do_status() {
   Serial.print((unsigned)attack_blind_frames());
   Serial.print(" rev=");
   Serial.print((unsigned)attack_reverse_frames());
+  Serial.print(" csa=");
+  Serial.print(csa_phase_name());
+  Serial.print(" csaf=");
+  Serial.print((unsigned)csa_frames());
+  Serial.print(" csac=");
+  Serial.print((unsigned)csa_clients());
+  Serial.print(" csch=");
+  Serial.print((unsigned)csa_new_channel());
   Serial.print(" reason=");
   if (attack_reason_is_random()) {
     Serial.print("random");
@@ -342,6 +355,72 @@ void do_deauth(int index, uint16_t reason) {
   }
   Serial.printf("OK DEAUTH %d %s\n", index, WiFi.SSID(index).c_str());
   ui_log("deauth started");
+}
+
+// CSA <idx> <new-channel> [count] [hold-seconds]
+// index comes from the last SCAN; count must look like a real AP countdown (2..8);
+// hold-seconds is how long the cloned beacon stays alive on the new channel.
+void do_csa(int index, long channel, long count, long hold_seconds) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  const bool is_2g = channel >= 1 && channel <= 14;
+  const bool is_5g = channel >= 36 && channel <= 196;
+  if (!is_2g && !is_5g) {
+    Serial.println("ERR new channel must be 1..14 or 36..196");
+    return;
+  }
+  const int ap_channel = WiFi.channel(index);
+  if ((long)ap_channel == channel) {
+    Serial.println("ERR new channel must differ from the AP channel");
+    return;
+  }
+  if (count < 2 || count > 8) {
+    Serial.println("ERR count must be 2..8 (a real AP counts down)");
+    return;
+  }
+  if (hold_seconds < 1 || hold_seconds > 600) {
+    Serial.println("ERR hold seconds must be 1..600");
+    return;
+  }
+  if (!csa_start(index, (uint8_t)channel, (uint8_t)count, (uint16_t)hold_seconds)) {
+    Serial.println("ERR cannot start CSA on that network");
+    return;
+  }
+  Serial.printf("OK CSA %d ch%ld count=%ld hold=%lds ssid=%s\n", index, channel, count, hold_seconds,
+                WiFi.SSID(index).c_str());
+  ui_log("csa started");
+}
+
+// MON <channel> <seconds>: passive capture on one channel (0 = hop 1..13).
+// Counters are reset on entry, so a following RXMIX describes exactly this window.
+void do_monitor(char* ch_token, char* sec_token) {
+  const long channel = ch_token ? strtol(ch_token, nullptr, 10) : 0;
+  const long seconds = sec_token ? strtol(sec_token, nullptr, 10) : 10;
+  if (channel < 0 || channel > 196) {
+    Serial.println("ERR monitor channel must be 0 (hop) or 1..196");
+    return;
+  }
+  if (seconds < 1 || seconds > 120) {
+    Serial.println("ERR monitor seconds must be 1..120");
+    return;
+  }
+  attack_stop();
+  monitor_begin((uint8_t)channel, (uint16_t)seconds);
+  Serial.printf("OK MON ch=%ld %lds\n", channel, seconds);
+  ui_log("monitor started");
+}
+
+void do_csa_test() {
+  csa_selftest();
+}
+
+void do_csa_stop() {
+  const uint32_t frames = csa_frames();
+  csa_stop();
+  Serial.printf("OK CSASTOP frames=%u\n", (unsigned)frames);
+  ui_log("csa stopped");
 }
 
 void do_deauth_all(uint16_t reason) {
@@ -450,7 +529,19 @@ void do_rxlog() {
     Serial.print(" src=");
     Serial.print(s);
     Serial.print(" bssid=");
-    Serial.println(b);
+    Serial.print(b);
+    uint8_t cat = 0;
+    uint8_t act = 0;
+    uint8_t nch = 0;
+    uint8_t cnt = 0;
+    attack_rx_log_info(i, &cat, &act, &nch, &cnt);
+    if (subtype == 13) {
+      Serial.printf(" cat=%u act=%u nch=%u cnt=%u", (unsigned)cat, (unsigned)act, (unsigned)nch,
+                    (unsigned)cnt);
+    } else if (cat == 37) {
+      Serial.printf(" csa_ie=1 nch=%u cnt=%u", (unsigned)nch, (unsigned)cnt);
+    }
+    Serial.println();
   }
   Serial.println("RXLOG_END");
 }
@@ -558,7 +649,13 @@ void do_rx_mix() {
   Serial.print(" ctrl=");
   Serial.print((unsigned)ctrl);
   Serial.print(" data=");
-  Serial.println((unsigned)data);
+  Serial.print((unsigned)data);
+  Serial.print(" action=");
+  Serial.print((unsigned)attack_rx_action());
+  Serial.print(" csa_action=");
+  Serial.print((unsigned)attack_rx_csa_action());
+  Serial.print(" csa_ie=");
+  Serial.println((unsigned)attack_rx_csa_ie());
 }
 
 // REASON            -> report the current setting
@@ -651,6 +748,26 @@ void dispatch(char* line) {
     if (apply_reason_arg(arg)) do_deauth_list(list, arg.value, true);
   } else if (strcmp(command, "REASON") == 0) {
     do_reason(strtok(nullptr, " \t"));
+  } else if (strcmp(command, "CSA") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* ch_token = strtok(nullptr, " \t");
+    char* count_token = strtok(nullptr, " \t");
+    char* hold_token = strtok(nullptr, " \t");
+    if (ch_token == nullptr) {
+      Serial.println("ERR usage: CSA <idx> <new-channel> [count 2-8] [hold-seconds]");
+    } else {
+      do_csa(parse_index(idx_token), strtol(ch_token, nullptr, 10),
+             count_token ? strtol(count_token, nullptr, 10) : 5,
+             hold_token ? strtol(hold_token, nullptr, 10) : 15);
+    }
+  } else if (strcmp(command, "CSASTOP") == 0) {
+    do_csa_stop();
+  } else if (strcmp(command, "CSATEST") == 0) {
+    do_csa_test();
+  } else if (strcmp(command, "MON") == 0) {
+    char* ch_token = strtok(nullptr, " 	");
+    char* sec_token = strtok(nullptr, " 	");
+    do_monitor(ch_token, sec_token);
   } else if (strcmp(command, "STATIONS") == 0) {
     do_stations(strtok(nullptr, " \t"));
     } else if (strcmp(command, "PROBE_BROADCAST") == 0) {

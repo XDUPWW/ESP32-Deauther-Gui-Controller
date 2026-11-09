@@ -124,12 +124,16 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. rev=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
 | `DEAUTH <idx> [reason\|random]` | 单目标 deauth | `OK DEAUTH <idx> <ssid>` / `ERR ...` |
 | `DEAUTH_ALL [reason]` | 扫描到的全部 AP 轮流打 | `OK DEAUTH_ALL ...` |
 | `DEAUTH_ONLY <i,j,..> [reason]` | 白名单 | `OK DEAUTH_ONLY <n> aps` |
 | `DEAUTH_EXCEPT <i,j,..> [reason]` | 黑名单 | `OK DEAUTH_EXCEPT <n> aps` |
 | `REASON [1-65535\|random]` | reason code：数字=固定值，`random`=每束随机，不带参数=查询当前值 | `OK REASON 7` / `OK REASON random` / `REASON 7` |
+| `CSA <idx> <ch> [cnt] [secs]` | CSA 欺骗：在 AP 信道上按 count 递减播报，然后跳到 `<ch>` 用克隆 beacon 接应 | `OK CSA 0 ch6 count=5 hold=15s ssid=..` |
+| `CSASTOP` | 停止 CSA | `OK CSASTOP frames=31` |
+| `CSATEST` | 打印一帧 CSA Action 和一帧带 CSA IE 的 Beacon 的**原始字节**（格式自检） | `CSATEST action len=29 cat=4 act=4 ...` / `... hex=D0...` |
+| `MON <ch> <secs>` | 被动监听（`ch=0` 表示逐信道跳），计数器从 0 开始，便于用第二块板验证注入 | `OK MON ch=6 8s` |
 | `PROBE_BROADCAST` | 随机 SSID/BSSID 泛洪 Beacon + Probe Response | `OK PROBE_BROADCAST` |
 | `STATIONS [sec]` | 跳信道嗅探 STA（默认 5 s） | `STA_BEGIN` / `STA ...` / `STA_END <n>` |
 | `STATS` | 逐 AP deauth 帧计数 | `STATS_BEGIN ...` / `AP ...` / `STATS_END` |
@@ -143,7 +147,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `UIREASON` | 打开屏上 reason 弹窗（等价点 `R:x`） | `OK UIREASON` |
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. rpopup=.. ritems=.. nets=..` |
 | `RXLOG` | 打印监听到的 802.11 帧（诊断） | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
-| `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data），用来验证"帧真的上了空口" | `RXMIX beacon=.. proberesp=.. deauth=.. ctrl=.. data=..` |
+| `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧 | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
 
 `reason` 缺省 1：
 
@@ -204,6 +208,10 @@ while True:
 - 除此之外还有**盲发兜底**：每 `BLIND_DEAUTH_PERIOD_MS = 500 ms` 给当前 AP 发一帧广播 deauth，
   不需要嗅探到任何客户端帧。这样即使目标 BSS 里的客户端完全静默（或者它只会说 802.11ax，
   11n 射频根本解不出来），攻击仍然有效果可打。`STATUS` 里的 `blind=` 就是这个计数。
+- **CSA 欺骗**（`CSA`）：在目标 AP 的信道上按 `count = 5→1` 每 100 ms 播报一轮，每轮 3 帧广播 Action +
+  每个已见客户端 1 帧单播 Action + 1 帧带 CSA IE 的 Beacon；countdown 结束后跳到新信道，用
+  克隆 beacon（同 BSSID/SSID/从真 beacon 抄来的 RSN IE）每 100 ms 顶 `hold` 秒。
+  CSA 不是 robust 管理帧，**PMF 不校验它**，所以这条路线对 WPA3 客户端仍然有效。
 - 注入不在混杂回调里做：回调只把"该踢谁"塞进队列，主循环按 1 ms 节奏出队、失败退避 5 ms 重试。
   这是修掉"`deauth_frames` 在涨但帧没出去"那个 bug 的关键（见 §11）。
 - `PROBE_BROADCAST` 不需要目标也不需要扫描：4 帧/4 ms，SSID/BSSID 每帧随机，120 ms 换信道。

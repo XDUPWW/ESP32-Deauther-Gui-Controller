@@ -242,6 +242,42 @@ class FirmwareFunctionalTests(unittest.TestCase):
                 self.assertEqual(len(parts), 5, f"AP 行格式不对: {line}")
                 self.assertIn("frames=", parts[4])
 
+    def test_csa_frame_format_and_run(self):
+        """CSA：帧格式（Action cat=4 act=4 / Beacon IE 37）+ 参数校验 + 真的开始跑。"""
+        self.client.send("CSATEST")
+        line, lines = self.client.read_until(
+            lambda l: l.startswith("CSATEST beacon hex="), 6)
+        self.assertIsNotNone(line, "CSATEST 无输出")
+        text = "\n".join(lines)
+        self.assertIn("cat=4 act=4", text, "Action 帧应为 category 4 / action 4")
+        self.assertIn("id=37 ie_len=3", text, "Beacon 里应有 CSA IE (id 37, len 3)")
+
+        # 参数防呆：信道 0 / 越界信道 / count 越界 / 序号越界 都要报错
+        for bad in ("CSA 0 0", "CSA 0 200", "CSA 0 6 9", "CSA 99 6"):
+            line, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
+            self.assertIsNotNone(line, f"{bad} 应被拒绝")
+
+        # 真的跑：扫一次，挑和 AP 不同的信道
+        self.client.send("SCAN")
+        line, lines = self.client.read_until(lambda l: l.startswith("SCAN_END"), 40)
+        self.assertIsNotNone(line, "扫描超时")
+        ap_ch = None
+        for l in lines:
+            if l.startswith("NET 0 "):
+                ap_ch = int(l.split(" ")[3])
+        self.assertIsNotNone(ap_ch, "没有解析到 NET 0")
+        new_ch = 1 if ap_ch != 1 else 6
+        ok, _ = self.client.command(f"CSA 0 {new_ch} 5 3", lambda l: l.startswith("OK CSA"), 5)
+        self.assertIsNotNone(ok, "CSA 启动失败")
+        time.sleep(1.5)
+        line, _ = self.client.command("STATUS", lambda l: l.startswith("STATUS "), 5)
+        info = protocol.parse_status(line)
+        print(f"\n  csa={info.get('csa')} csaf={info.get('csaf')} csac={info.get('csac')}")
+        self.assertIn(info.get("csa"), ("announce", "hold"), "STATUS 应显示 CSA 阶段")
+        self.assertGreater(int(info.get("csaf", "0")), 0, "CSA 帧数应大于 0")
+        stop, _ = self.client.command("CSASTOP", lambda l: l.startswith("OK CSASTOP"), 5)
+        self.assertIsNotNone(stop)
+
     def test_reason_validation_and_random(self):
         """reason 防呆：0 / 越界 / 非数字要报错；random 模式要能在 STATUS 里看到。"""
         ok, _ = self.client.command("REASON 7", lambda l: l.startswith("OK REASON 7"), 3)

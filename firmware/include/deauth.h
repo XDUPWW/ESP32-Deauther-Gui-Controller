@@ -33,6 +33,13 @@ bool attack_probe_broadcast(void);
 
 void attack_stop(void);
 
+// ---- passive monitor window (verify injections from a second board) ----
+void monitor_begin(uint8_t channel, uint16_t seconds);
+bool monitor_active(void);
+uint32_t attack_rx_action(void);
+uint32_t attack_rx_csa_action(void);
+uint32_t attack_rx_csa_ie(void);
+
 // Advanced by the main loop: multi-AP channel hopping, probe pacing, station scan.
 void attack_step(void);
 
@@ -68,6 +75,8 @@ uint32_t attack_rx_matches(void);
 int attack_rx_log_count(void);
 bool attack_rx_log_at(int i, uint8_t dest[6], uint8_t src[6], uint8_t bssid[6],
                       uint8_t* type, uint8_t* subtype, uint16_t* len);
+// Extra detail decoded for the log sample: action category/action, CSA channel/count.
+void attack_rx_log_info(int i, uint8_t* cat, uint8_t* act, uint8_t* nch, uint8_t* cnt);
 uint32_t attack_probe_frames(void);
 
 int attack_ap_count(void);
