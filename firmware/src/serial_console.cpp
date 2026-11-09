@@ -280,6 +280,8 @@ void do_status() {
   Serial.print((unsigned)attack_tx_dropped());
   Serial.print(" blind=");
   Serial.print((unsigned)attack_blind_frames());
+  Serial.print(" rev=");
+  Serial.print((unsigned)attack_reverse_frames());
   Serial.print(" reason=");
   if (attack_reason_is_random()) {
     Serial.print("random");

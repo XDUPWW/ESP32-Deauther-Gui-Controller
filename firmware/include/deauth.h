@@ -51,6 +51,8 @@ uint32_t attack_tx_err_other(void);
 uint32_t attack_tx_dropped(void);
 // Broadcast deauth frames sent without any sniffed client (blind fallback).
 uint32_t attack_blind_frames(void);
+// Deauth frames forged in the STA -> AP direction (client "leaving").
+uint32_t attack_reverse_frames(void);
 
 // ---- reason code ----
 // Fixed code, or "random": every burst draws a fresh value from the codes the

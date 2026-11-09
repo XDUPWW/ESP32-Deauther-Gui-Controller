@@ -124,7 +124,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. rev=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
 | `DEAUTH <idx> [reason\|random]` | 单目标 deauth | `OK DEAUTH <idx> <ssid>` / `ERR ...` |
 | `DEAUTH_ALL [reason]` | 扫描到的全部 AP 轮流打 | `OK DEAUTH_ALL ...` |
 | `DEAUTH_ONLY <i,j,..> [reason]` | 白名单 | `OK DEAUTH_ONLY <n> aps` |
@@ -189,8 +189,16 @@ while True:
 | `DEAUTH_ONLY i,j` | 白名单 | 只在名单内轮询 | 同上 |
 | `DEAUTH_EXCEPT i,j` | 全部 − 名单 | 跳过名单 | 同上 |
 
-- 每命中一轮发 **2 帧单播 + 1 帧广播** deauth（`NUM_FRAMES_PER_DEAUTH` / `NUM_BROADCAST_PER_DEAUTH`），
-  reason code 用当前设置（固定值，或 `random` 模式下每束重掷）；
+- 每命中一轮发 **3 帧**，两个方向都伪造（reason code 取当前设置，`random` 模式下每束重掷）：
+
+  | 帧 | Addr1 (dest) | Addr2 (src) | Addr3 (BSSID) | 谁"说"的 |
+  | --- | --- | --- | --- | --- |
+  | 1 帧单播 | 客户端 MAC | 目标 AP BSSID | 目标 AP BSSID | 伪装成 AP 踢客户端 |
+  | 1 帧反向 | 目标 AP BSSID | 客户端 MAC | 目标 AP BSSID | 伪装成客户端"我要走了"，AP 会拆关联并通常自己再通知客户端 |
+  | 1 帧广播 | `FF:FF:FF:FF:FF:FF` | 目标 AP BSSID | 目标 AP BSSID | 照顾只认广播 deauth 的廉价设备 |
+
+  单播帧占比压到 2/3 是有原因的：单播要等 ACK，发多了会撞满 TX 缓冲（见 §11）；
+  反向帧是新增的一路，专治"过滤 AP 发来的 deauth"的客户端。
   `deauth_frames`、`txok` 与 `STATS` 里的 per-AP `frames` 同步累加。
 - 除此之外还有**盲发兜底**：每 `BLIND_DEAUTH_PERIOD_MS = 500 ms` 给当前 AP 发一帧广播 deauth，
   不需要嗅探到任何客户端帧。这样即使目标 BSS 里的客户端完全静默（或者它只会说 802.11ax，
@@ -317,7 +325,8 @@ Wi-Fi 任务                         promiscuous 回调 sniffer()（只做判断
 | 宏 | 值 | 说明 |
 | --- | --- | --- |
 | `SERIAL_RX_BUFFER_SIZE` | 4096 | UART 接收环形缓冲（默认 256 B，指令洪泛会丢整行） |
-| `NUM_FRAMES_PER_DEAUTH` | 2 | 每次命中的单播帧数（多则撞满 TX 缓冲） |
+| `NUM_FRAMES_PER_DEAUTH` | 1 | 每次命中的 AP→STA 单播帧数（单播要等 ACK，多则撞满 TX 缓冲） |
+| `NUM_REVERSE_PER_DEAUTH` | 1 | 每次命中的 STA→AP 反向帧数（让 AP 拆关联） |
 | `NUM_BROADCAST_PER_DEAUTH` | 1 | 每次命中追加的广播帧数 |
 | `BLIND_DEAUTH_PERIOD_MS` | 500 | 盲发兜底周期（对当前 AP 发广播 deauth） |
 | `CHANNEL_MAX` | 13 | 2.4G 上界 |

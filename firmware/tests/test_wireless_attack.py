@@ -294,11 +294,13 @@ class FirmwareFunctionalTests(unittest.TestCase):
         txok = int(info.get("txok", "0"))
         txerr = int(info.get("txerr", "0"))
         blind = int(info.get("blind", "0"))
+        rev = int(info.get("rev", "0"))
         frames = int(info.get("deauth_frames", "0"))
-        print(f"\n  deauth_frames={frames} txok={txok} txerr={txerr} blind={blind}")
+        print(f"\n  deauth_frames={frames} txok={txok} txerr={txerr} blind={blind} rev={rev}")
         self.assertGreater(txok, 0, "没有任何一帧被驱动接受（注入路径断了）")
         self.assertEqual(frames, txok, "deauth_frames 应等于真正被接受的帧数")
         self.assertGreater(blind, 0, "广播兜底没生效（blind 应为非零）")
+        self.assertGreater(rev, 0, "STA->AP 方向的 deauth 没有发出去（rev 应为非零）")
         # 帧在被接受之前可以重试，但失败重试不该比成功次数高一个量级
         self.assertLess(txerr, txok * 3 + 50, "注入失败率过高，检查退避/束大小")
 

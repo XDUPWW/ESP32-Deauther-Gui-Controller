@@ -22,8 +22,12 @@
 // buffers full and made ~2/3 of the injections fail with ESP_ERR_NO_MEM.
 // A client drops on the *first* valid deauth, so a small burst repeated on every
 // subsequent hit is both faster and more reliable than one huge burst.
-#define NUM_FRAMES_PER_DEAUTH 2
+#define NUM_FRAMES_PER_DEAUTH 1
 #define NUM_BROADCAST_PER_DEAUTH 1
+// One forged STA->AP deauth per burst: the AP drops the association and usually
+// notifies the client itself, which catches clients that filter deauth "from
+// the AP".
+#define NUM_REVERSE_PER_DEAUTH 1
 // Blind fallback period: a broadcast deauth to the current AP even when no client
 // frame could be sniffed (idle client, or a Wi-Fi 6 client an 11n radio cannot
 // decode). 500 ms keeps it cheap while still being felt by the client.

