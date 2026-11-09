@@ -146,7 +146,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `UITARGETS` | 打开屏上目标弹窗（等价点 `Targets`） | `OK UITARGETS` |
 | `UIREASON` | 打开屏上 reason 弹窗（等价点 `R:x`） | `OK UIREASON` |
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. rpopup=.. ritems=.. nets=..` |
-| `RXLOG` | 打印监听到的 802.11 帧（诊断） | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
+| `RXLOG` | 打印监听到的 802.11 帧（诊断）；收到的 CSA Action 会额外打印 `RXCSA <i> src=.. cat=4 act=4 nch=.. cnt=.. len=..` | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
 | `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧 | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
 
 `reason` 缺省 1：

@@ -126,6 +126,11 @@ volatile uint32_t s_rx_data = 0;
 volatile uint32_t s_rx_action = 0;      // management subtype 13
 volatile uint32_t s_rx_csa_action = 0;  // action category 4 / action 4
 volatile uint32_t s_rx_csa_ie = 0;      // beacon/probe response carrying element 37
+// A few decoded CSA frames kept for RXLOG, so a receiver can print what it saw
+// (channel/count) instead of only counting them.
+const int kCsaLogSize = 4;
+rx_sample_t s_csa_log[kCsaLogSize];
+int s_csa_log_count = 0;
 rx_sample_t s_rx_log[kRxLogSize];
 volatile int s_rx_log_count = 0;
 
@@ -297,6 +302,7 @@ void reset_diag_counters(void) {
     s_rx_action = 0;
     s_rx_csa_action = 0;
     s_rx_csa_ie = 0;
+    s_csa_log_count = 0;
     for (int i = 0; i < 16; i++) {
         s_rx_mgmt_sub[i] = 0;
     }
@@ -463,6 +469,19 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
             csa_cnt = payload[28];
             if (cat == 4 && act == 4) {
                 s_rx_csa_action = s_rx_csa_action + 1;
+                if (s_csa_log_count < kCsaLogSize) {
+                    rx_sample_t* sample = &s_csa_log[s_csa_log_count++];
+                    memcpy(sample->src, hdr->src, 6);
+                    memcpy(sample->dest, hdr->dest, 6);
+                    memcpy(sample->bssid, hdr->bssid, 6);
+                    sample->type = frame_type;
+                    sample->subtype = frame_subtype;
+                    sample->len = sig_len;
+                    sample->cat = cat;
+                    sample->act = act;
+                    sample->nch = csa_ch;
+                    sample->cnt = csa_cnt;
+                }
             }
         }
     } else if (frame_type == 0 && (frame_subtype == 8 || frame_subtype == 5) && sig_len > 36) {
@@ -1014,6 +1033,24 @@ void attack_rx_log_info(int i, uint8_t* cat, uint8_t* act, uint8_t* nch, uint8_t
     if (act) *act = s_rx_log[i].act;
     if (nch) *nch = s_rx_log[i].nch;
     if (cnt) *cnt = s_rx_log[i].cnt;
+}
+
+int attack_csa_log_count(void) {
+    return s_csa_log_count;
+}
+
+bool attack_csa_log_at(int i, uint8_t src[6], uint8_t* nch, uint8_t* cnt, uint8_t* cat,
+                       uint8_t* act, uint16_t* len) {
+    if (i < 0 || i >= s_csa_log_count) {
+        return false;
+    }
+    if (src) memcpy(src, s_csa_log[i].src, 6);
+    if (nch) *nch = s_csa_log[i].nch;
+    if (cnt) *cnt = s_csa_log[i].cnt;
+    if (cat) *cat = s_csa_log[i].cat;
+    if (act) *act = s_csa_log[i].act;
+    if (len) *len = s_csa_log[i].len;
+    return true;
 }
 
 int attack_ap_count() {

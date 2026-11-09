@@ -543,6 +543,32 @@ void do_rxlog() {
     }
     Serial.println();
   }
+  const int csa_n = attack_csa_log_count();
+  for (int i = 0; i < csa_n; i++) {
+    uint8_t src[6] = {0};
+    uint8_t nch = 0;
+    uint8_t cnt = 0;
+    uint8_t cat = 0;
+    uint8_t act = 0;
+    uint16_t len = 0;
+    if (!attack_csa_log_at(i, src, &nch, &cnt, &cat, &act, &len)) continue;
+    char s_mac[18];
+    mac_to_str(src, s_mac);
+    Serial.print("RXCSA ");
+    Serial.print(i);
+    Serial.print(" src=");
+    Serial.print(s_mac);
+    Serial.print(" cat=");
+    Serial.print((unsigned)cat);
+    Serial.print(" act=");
+    Serial.print((unsigned)act);
+    Serial.print(" nch=");
+    Serial.print((unsigned)nch);
+    Serial.print(" cnt=");
+    Serial.print((unsigned)cnt);
+    Serial.print(" len=");
+    Serial.println((unsigned)len);
+  }
   Serial.println("RXLOG_END");
 }
 

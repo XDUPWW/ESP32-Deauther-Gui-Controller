@@ -39,6 +39,10 @@ bool monitor_active(void);
 uint32_t attack_rx_action(void);
 uint32_t attack_rx_csa_action(void);
 uint32_t attack_rx_csa_ie(void);
+// Decoded CSA action frames seen by this radio (for RXLOG).
+int attack_csa_log_count(void);
+bool attack_csa_log_at(int i, uint8_t src[6], uint8_t* nch, uint8_t* cnt, uint8_t* cat,
+                       uint8_t* act, uint16_t* len);
 
 // Advanced by the main loop: multi-AP channel hopping, probe pacing, station scan.
 void attack_step(void);
