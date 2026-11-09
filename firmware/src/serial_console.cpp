@@ -98,6 +98,7 @@ void print_help() {
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
+  Serial.println("INFO UIREASON / UI                 LVGL reason popup: open / report state");
 }
 
 // ------------------------------------------------------------------ parsing
@@ -581,6 +582,15 @@ void do_reason(char* token) {
   }
 }
 
+void do_ui_reasons() {
+#if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
+  wireless_ui_show_reasons();
+  Serial.println("OK UIREASON");
+#else
+  Serial.println("ERR LVGL UI is not enabled in this build");
+#endif
+}
+
 void do_ui_state() {
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
   Serial.print("UI screen=");
@@ -589,6 +599,10 @@ void do_ui_state() {
   Serial.print(wireless_ui_popup_visible() ? 1 : 0);
   Serial.print(" items=");
   Serial.print(wireless_ui_popup_items());
+  Serial.print(" rpopup=");
+  Serial.print(wireless_ui_reason_popup_visible() ? 1 : 0);
+  Serial.print(" ritems=");
+  Serial.print(wireless_ui_reason_items());
   Serial.print(" nets=");
   Serial.println(g_scan_count);
 #else
@@ -655,6 +669,8 @@ void dispatch(char* line) {
     do_touch();
   } else if (strcmp(command, "UITARGETS") == 0) {
     do_ui_targets();
+  } else if (strcmp(command, "UIREASON") == 0) {
+    do_ui_reasons();
   } else if (strcmp(command, "UI") == 0) {
     do_ui_state();
   } else if (strcmp(command, "CALIBRATE") == 0) {

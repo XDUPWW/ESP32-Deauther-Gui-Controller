@@ -67,6 +67,10 @@ int wireless_ui_touch_irq_level(void);
 // whether it is up / how many rows it built. Used by the `UITARGETS` / `UI`
 // serial commands so the UI can be checked without touching the panel.
 void wireless_ui_show_targets(void);
+// Reason-code popup: same idea as the target picker, one row per defined code.
+void wireless_ui_show_reasons(void);
+bool wireless_ui_reason_popup_visible(void);
+int wireless_ui_reason_items(void);
 bool wireless_ui_popup_visible(void);
 int wireless_ui_popup_items(void);
 const char *wireless_ui_screen_name(void);

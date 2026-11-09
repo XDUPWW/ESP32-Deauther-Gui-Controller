@@ -534,6 +534,37 @@ class LvglUiTests(unittest.TestCase):
         finally:
             client.close()
 
+    def test_reason_popup(self):
+        """屏上的 reason 弹窗：每个标准 reason 一行 + random，共 24 行。"""
+        client = _open_client()
+        try:
+            if not client.sync():
+                raise unittest.SkipTest("固件无响应")
+
+            def parse_ui(text):
+                fields = {}
+                for token in text.split(" ")[1:]:
+                    if "=" in token:
+                        key, value = token.split("=", 1)
+                        fields[key] = value
+                return fields
+
+            line, _ = client.command("UI", lambda l: l.startswith("UI "), 5)
+            self.assertIsNotNone(line, "UI 无响应")
+            before = parse_ui(line)
+            self.assertEqual(before.get("rpopup"), "0", "reason 弹窗不该自己弹出来")
+            self.assertEqual(int(before.get("ritems", "0")), 24, "应为 23 个标准 reason + random")
+
+            ok, _ = client.command("UIREASON", lambda l: l.startswith("OK UIREASON"), 5)
+            self.assertIsNotNone(ok, "UIREASON 无响应")
+            line, _ = client.command("UI", lambda l: l.startswith("UI "), 5)
+            after = parse_ui(line)
+            print("  reason popup rpopup=" + str(after.get("rpopup")) +
+                  " ritems=" + str(after.get("ritems")))
+            self.assertEqual(after.get("rpopup"), "1", "UIREASON 之后弹窗应可见")
+        finally:
+            client.close()
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

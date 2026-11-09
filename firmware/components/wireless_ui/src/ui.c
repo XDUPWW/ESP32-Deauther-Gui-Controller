@@ -59,8 +59,13 @@ static lv_obj_t *s_mode_label;
 static lv_obj_t *s_evil_label;
 // Deauth reason code picker on the mode page. Cycles through the three codes
 // people actually use plus "random"; the firmware keeps the authoritative value.
-static int s_reason_idx = 0;
+static uint16_t s_reason_selected = 7;
+static bool s_reason_random_selected = false;
 static lv_obj_t *s_reason_label;
+static lv_obj_t *s_reason_popup;
+static lv_obj_t *s_reason_popup_title;
+static lv_obj_t *s_reason_popup_list;
+static int s_reason_popup_items;
 static row_t s_rows[MAX_ROWS];
 static int s_row_count;
 static int s_selected = -1;
@@ -361,33 +366,6 @@ static void targets_clicked(lv_event_t *event) {
     targets_open();
 }
 
-static const uint16_t kReasonCycle[3] = {1, 7, 15};
-
-static void reason_refresh_label(void) {
-    if (s_reason_label == NULL) {
-        return;
-    }
-    char text[12];
-    if (s_reason_idx >= 3) {
-        snprintf(text, sizeof(text), "R:rnd");
-    } else {
-        snprintf(text, sizeof(text), "R:%u", (unsigned)kReasonCycle[s_reason_idx]);
-    }
-    lv_label_set_text(s_reason_label, text);
-}
-
-static void reason_clicked(lv_event_t *event) {
-    (void)event;
-    s_reason_idx = (s_reason_idx + 1) % 4;
-    if (s_reason_idx >= 3) {
-        emit("REASON random");
-    } else {
-        char command[24];
-        snprintf(command, sizeof(command), "REASON %u", (unsigned)kReasonCycle[s_reason_idx]);
-        emit(command);
-    }
-    reason_refresh_label();
-}
 
 // ---- navigation
 static void goto_menu(lv_event_t *event) {
@@ -530,6 +508,88 @@ static void start_clicked(lv_event_t *event) {
     }
 }
 
+// Reason codes the standard defines. All of them are pickable from the popup,
+// instead of only the three that used to be in a cycle.
+typedef struct {
+    uint16_t code;
+    const char *text;
+} reason_entry_t;
+
+static const reason_entry_t kReasonTable[] = {
+    {1, "1 unspecified"},        {2, "2 prev auth invalid"},  {3, "3 leaving"},
+    {4, "4 inactivity"},         {5, "5 AP busy"},            {6, "6 class-2 frame"},
+    {7, "7 class-3 frame"},      {8, "8 disassoc leaving"},   {9, "9 not authenticated"},
+    {10, "10 power capability"}, {11, "11 BSS transition"},   {13, "13 invalid IE"},
+    {14, "14 MIC failure"},      {15, "15 4-way timeout"},    {16, "16 group-key timeout"},
+    {17, "17 IE differs"},       {18, "18 invalid group cipher"},
+    {19, "19 invalid pairwise cipher"}, {20, "20 invalid AKMP"},
+    {21, "21 RSNE version"},     {22, "22 RSNE capability"},  {23, "23 802.1X failed"},
+    {24, "24 cipher rejected"},
+};
+#define REASON_TABLE_LEN ((int)(sizeof(kReasonTable) / sizeof(kReasonTable[0])))
+#define REASON_RANDOM_ROW (REASON_TABLE_LEN)
+
+static void reason_refresh_label(void) {
+    if (s_reason_label == NULL) {
+        return;
+    }
+    char text[16];
+    snprintf(text, sizeof(text), "R:%s", s_reason_random_selected ? "rnd" : "");
+    if (!s_reason_random_selected) {
+        snprintf(text, sizeof(text), "R:%u", (unsigned)s_reason_selected);
+    }
+    lv_label_set_text(s_reason_label, text);
+}
+
+static void reason_close(void) {
+    if (s_reason_popup != NULL) {
+        lv_obj_add_flag(s_reason_popup, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void reason_row_clicked(lv_event_t *event) {
+    const int row = (int)(intptr_t)lv_event_get_user_data(event);
+    if (row == REASON_RANDOM_ROW) {
+        s_reason_random_selected = true;
+        emit("REASON random");
+    } else if (row >= 0 && row < REASON_TABLE_LEN) {
+        s_reason_selected = kReasonTable[row].code;
+        s_reason_random_selected = false;
+        char command[24];
+        snprintf(command, sizeof(command), "REASON %u", (unsigned)s_reason_selected);
+        emit(command);
+    }
+    reason_refresh_label();
+    reason_close();
+}
+
+static void reason_back_clicked(lv_event_t *event) {
+    (void)event;
+    reason_close();
+}
+
+static void reason_open(void) {
+    if (s_reason_popup == NULL) {
+        return;
+    }
+    if (s_reason_popup_title != NULL) {
+        if (s_reason_random_selected) {
+            lv_label_set_text(s_reason_popup_title, "reason: random per burst");
+        } else {
+            char title[40];
+            snprintf(title, sizeof(title), "reason: %u", (unsigned)s_reason_selected);
+            lv_label_set_text(s_reason_popup_title, title);
+        }
+    }
+    lv_obj_remove_flag(s_reason_popup, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_reason_popup);
+}
+
+static void reason_clicked(lv_event_t *event) {
+    (void)event;
+    reason_open();
+}
+
 static bool build_main_ui(void) {
     if (!wireless_ui_port_lock(0)) {
         return false;
@@ -576,14 +636,14 @@ static bool build_main_ui(void) {
     lv_label_set_text(s_mode_label, "One AP | tap Targets");
     lv_obj_set_width(s_mode_label, 312);
     lv_obj_t *k_hint = lv_label_create(s_screens[SCR_MODE]);
-    lv_label_set_text(k_hint, "Scan -> Targets -> Start   R cycles reason");
+    lv_label_set_text(k_hint, "Scan -> Targets -> Start   R picks reason");
     lv_obj_set_style_text_color(k_hint, lv_color_hex(0x666666), 0);
     lv_obj_t *k1 = make_row(s_screens[SCR_MODE]);
     make_button_h(k1, "Scan", scan_clicked, 34);
     make_button_h(k1, "Targets", targets_clicked, 34);
     make_button_h(k1, "Start", start_clicked, 34);
     lv_obj_t *k2 = make_row(s_screens[SCR_MODE]);
-    lv_obj_t *reason_btn = make_button_h(k2, "R:1", reason_clicked, 34);
+    lv_obj_t *reason_btn = make_button_h(k2, "R", reason_clicked, 34);
     s_reason_label = lv_obj_get_child(reason_btn, 0);
     reason_refresh_label();
     make_button_h(k2, "Stop", stop_clicked, 34);
@@ -655,6 +715,50 @@ static bool build_main_ui(void) {
     lv_label_set_long_mode(s_log, LV_LABEL_LONG_MODE_CLIP);
     lv_obj_set_width(s_log, 312);
     lv_obj_set_style_text_color(s_log, lv_color_hex(0x666666), 0);
+
+    // ---- modal reason picker: every defined code + "random per burst"
+    s_reason_popup = lv_obj_create(lv_layer_top());
+    lv_obj_set_size(s_reason_popup, UI_W - 12, UI_H - 12);
+    lv_obj_center(s_reason_popup);
+    lv_obj_remove_flag(s_reason_popup, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_radius(s_reason_popup, 8, 0);
+    lv_obj_set_style_border_width(s_reason_popup, 2, 0);
+    lv_obj_set_style_border_color(s_reason_popup, lv_color_hex(0x30A0E0), 0);
+    lv_obj_set_style_bg_color(s_reason_popup, lv_color_hex(0x101820), 0);
+    lv_obj_set_style_bg_opa(s_reason_popup, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(s_reason_popup, 4, 0);
+    lv_obj_set_flex_flow(s_reason_popup, LV_FLEX_FLOW_COLUMN);
+
+    s_reason_popup_title = lv_label_create(s_reason_popup);
+    lv_label_set_text(s_reason_popup_title, "reason");
+    lv_obj_set_width(s_reason_popup_title, UI_W - 28);
+
+    s_reason_popup_list = lv_obj_create(s_reason_popup);
+    lv_obj_set_width(s_reason_popup_list, lv_pct(100));
+    lv_obj_set_flex_grow(s_reason_popup_list, 1);
+    lv_obj_set_style_pad_all(s_reason_popup_list, 2, 0);
+    lv_obj_set_style_pad_row(s_reason_popup_list, 2, 0);
+    lv_obj_set_flex_flow(s_reason_popup_list, LV_FLEX_FLOW_COLUMN);
+
+    for (int i = 0; i <= REASON_TABLE_LEN; i++) {
+        const char *text = (i == REASON_RANDOM_ROW) ? "random (per burst)" : kReasonTable[i].text;
+        lv_obj_t *btn = lv_button_create(s_reason_popup_list);
+        lv_obj_set_width(btn, lv_pct(100));
+        lv_obj_set_height(btn, 26);
+        lv_obj_set_style_pad_all(btn, 2, 0);
+        lv_obj_t *label = lv_label_create(btn);
+        lv_obj_set_width(label, lv_pct(96));
+        lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_CLIP);
+        lv_label_set_text(label, text);
+        lv_obj_align(label, LV_ALIGN_LEFT_MID, 2, 0);
+        lv_obj_add_event_cb(btn, reason_row_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        s_reason_popup_items++;
+    }
+
+    lv_obj_t *rrow = make_row(s_reason_popup);
+    lv_obj_set_height(rrow, 32);
+    make_button_h(rrow, "Back", reason_back_clicked, 30);
+    lv_obj_add_flag(s_reason_popup, LV_OBJ_FLAG_HIDDEN);
 
     show_screen(SCR_MENU);
     wireless_ui_port_unlock();
@@ -922,6 +1026,34 @@ int wireless_ui_popup_items(void) {
     items = s_item_count;
     wireless_ui_port_unlock();
     return items;
+}
+
+int wireless_ui_reason_items(void) {
+    int items = 0;
+    if (!wireless_ui_port_lock(50)) {
+        return 0;
+    }
+    items = s_reason_popup_items;
+    wireless_ui_port_unlock();
+    return items;
+}
+
+bool wireless_ui_reason_popup_visible(void) {
+    bool visible = false;
+    if (!wireless_ui_port_lock(50)) {
+        return false;
+    }
+    visible = s_reason_popup != NULL && !lv_obj_has_flag(s_reason_popup, LV_OBJ_FLAG_HIDDEN);
+    wireless_ui_port_unlock();
+    return visible;
+}
+
+void wireless_ui_show_reasons(void) {
+    if (!wireless_ui_port_lock(200)) {
+        return;
+    }
+    reason_open();
+    wireless_ui_port_unlock();
 }
 
 const char *wireless_ui_screen_name(void) {
