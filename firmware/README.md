@@ -124,11 +124,12 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
-| `DEAUTH <idx> [reason]` | 单目标 deauth | `OK DEAUTH <idx> <ssid>` / `ERR ...` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `DEAUTH <idx> [reason\|random]` | 单目标 deauth | `OK DEAUTH <idx> <ssid>` / `ERR ...` |
 | `DEAUTH_ALL [reason]` | 扫描到的全部 AP 轮流打 | `OK DEAUTH_ALL ...` |
 | `DEAUTH_ONLY <i,j,..> [reason]` | 白名单 | `OK DEAUTH_ONLY <n> aps` |
 | `DEAUTH_EXCEPT <i,j,..> [reason]` | 黑名单 | `OK DEAUTH_EXCEPT <n> aps` |
+| `REASON [1-65535\|random]` | reason code：数字=固定值，`random`=每束随机，不带参数=查询当前值 | `OK REASON 7` / `OK REASON random` / `REASON 7` |
 | `PROBE_BROADCAST` | 随机 SSID/BSSID 泛洪 Beacon + Probe Response | `OK PROBE_BROADCAST` |
 | `STATIONS [sec]` | 跳信道嗅探 STA（默认 5 s） | `STA_BEGIN` / `STA ...` / `STA_END <n>` |
 | `STATS` | 逐 AP deauth 帧计数 | `STATS_BEGIN ...` / `AP ...` / `STATS_END` |
@@ -143,7 +144,15 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `RXLOG` | 打印监听到的 802.11 帧（诊断） | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
 | `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data），用来验证"帧真的上了空口" | `RXMIX beacon=.. proberesp=.. deauth=.. ctrl=.. data=..` |
 
-`reason` 缺省 1；`<idx>` 只在最近一次 `SCAN` 内有效（重扫后旧索引无意义）。
+`reason` 缺省 1：
+
+- **固定值** `1…65535`。标准明确定义的是 1–11、13–24；用其它值仍会发送，但会打印
+  `INFO reason N is outside the defined set ...`（多数客户端会忽略未定义 reason）。
+- **`random`**：每一束（每次命中）从这 23 个标准值里重掷一个，`STATUS` 的 `rlast=` 是最近一次用的值。
+- **非法输入**（`0`、负数、`>65535`、非数字）→ `ERR reason must be 1..65535, or 'random'`，
+  不再像以前那样静默退化成 1。
+
+`<idx>` 只在最近一次 `SCAN` 内有效（重扫后旧索引无意义）。
 
 ### 4.2 输出行
 
@@ -180,7 +189,8 @@ while True:
 | `DEAUTH_ONLY i,j` | 白名单 | 只在名单内轮询 | 同上 |
 | `DEAUTH_EXCEPT i,j` | 全部 − 名单 | 跳过名单 | 同上 |
 
-- 每命中一轮发 **2 帧单播 + 1 帧广播** deauth（`NUM_FRAMES_PER_DEAUTH` / `NUM_BROADCAST_PER_DEAUTH`）；
+- 每命中一轮发 **2 帧单播 + 1 帧广播** deauth（`NUM_FRAMES_PER_DEAUTH` / `NUM_BROADCAST_PER_DEAUTH`），
+  reason code 用当前设置（固定值，或 `random` 模式下每束重掷）；
   `deauth_frames`、`txok` 与 `STATS` 里的 per-AP `frames` 同步累加。
 - 除此之外还有**盲发兜底**：每 `BLIND_DEAUTH_PERIOD_MS = 500 ms` 给当前 AP 发一帧广播 deauth，
   不需要嗅探到任何客户端帧。这样即使目标 BSS 里的客户端完全静默（或者它只会说 802.11ax，
@@ -226,7 +236,8 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
 一级  [Deauth] [Probe]
       [Evil]
 二级  Deauth -> [One] [All] / [Only] [Except] / [Back]
-三级  模式页：[Scan] [Targets] [Start] / [Stop] [Back]
+三级  模式页：[Scan] [Targets] [Start] / [R:7] [Stop] [Back]
+      `R:7` 按钮循环 1 → 7 → 15 → rnd(随机) → 1，每次点击发 `REASON <值>` / `REASON random`
       点 Targets → 模态弹窗（lv_layer_top 上的卡片）
          pick targets (N) - multi
           [x] 0. HomeWiFi | 8C:AA:.. ch1 -40dB

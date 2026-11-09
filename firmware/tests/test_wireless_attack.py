@@ -242,6 +242,29 @@ class FirmwareFunctionalTests(unittest.TestCase):
                 self.assertEqual(len(parts), 5, f"AP 行格式不对: {line}")
                 self.assertIn("frames=", parts[4])
 
+    def test_reason_validation_and_random(self):
+        """reason 防呆：0 / 越界 / 非数字要报错；random 模式要能在 STATUS 里看到。"""
+        ok, _ = self.client.command("REASON 7", lambda l: l.startswith("OK REASON 7"), 3)
+        self.assertIsNotNone(ok, "合法 reason 应被接受")
+        for bad in ("0", "65536", "-1", "abc", "7x"):
+            line, _ = self.client.command(f"REASON {bad}",
+                                          lambda l: l.startswith("ERR "), 3)
+            self.assertIsNotNone(line, f"reason {bad} 应报错")
+            self.assertIn("1..65535", line)
+
+        line, _ = self.client.command("REASON random", lambda l: l.startswith("OK REASON"), 3)
+        self.assertIsNotNone(line, "random 模式应被接受")
+        status, _ = self.client.command("STATUS", lambda l: l.startswith("STATUS "), 5)
+        info = protocol.parse_status(status)
+        self.assertEqual(info.get("reason"), "random", "STATUS 应显示 reason=random")
+
+        # 不在标准定义集合里的值可以用，但要给出提示
+        line, _ = self.client.command("REASON 99", lambda l: l.startswith("OK REASON"), 3)
+        self.assertIsNotNone(line)
+
+        # 复位成默认值，避免影响其它用例
+        self.client.command("REASON 1", lambda l: l.startswith("OK REASON"), 3)
+
     def test_deauth_only_requires_list(self):
         line, _ = self.client.command("DEAUTH_ONLY", lambda l: l.startswith("ERR "), 3)
         self.assertIsNotNone(line, "无参数的 DEAUTH_ONLY 应报错")

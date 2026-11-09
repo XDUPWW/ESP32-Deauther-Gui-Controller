@@ -57,6 +57,10 @@ static lv_obj_t *s_status;
 static lv_obj_t *s_log;
 static lv_obj_t *s_mode_label;
 static lv_obj_t *s_evil_label;
+// Deauth reason code picker on the mode page. Cycles through the three codes
+// people actually use plus "random"; the firmware keeps the authoritative value.
+static int s_reason_idx = 0;
+static lv_obj_t *s_reason_label;
 static row_t s_rows[MAX_ROWS];
 static int s_row_count;
 static int s_selected = -1;
@@ -357,6 +361,34 @@ static void targets_clicked(lv_event_t *event) {
     targets_open();
 }
 
+static const uint16_t kReasonCycle[3] = {1, 7, 15};
+
+static void reason_refresh_label(void) {
+    if (s_reason_label == NULL) {
+        return;
+    }
+    char text[12];
+    if (s_reason_idx >= 3) {
+        snprintf(text, sizeof(text), "R:rnd");
+    } else {
+        snprintf(text, sizeof(text), "R:%u", (unsigned)kReasonCycle[s_reason_idx]);
+    }
+    lv_label_set_text(s_reason_label, text);
+}
+
+static void reason_clicked(lv_event_t *event) {
+    (void)event;
+    s_reason_idx = (s_reason_idx + 1) % 4;
+    if (s_reason_idx >= 3) {
+        emit("REASON random");
+    } else {
+        char command[24];
+        snprintf(command, sizeof(command), "REASON %u", (unsigned)kReasonCycle[s_reason_idx]);
+        emit(command);
+    }
+    reason_refresh_label();
+}
+
 // ---- navigation
 static void goto_menu(lv_event_t *event) {
     (void)event;
@@ -544,13 +576,16 @@ static bool build_main_ui(void) {
     lv_label_set_text(s_mode_label, "One AP | tap Targets");
     lv_obj_set_width(s_mode_label, 312);
     lv_obj_t *k_hint = lv_label_create(s_screens[SCR_MODE]);
-    lv_label_set_text(k_hint, "Scan -> Targets -> Start");
+    lv_label_set_text(k_hint, "Scan -> Targets -> Start   R cycles reason");
     lv_obj_set_style_text_color(k_hint, lv_color_hex(0x666666), 0);
     lv_obj_t *k1 = make_row(s_screens[SCR_MODE]);
     make_button_h(k1, "Scan", scan_clicked, 34);
     make_button_h(k1, "Targets", targets_clicked, 34);
     make_button_h(k1, "Start", start_clicked, 34);
     lv_obj_t *k2 = make_row(s_screens[SCR_MODE]);
+    lv_obj_t *reason_btn = make_button_h(k2, "R:1", reason_clicked, 34);
+    s_reason_label = lv_obj_get_child(reason_btn, 0);
+    reason_refresh_label();
     make_button_h(k2, "Stop", stop_clicked, 34);
     make_button_h(k2, "Back", back_from_mode, 34);
 

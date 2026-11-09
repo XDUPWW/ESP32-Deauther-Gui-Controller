@@ -51,6 +51,15 @@ uint32_t attack_tx_err_other(void);
 uint32_t attack_tx_dropped(void);
 // Broadcast deauth frames sent without any sniffed client (blind fallback).
 uint32_t attack_blind_frames(void);
+
+// ---- reason code ----
+// Fixed code, or "random": every burst draws a fresh value from the codes the
+// standard defines. 0 is reserved and is normalised to 1.
+void attack_set_reason(uint16_t code);
+void attack_set_reason_random(void);
+bool attack_reason_is_random(void);
+uint16_t attack_reason_last(void);
+bool attack_reason_is_defined(uint16_t code);
 // Received frame mix: management subtypes 0..15 (deauth = 12), control and data.
 void attack_rx_mix(uint32_t mgmt_sub[16], uint32_t* ctrl, uint32_t* data);
 uint32_t attack_rx_matches(void);

@@ -97,6 +97,7 @@ void print_help() {
   Serial.println("INFO TOUCH / CALIBRATE             LVGL touch readback / recalibrate");
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
+  Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
 }
 
 // ------------------------------------------------------------------ parsing
@@ -109,12 +110,60 @@ int parse_index(char* token) {
   return (int)value;
 }
 
-uint16_t parse_reason(char* token) {
-  if (token == nullptr) return 1;
+enum reason_kind_t { REASON_FIXED = 0, REASON_RANDOM, REASON_BAD };
+
+struct reason_arg_t {
+  reason_kind_t kind;
+  uint16_t value;
+};
+
+bool token_iequals(const char* a, const char* b) {
+  if (a == nullptr || b == nullptr) return false;
+  while (*a != 0 && *b != 0) {
+    if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+    a++;
+    b++;
+  }
+  return *a == 0 && *b == 0;
+}
+
+// Accepted: nothing (default 1), "random"/"rand"/"r", or 1..65535.
+// 0 is reserved in the standard and 2 bytes is the field width, so anything
+// outside 1..65535 is rejected instead of silently becoming reason 1.
+reason_arg_t parse_reason_arg(char* token) {
+  reason_arg_t arg = {REASON_FIXED, 1};
+  if (token == nullptr) return arg;
+  if (token_iequals(token, "random") || token_iequals(token, "rand") ||
+      token_iequals(token, "r")) {
+    arg.kind = REASON_RANDOM;
+    return arg;
+  }
   char* end = nullptr;
   const long value = strtol(token, &end, 10);
-  if (end == token || value <= 0 || value > 65535) return 1;
-  return (uint16_t)value;
+  if (end == token || *end != 0 || value <= 0 || value > 65535) {
+    arg.kind = REASON_BAD;
+    return arg;
+  }
+  arg.value = (uint16_t)value;
+  return arg;
+}
+
+// Applies a parsed reason; false means "abort this command".
+bool apply_reason_arg(const reason_arg_t& arg) {
+  if (arg.kind == REASON_BAD) {
+    Serial.println("ERR reason must be 1..65535, or 'random'");
+    return false;
+  }
+  if (arg.kind == REASON_RANDOM) {
+    attack_set_reason_random();
+    return true;
+  }
+  attack_set_reason(arg.value);
+  if (!attack_reason_is_defined(arg.value)) {
+    Serial.printf("INFO reason %u is outside the defined set (1-11,13-24), clients may ignore it\n",
+                  (unsigned)arg.value);
+  }
+  return true;
 }
 
 int parse_index_list(char* text, int* out, int max) {
@@ -231,6 +280,14 @@ void do_status() {
   Serial.print((unsigned)attack_tx_dropped());
   Serial.print(" blind=");
   Serial.print((unsigned)attack_blind_frames());
+  Serial.print(" reason=");
+  if (attack_reason_is_random()) {
+    Serial.print("random");
+  } else {
+    Serial.print((unsigned)attack_reason_last());
+  }
+  Serial.print(" rlast=");
+  Serial.print((unsigned)attack_reason_last());
   Serial.print(" networks=");
   Serial.print(g_scan_count);
   Serial.print(" creds=");
@@ -501,6 +558,27 @@ void do_rx_mix() {
   Serial.println((unsigned)data);
 }
 
+// REASON            -> report the current setting
+// REASON 7          -> fixed code
+// REASON random     -> random code per burst
+void do_reason(char* token) {
+  if (token == nullptr) {
+    if (attack_reason_is_random()) {
+      Serial.printf("REASON random (last=%u)\n", (unsigned)attack_reason_last());
+    } else {
+      Serial.printf("REASON %u\n", (unsigned)attack_reason_last());
+    }
+    return;
+  }
+  const reason_arg_t arg = parse_reason_arg(token);
+  if (!apply_reason_arg(arg)) return;
+  if (arg.kind == REASON_RANDOM) {
+    Serial.println("OK REASON random");
+  } else {
+    Serial.printf("OK REASON %u\n", (unsigned)arg.value);
+  }
+}
+
 void do_ui_state() {
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
   Serial.print("UI screen=");
@@ -540,17 +618,23 @@ void dispatch(char* line) {
     // unspecified evaluation order and corrupt the arguments.
     char* index_token = strtok(nullptr, " \t");
     char* reason_token = strtok(nullptr, " \t");
-    do_deauth(parse_index(index_token), parse_reason(reason_token));
+    const reason_arg_t arg = parse_reason_arg(reason_token);
+    if (apply_reason_arg(arg)) do_deauth(parse_index(index_token), arg.value);
   } else if (strcmp(command, "DEAUTH_ALL") == 0) {
-    do_deauth_all(parse_reason(strtok(nullptr, " \t")));
+    const reason_arg_t arg = parse_reason_arg(strtok(nullptr, " \t"));
+    if (apply_reason_arg(arg)) do_deauth_all(arg.value);
   } else if (strcmp(command, "DEAUTH_ONLY") == 0) {
     char* list = strtok(nullptr, " \t");
     char* reason_token = strtok(nullptr, " \t");
-    do_deauth_list(list, parse_reason(reason_token), false);
+    const reason_arg_t arg = parse_reason_arg(reason_token);
+    if (apply_reason_arg(arg)) do_deauth_list(list, arg.value, false);
   } else if (strcmp(command, "DEAUTH_EXCEPT") == 0) {
     char* list = strtok(nullptr, " \t");
     char* reason_token = strtok(nullptr, " \t");
-    do_deauth_list(list, parse_reason(reason_token), true);
+    const reason_arg_t arg = parse_reason_arg(reason_token);
+    if (apply_reason_arg(arg)) do_deauth_list(list, arg.value, true);
+  } else if (strcmp(command, "REASON") == 0) {
+    do_reason(strtok(nullptr, " \t"));
   } else if (strcmp(command, "STATIONS") == 0) {
     do_stations(strtok(nullptr, " \t"));
     } else if (strcmp(command, "PROBE_BROADCAST") == 0) {

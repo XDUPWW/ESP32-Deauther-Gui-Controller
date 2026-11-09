@@ -24,6 +24,14 @@ import serial
 from serial.tools import list_ports
 
 BAUDRATE = 115200
+# Deauth reason codes that make sense as presets, plus the two dynamic modes.
+# "random" asks the firmware to draw a fresh code per burst from the codes the
+# standard defines; "custom" reads the entry next to the combobox (1..65535).
+REASON_RANDOM = "random - 每次随机"
+REASON_CUSTOM = "custom - 自定义（右侧填）"
+# Codes the 802.11 standard actually defines (same list as the firmware pool).
+REASON_DEFINED = set(list(range(1, 12)) + list(range(13, 25)))
+
 REASONS = [
     (1, "1 - Unspecified"),
     (2, "2 - Previous auth no longer valid"),
@@ -293,6 +301,7 @@ class DeautherApp:
         self.target_btns = {}
         self.stats_trees = {}
         self.reason_var = tk.StringVar(value=REASONS[0][1])
+        self.reason_custom_var = tk.StringVar()
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -406,8 +415,11 @@ class DeautherApp:
         actions = ttk.Frame(page)
         actions.pack(fill="x", pady=(2, 4))
         ttk.Label(actions, text="reason：").pack(side="left")
-        ttk.Combobox(actions, textvariable=self.reason_var, width=32, state="readonly",
-                     values=[text for _, text in REASONS]).pack(side="left")
+        ttk.Combobox(actions, textvariable=self.reason_var, width=26, state="readonly",
+                     values=[text for _, text in REASONS] + [REASON_RANDOM, REASON_CUSTOM]
+                     ).pack(side="left")
+        ttk.Label(actions, text=" 或自定义：").pack(side="left")
+        ttk.Entry(actions, textvariable=self.reason_custom_var, width=8).pack(side="left")
         ttk.Button(actions, text="开始攻击", width=12,
                    command=lambda: self.start_mode(key)).pack(side="left", padx=(12, 4))
         ttk.Button(actions, text="停止", width=8, command=self.stop).pack(side="left")
@@ -672,13 +684,40 @@ class DeautherApp:
             self.dialog.refresh()
         self._send("SCAN")
 
-    def _reason(self):
-        return int(self.reason_var.get().split(" - ")[0])
+    def _reason_token(self):
+        """把下拉框/自定义输入解析成命令行里的 reason 字段。
+
+        返回 "random"、数字字符串；输入非法时抛 ValueError（由调用方提示）。
+        """
+        selection = self.reason_var.get()
+        if selection.startswith("random"):
+            return "random"
+        if selection.startswith("custom"):
+            text = self.reason_custom_var.get().strip()
+            if not text:
+                raise ValueError("选了“自定义”但右侧没填值。")
+            try:
+                value = int(text, 0)
+            except ValueError:
+                raise ValueError(f"自定义 reason 必须是整数，当前是 {text!r}。")
+            if not 1 <= value <= 65535:
+                raise ValueError(f"reason 取值必须在 1..65535，当前是 {value}。")
+            if value not in REASON_DEFINED:
+                if not messagebox.askyesno(
+                        "确认", f"{value} 不在标准定义的 reason 集合里（1–11、13–24），\n"
+                               "客户端可能直接忽略这帧。仍要使用吗？"):
+                    raise ValueError("已取消。")
+            return str(value)
+        return selection.split(" - ")[0]
 
     def start_mode(self, key):
         if not self._require_link():
             return
-        reason = self._reason()
+        try:
+            reason = self._reason_token()
+        except ValueError as exc:
+            messagebox.showerror("reason 无效", str(exc))
+            return
         if not self.networks:
             messagebox.showinfo("提示", "先在本页点“扫描 AP”。")
             return
@@ -771,7 +810,8 @@ class DeautherApp:
             band_hint = "  双频(5G)：可用" if self.supports_5g else ""
             self.status_var.set(
                 f"模式：{mode}    Deauth 帧：{payload.get('deauth_frames', '-')}    "
-                f"Probe 帧：{payload.get('probe_frames', '-')}    网络：{payload.get('networks', '-')}"
+                f"Probe 帧：{payload.get('probe_frames', '-')}    "
+                f"reason：{payload.get('reason', '-')}    网络：{payload.get('networks', '-')}"
                 f"    堆：{payload.get('heap', '-')}{band_hint}"
             )
             self.status_text.configure(state="normal")

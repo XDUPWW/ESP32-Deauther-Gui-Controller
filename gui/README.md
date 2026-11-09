@@ -35,7 +35,7 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 
 三级  Deauth · 只打勾选
       [扫描 AP] [选择目标…]   共 21 个 AP  已勾选 2：0,2
-      reason：[1 - Unspecified]  [开始攻击] [停止]
+      reason：[1 - Unspecified] 或自定义：[   ]   [开始攻击] [停止]
       每 AP 发包数（STATS）[刷新]
 ```
 
@@ -73,7 +73,22 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 | 排除勾选 | 多选 `✓` | 黑名单 | `DEAUTH_EXCEPT 0,2 <reason>` |
 | Evil Twin | 单选 `●` | 一个 AP | `EVILTWIN <idx>` |
 
-`reason` 下拉：1 / 2 / 3 / 4 / 5 / 6 / 7 / 15。
+### 2.6 reason code
+
+下拉框里除了预设值，还有两项：
+
+| 选项 | 行为 |
+| --- | --- |
+| 预设 / `custom - 自定义` | 发固定值：`DEAUTH ... <n>`。选了"自定义"就必须在右侧输入框填 `1..65535` |
+| `random - 每次随机` | 发 `DEAUTH ... random`，固件每束从标准定义值（1–11、13–24）里重掷一个 |
+
+防呆规则：
+
+- 空值、非整数、`0`、负数、`>65535` → 弹错误框并**不发送**命令（不会像早先那样静默按 1 处理）
+- 用了标准集合外的值（比如 99）→ 先弹确认框说明"客户端可能忽略"，确认后才发
+- 底栏会显示固件当前的 `reason：`（`random` 模式显示 `random`，实际值看 `STATUS` 的 `rlast=`）
+
+底栏另外还有 `模式 / Deauth 帧 / Probe 帧 / 网络数 / 堆 / 双频(5G)`，攻击中每 2 秒自动拉一次 `STATS`。
 
 ### 2.3 Probe 攻击
 
@@ -88,7 +103,7 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 
 ### 2.5 底栏
 
-`模式 / Deauth 帧 / Probe 帧 / 网络数 / 堆 / 双频(5G)`，攻击中每 2 秒自动拉一次 `STATS`。
+`模式 / Deauth 帧 / Probe 帧 / reason / 网络数 / 堆 / 双频(5G)`，攻击中每 2 秒自动拉一次 `STATS`。
 
 ---
 

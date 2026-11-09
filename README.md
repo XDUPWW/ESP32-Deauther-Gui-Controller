@@ -107,7 +107,7 @@ python main.py --port COM5
 首次上电进入四角校准（左上 → 右上 → 右下 → 左下，存 NVS，之后免校准）。菜单：
 
 ```
-Deauth → One / All / Only / Except → [Scan] [Targets] [Start] [Stop] [Back]
+Deauth → One / All / Only / Except → [Scan] [Targets] [Start] / [R:7] [Stop] [Back]
 Probe  → [Start] [Stop] [Back]
 Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ```
@@ -153,6 +153,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 | `DEAUTH_ALL [reason]` | 全部 AP 轮流打 |
 | `DEAUTH_ONLY <i,j,..> [reason]` | 白名单 |
 | `DEAUTH_EXCEPT <i,j,..> [reason]` | 黑名单 |
+| `REASON [1-65535\|random]` | reason code：固定值 / 每束随机 / 查询当前值 |
 | `PROBE_BROADCAST` | 随机 SSID/BSSID 泛洪 Beacon + Probe Response |
 | `STATIONS [sec]` | 跳信道嗅探 STA |
 | `STATS` | 每 AP 已发 deauth 帧数 |
@@ -162,7 +163,8 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 | `UITARGETS` / `UI` | 屏上目标弹窗：打开 / 回报状态（诊断用） |
 | `RXLOG` | 打印监听到的 802.11 帧（诊断命中率） |
 
-`reason` 缺省为 1；`<idx>` 只在最近一次 `SCAN` 内有效。
+`reason` 缺省为 1：可给固定值 `1..65535`，或给 `random`（每束从标准定义值里重掷）。
+非法值（0、负数、越界、非数字）直接 `ERR`，不会静默生效。`<idx>` 只在最近一次 `SCAN` 内有效。
 
 ---
 
