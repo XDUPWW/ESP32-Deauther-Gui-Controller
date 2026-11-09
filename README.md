@@ -107,7 +107,7 @@ python main.py --port COM5
 首次上电进入四角校准（左上 → 右上 → 右下 → 左下，存 NVS，之后免校准）。菜单：
 
 ```
-Deauth → One / All / Only / Except → [Scan] [Targets] [Start] / [R:7] [Stop] [Back]
+Deauth → One / All / Only / Except → [Scan] [Targets] [Start] / [Stop] [Back] / [Reason: 7 class-3 frame]
 Probe  → [Start] [Stop] [Back]
 Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ```

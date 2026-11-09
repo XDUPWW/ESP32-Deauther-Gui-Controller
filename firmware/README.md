@@ -245,9 +245,10 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
 一级  [Deauth] [Probe]
       [Evil]
 二级  Deauth -> [One] [All] / [Only] [Except] / [Back]
-三级  模式页：[Scan] [Targets] [Start] / [R:7] [Stop] [Back]
-      `R:7` 按钮弹出 reason 列表（23 个标准 reason + `random`，共 24 行、可滑动），
-      点一行即选中并关闭；按钮显示当前值（`R:7` / `R:rnd`），选中时发 `REASON <值>` / `REASON random`
+三级  模式页：[Scan] [Targets] [Start] / [Stop] [Back] / [Reason: 7 class-3 frame]
+      最后一行是 reason 按钮，直接写着当前值 + 含义（`Reason: 7 class-3 frame` /
+      `Reason: random (per burst)`），点它弹出 23 个标准 reason + `random` 的列表（24 行、可滑动），
+      点一行即选中并关闭，同时发 `REASON <值>` / `REASON random`
       串口诊断：`UIREASON` 打开该弹窗，`UI` 回报 `rpopup=` / `ritems=`
       点 Targets → 模态弹窗（lv_layer_top 上的卡片）
          pick targets (N) - multi

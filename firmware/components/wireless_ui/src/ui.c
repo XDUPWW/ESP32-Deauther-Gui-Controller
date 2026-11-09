@@ -529,14 +529,31 @@ static const reason_entry_t kReasonTable[] = {
 #define REASON_TABLE_LEN ((int)(sizeof(kReasonTable) / sizeof(kReasonTable[0])))
 #define REASON_RANDOM_ROW (REASON_TABLE_LEN)
 
+// Human readable name for a code, so the button says what it means instead of
+// only showing the raw number.
+static const char *reason_name(uint16_t code) {
+    for (int i = 0; i < REASON_TABLE_LEN; i++) {
+        if (kReasonTable[i].code == code) {
+            const char *text = kReasonTable[i].text;
+            while (*text != 0 && *text != ' ') {
+                text++;  // skip the leading number
+            }
+            return (*text == ' ') ? text + 1 : kReasonTable[i].text;
+        }
+    }
+    return "custom";
+}
+
 static void reason_refresh_label(void) {
     if (s_reason_label == NULL) {
         return;
     }
-    char text[16];
-    snprintf(text, sizeof(text), "R:%s", s_reason_random_selected ? "rnd" : "");
-    if (!s_reason_random_selected) {
-        snprintf(text, sizeof(text), "R:%u", (unsigned)s_reason_selected);
+    char text[48];
+    if (s_reason_random_selected) {
+        snprintf(text, sizeof(text), "Reason: random (per burst)");
+    } else {
+        snprintf(text, sizeof(text), "Reason: %u %s", (unsigned)s_reason_selected,
+                 reason_name(s_reason_selected));
     }
     lv_label_set_text(s_reason_label, text);
 }
@@ -574,10 +591,11 @@ static void reason_open(void) {
     }
     if (s_reason_popup_title != NULL) {
         if (s_reason_random_selected) {
-            lv_label_set_text(s_reason_popup_title, "reason: random per burst");
+            lv_label_set_text(s_reason_popup_title, "Reason: random per burst");
         } else {
-            char title[40];
-            snprintf(title, sizeof(title), "reason: %u", (unsigned)s_reason_selected);
+            char title[48];
+            snprintf(title, sizeof(title), "Reason: %u %s", (unsigned)s_reason_selected,
+                     reason_name(s_reason_selected));
             lv_label_set_text(s_reason_popup_title, title);
         }
     }
@@ -636,18 +654,24 @@ static bool build_main_ui(void) {
     lv_label_set_text(s_mode_label, "One AP | tap Targets");
     lv_obj_set_width(s_mode_label, 312);
     lv_obj_t *k_hint = lv_label_create(s_screens[SCR_MODE]);
-    lv_label_set_text(k_hint, "Scan -> Targets -> Start   R picks reason");
+    lv_label_set_text(k_hint, "Scan -> Targets -> Start");
     lv_obj_set_style_text_color(k_hint, lv_color_hex(0x666666), 0);
     lv_obj_t *k1 = make_row(s_screens[SCR_MODE]);
     make_button_h(k1, "Scan", scan_clicked, 34);
     make_button_h(k1, "Targets", targets_clicked, 34);
     make_button_h(k1, "Start", start_clicked, 34);
     lv_obj_t *k2 = make_row(s_screens[SCR_MODE]);
-    lv_obj_t *reason_btn = make_button_h(k2, "R", reason_clicked, 34);
-    s_reason_label = lv_obj_get_child(reason_btn, 0);
-    reason_refresh_label();
     make_button_h(k2, "Stop", stop_clicked, 34);
     make_button_h(k2, "Back", back_from_mode, 34);
+
+    // Full width row: the label spells out the code ("Reason: 7 class-3 frame")
+    lv_obj_t *k3 = make_row(s_screens[SCR_MODE]);
+    lv_obj_t *reason_btn = make_button_h(k3, "Reason", reason_clicked, 34);
+    s_reason_label = lv_obj_get_child(reason_btn, 0);
+    lv_obj_set_width(s_reason_label, lv_pct(96));
+    lv_label_set_long_mode(s_reason_label, LV_LABEL_LONG_MODE_CLIP);
+    lv_obj_center(s_reason_label);
+    reason_refresh_label();
 
     // ---- level 2: probe
     s_screens[SCR_PROBE] = make_screen(root);
