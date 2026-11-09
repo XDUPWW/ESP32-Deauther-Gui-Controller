@@ -28,8 +28,8 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 扫描、选目标（弹窗）、开始、停止、统计都在一处。
 
 ```
-一级  [Deauth 攻击] [Probe 攻击] [Evil Twin]
-      [设备状态]   [日志]
+一级  [Deauth 攻击] [Probe 攻击] [CSA 欺骗]
+      [Evil Twin]  [设备状态] [日志]
 
 二级  Deauth 攻击 -> [单个 AP] [全部 AP] [只打勾选] [排除勾选]
 
@@ -90,7 +90,19 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 
 底栏另外还有 `模式 / Deauth 帧 / Probe 帧 / 网络数 / 堆 / 双频(5G)`，攻击中每 2 秒自动拉一次 `STATS`。
 
-### 2.3 Probe 攻击
+### 2.3 CSA 欺骗
+
+`CSA 欺骗` 页：`扫描 AP` → `选择目标…`（单选）→ 填 `新信道` / `count` / `hold` → `开始 CSA`。
+
+| 参数 | 范围 | 说明 |
+| --- | --- | --- |
+| 新信道 | 1–14 或 36–196 | 不能等于目标 AP 当前信道（GUI 先拦，固件再校验一次） |
+| count | 2–8 | 递减轮数，像真 AP 那样 5→1 |
+| hold | 1–600 秒 | 倒计时结束后在新信道顶克隆 beacon 的时长 |
+
+命令：`CSA <idx> <ch> <count> <hold>`，`停止` 发 `CSASTOP`。底栏显示 `CSA：idle/announce/hold (帧数)`。
+
+### 2.4 Probe 攻击
 
 只有一种：`开始泛洪` → `PROBE_BROADCAST`（**不需要扫描**，广播泛洪与环境无关）。
 固件持续广播 Beacon（子类型 8）+ Probe Response（5），SSID/BSSID 全随机，每 120 ms 跳信道。

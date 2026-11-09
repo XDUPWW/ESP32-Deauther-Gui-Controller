@@ -251,7 +251,7 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
 
 ```
 一级  [Deauth] [Probe]
-      [Evil]
+      [CSA] [Evil]
 二级  Deauth -> [One] [All] / [Only] [Except] / [Back]
 三级  模式页：[Scan] [Targets] [Start] / [Stop] [Back] / [Reason: 7 class-3 frame]
       最后一行是 reason 按钮，直接写着当前值 + 含义（`Reason: 7 class-3 frame` /
@@ -267,7 +267,9 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
 
 - 弹窗里 `One/All` 是单选（`>`），`Only/Except` 是勾选（`[x]`）；`OK` 保存、`Back` 撤销（快照还原）。
 - `Start` 按当前模式发 `DEAUTH` / `DEAUTH_ALL` / `DEAUTH_ONLY` / `DEAUTH_EXCEPT`。
-- `Probe` 页只有 `Start/Stop/Back`（广播泛洪不需要目标）。
+- `Probe` 页只有 `Start/Stop/Back`（广播泛洪不需要目标）
+- `CSA` 页：`Scan -> Targets -> Chan -> Start`，`Chan` 弹窗里选新信道（1–13、36–165），
+  `Start` 发 `CSA <idx> <ch> 5 15`；标签会写清目标与目标信道（`CSA #0 TP-LINK -> ch11 (cnt 5)`）。
 - 重扫会清空勾选与单选；弹窗开着也会就地重建列表。
 - 诊断：`UITARGETS`（开弹窗）+ `UI`（回报 `screen/popup/items/nets`），不需要用手指点。
 

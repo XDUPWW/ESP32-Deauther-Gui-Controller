@@ -110,6 +110,7 @@ python main.py --port COM5
 ```
 Deauth → One / All / Only / Except → [Scan] [Targets] [Start] / [Stop] [Back] / [Reason: 7 class-3 frame]
 Probe  → [Start] [Stop] [Back]
+CSA    → [Scan] [Targets] [Chan] / [Start] [Stop] [Back]   （Chan 弹窗选新信道）
 Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ```
 

