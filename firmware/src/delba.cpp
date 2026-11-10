@@ -9,10 +9,15 @@
 //     DELBA blind to every TID is mostly a no-op -- the useful trigger is the
 //     ADDBA Request/Response that announces a session. The sniffer hands those
 //     to a small queue and the main loop answers within a few ms.
-//     The ESP32 promiscuous filter only delivers *broadcast* management frames
-//     plus data frames (unicast ADDBA never shows up), so the TID set is also
-//     learned from the QoS control field of the client's data frames -- that is
-//     what keeps the sweep on the TIDs that actually have a session.
+//     Unicast management frames *are* delivered in promiscuous mode: a lab
+//     re-association inside a monitor window showed auth=2 assoc=1 addba=7, and
+//     the ADDBA-triggered path fired (delbtr>0). Block Ack / Block Ack Request
+//     (control subtypes 9 / 8) only arrive when the *second-stage* sniffer filter
+//     is open (start_promiscuous() sets WIFI_PROMIS_CTRL_FILTER_MASK_ALL; the
+//     driver default drops every control frame), so the TID set is also learned
+//     from the QoS control field of the client's data frames -- that sweep is the
+//     safety net when an ADDBA is missed or the peer re-adds the session
+//     silently.
 //   * Both directions are forged: AP -> STA (the AP appears to tear down) and
 //     STA -> AP (the client appears to tear it down). Either side dropping the
 //     session is enough to lose A-MPDU aggregation.
@@ -302,21 +307,22 @@ void delba_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subty
         return;
     }
 
-    // A QoS data frame names its TID right in the header, and data frames *are*
-    // delivered by the ESP32 promiscuous filter while unicast management frames
-    // (ADDBA!) are not. So the TID a client really uses is learned from its data
-    // traffic, which keeps the sweep narrow instead of spraying all 8 TIDs.
+    // A QoS data frame names its TID right in the header. ADDBA is the more
+    // precise source (it fires this module immediately), but data frames keep
+    // arriving for as long as the client streams, so the sweep also stays narrow
+    // instead of spraying all 8 TIDs.
     if (type == 2 && (subtype & 0x08) != 0 && len >= 26) {
         const uint8_t tid = (uint8_t)(frame[24] & 0x0F);
         s_clients[idx].tids = (uint8_t)(s_clients[idx].tids | (1u << (tid & 0x07)));
     }
 
-    // Block Ack / Block Ack Request (control frames, subtype 11 / 8): the BA
-    // Control field sits at offset 16 and carries the TID in bits 2..5. A BA on
-    // the air only exists while a session is live, so this is the most direct
-    // TID source there is. (The radio hardware answers BA in firmware, so most
-    // chips -- ESP32 included -- hand very few of them up in promiscuous mode.)
-    if (type == 1 && (subtype == 8 || subtype == 11) && len >= 18) {
+    // Block Ack Request (control subtype 8) / Block Ack (control subtype 9):
+    // the BA Control field sits at offset 16 and carries the TID in bits 2..5.
+    // A BA on the air only exists while a session is live, so this is the most
+    // direct TID source there is. It needs the second-stage sniffer filter that
+    // start_promiscuous() sets (driver default: no control frames at all).
+    // (subtype 11 is RTS and 12 is CTS -- they are *not* block ack frames.)
+    if (type == 1 && (subtype == 8 || subtype == 9) && len >= 18) {
         const uint16_t ba_ctrl = (uint16_t)(frame[16] | (frame[17] << 8));
         const uint8_t tid = (uint8_t)((ba_ctrl >> 2) & 0x0F);
         s_clients[idx].tids = (uint8_t)(s_clients[idx].tids | (1u << (tid & 0x07)));

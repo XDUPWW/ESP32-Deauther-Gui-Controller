@@ -111,6 +111,9 @@ void print_help() {
   Serial.println("INFO DELBASTOP                     stop the DELBA spoof");
   Serial.println("INFO DELBATEST                     dump the DELBA action frame bytes (format check)");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
+  Serial.println("INFO RADIO                         dump the driver's sniffer state (promisc + both filters + channel)");
+  Serial.println("INFO CTRLTEST                      inject 10 RTS control frames (can this radio report control frames at all?)");
+  Serial.println("INFO CTRLFILTER [hex|all|none]     2nd-stage control-subtype filter: report or set it");
   Serial.println("INFO UIREASON / UI                 LVGL reason popup: open / report state");
 }
 
@@ -460,6 +463,81 @@ void do_monitor(char* ch_token, char* sec_token) {
   ui_log("monitor started");
 }
 
+// Prints what the driver *thinks* its sniffer configuration is: whether
+// promiscuous mode is on, the type mask (mgmt/ctrl/data), the control-subtype
+// mask (documented default: none filtered) and the current channel. Diagnostic,
+// so a claim like "control frames are filtered" can be checked instead of guessed.
+// Injects a handful of RTS control frames. Purpose: decide whether a control
+// frame that is *known* to be on air can be reported through the sniffer at all.
+// If a second board's RXMIX counts them, control reception works and any zero in
+// live traffic means "ACK/BA are consumed by the radio", not "filtered".
+// Second-stage sniffer filter: which control subtypes are let through. The
+// first stage (esp_wifi_set_promiscuous_filter) only decides whether the *class*
+// control is reported; without this one the driver drops every control frame.
+// Semantics of the mask are the opposite of the type mask (bits = subtypes to
+// drop), so this command exists to pin it down on real hardware instead of
+// trusting either reading of the header comment.
+void do_ctrl_filter(char* token) {
+  wifi_promiscuous_filter_t filter = {0};
+  if (token == nullptr) {
+    esp_wifi_get_promiscuous_ctrl_filter(&filter);
+    Serial.printf("CTRLFILTER mask=0x%08X\n", (unsigned)filter.filter_mask);
+    return;
+  }
+  uint32_t mask;
+  if (strcmp(token, "all") == 0) {
+    mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL;
+  } else if (strcmp(token, "none") == 0) {
+    mask = 0;
+  } else {
+    mask = (uint32_t)strtoul(token, nullptr, 0);
+  }
+  filter.filter_mask = mask;
+  const esp_err_t err = esp_wifi_set_promiscuous_ctrl_filter(&filter);
+  wifi_promiscuous_filter_t readback = {0};
+  esp_wifi_get_promiscuous_ctrl_filter(&readback);
+  Serial.printf("OK CTRLFILTER set=0x%08X readback=0x%08X err=%d\n", (unsigned)mask,
+                (unsigned)readback.filter_mask, (int)err);
+}
+
+void do_ctrl_test() {
+  uint8_t rts[16];
+  int sent = 0;
+  for (int i = 0; i < 10; i++) {
+    memset(rts, 0, sizeof(rts));
+    rts[0] = 0xB4;  // control frame, subtype 11 = RTS
+    rts[1] = 0x00;
+    memset(rts + 4, 0xFF, 6);          // RA = broadcast
+    rts[10] = 0x02;                    // TA = locally administered placeholder
+    rts[11] = 0x00;
+    rts[12] = 0x00;
+    rts[13] = 0xAA;
+    rts[14] = 0xBB;
+    rts[15] = 0xCC;
+    if (esp_wifi_80211_tx(WIFI_IF_STA, rts, sizeof(rts), false) == ESP_OK) {
+      sent++;
+    }
+    delay(5);
+  }
+  Serial.print("OK CTRLTEST sent=");
+  Serial.println(sent);
+}
+
+void do_radio() {
+  bool promisc = false;
+  wifi_promiscuous_filter_t type_filter = {0};
+  wifi_promiscuous_filter_t ctrl_filter = {0};
+  uint8_t prim = 0;
+  wifi_second_chan_t sec = WIFI_SECOND_CHAN_NONE;
+  const esp_err_t e1 = esp_wifi_get_promiscuous(&promisc);
+  const esp_err_t e2 = esp_wifi_get_promiscuous_filter(&type_filter);
+  const esp_err_t e3 = esp_wifi_get_promiscuous_ctrl_filter(&ctrl_filter);
+  esp_wifi_get_channel(&prim, &sec);
+  Serial.printf("RADIO promisc=%u(%d) filter=0x%08X(%d) ctrl_filter=0x%08X(%d) ch=%u\n",
+                (unsigned)(promisc ? 1 : 0), (int)e1, (unsigned)type_filter.filter_mask, (int)e2,
+                (unsigned)ctrl_filter.filter_mask, (int)e3, (unsigned)prim);
+}
+
 void do_csa_test() {
   csa_selftest();
 }
@@ -754,6 +832,20 @@ void do_rx_mix() {
   Serial.print((unsigned)other);
   Serial.print(" ctrl=");
   Serial.print((unsigned)ctrl);
+  uint32_t csub[16] = {0};
+  attack_rx_ctrl_mix(csub);
+  Serial.print(" bar=");
+  Serial.print((unsigned)csub[8]);
+  Serial.print(" ba=");
+  Serial.print((unsigned)csub[9]);
+  Serial.print(" pspoll=");
+  Serial.print((unsigned)csub[10]);
+  Serial.print(" rts=");
+  Serial.print((unsigned)csub[11]);
+  Serial.print(" cts=");
+  Serial.print((unsigned)csub[12]);
+  Serial.print(" ack=");
+  Serial.print((unsigned)csub[13]);
   Serial.print(" data=");
   Serial.print((unsigned)data);
   Serial.print(" action=");
@@ -908,6 +1000,12 @@ void dispatch(char* line) {
     do_delba_stop();
   } else if (strcmp(command, "DELBATEST") == 0) {
     do_delba_test();
+  } else if (strcmp(command, "CTRLFILTER") == 0) {
+    do_ctrl_filter(strtok(nullptr, " 	"));
+  } else if (strcmp(command, "CTRLTEST") == 0) {
+    do_ctrl_test();
+  } else if (strcmp(command, "RADIO") == 0) {
+    do_radio();
   } else if (strcmp(command, "MON") == 0) {
     char* ch_token = strtok(nullptr, " 	");
     char* sec_token = strtok(nullptr, " 	");

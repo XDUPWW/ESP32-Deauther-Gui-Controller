@@ -123,6 +123,9 @@ uint32_t s_backoff_until_ms = 0;
 // from a second board that our forged frames really reached the air.
 volatile uint32_t s_rx_mgmt_sub[16];
 volatile uint32_t s_rx_ctrl = 0;
+// Control subtypes (BAR=8, BA=9, PS-Poll=10, RTS=11, CTS=12, ACK=13, ...):
+// the aggregate counter alone cannot show *which* control frames the radio hands up.
+volatile uint32_t s_rx_ctrl_sub[16];
 volatile uint32_t s_rx_data = 0;
 volatile uint32_t s_rx_action = 0;      // management subtype 13
 volatile uint32_t s_rx_csa_action = 0;  // action category 4 / action 4
@@ -301,6 +304,9 @@ void reset_diag_counters(void) {
     s_burst_left = 0;
     s_backoff_until_ms = 0;
     s_rx_ctrl = 0;
+    for (int i = 0; i < 16; i++) {
+        s_rx_ctrl_sub[i] = 0;
+    }
     s_rx_data = 0;
     s_rx_action = 0;
     s_rx_csa_action = 0;
@@ -450,6 +456,9 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         }
     } else if (frame_type == 1) {
         s_rx_ctrl = s_rx_ctrl + 1;
+        if (frame_subtype < 16) {
+            s_rx_ctrl_sub[frame_subtype] = s_rx_ctrl_sub[frame_subtype] + 1;
+        }
     } else if (frame_type == 2) {
         s_rx_data = s_rx_data + 1;
     }
@@ -516,7 +525,11 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         }
     }
 
-    if (s_rx_log_count < kRxLogSize) {
+    // ACK/CTS are delivered now that the control-subtype filter is open, and a
+    // busy BSS produces thousands per second: count them, but do not let them
+    // flush the sample ring (RXLOG is meant to show interesting frames).
+    const bool keep_sample = !(frame_type == 1 && (frame_subtype == 12 || frame_subtype == 13));
+    if (keep_sample && s_rx_log_count < kRxLogSize) {
         rx_sample_t* sample = &s_rx_log[s_rx_log_count];
         memcpy(sample->dest, hdr->dest, 6);
         memcpy(sample->src, hdr->src, 6);
@@ -609,6 +622,15 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
 void start_promiscuous(void) {
     esp_wifi_set_promiscuous(true);
     esp_wifi_set_promiscuous_filter(&filt);
+    // Second-stage filter, and it is *not* optional: the type mask above only
+    // says "control frames are wanted", while this one decides which control
+    // subtypes are actually handed up. Its default drops every control frame,
+    // so without this call ACK / BA / BAR / RTS never appear even though the
+    // type mask has CTRL set. WIFI_PROMIS_CTRL_FILTER_MASK_ALL = pass them all;
+    // measured on hardware: mask 0 -> ctrl=0, mask ALL -> rts/ack/ba/bar counted.
+    wifi_promiscuous_filter_t ctrl_filter = {0};
+    ctrl_filter.filter_mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL;
+    esp_wifi_set_promiscuous_ctrl_filter(&ctrl_filter);
     esp_wifi_set_promiscuous_rx_cb(&sniffer);
 }
 
@@ -793,6 +815,12 @@ uint32_t attack_rx_csa_action() {
 
 uint32_t attack_rx_csa_ie() {
     return s_rx_csa_ie;
+}
+
+void attack_rx_ctrl_mix(uint32_t sub[16]) {
+    for (int i = 0; i < 16; i++) {
+        sub[i] = s_rx_ctrl_sub[i];
+    }
 }
 
 uint32_t attack_rx_addba() {

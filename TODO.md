@@ -46,8 +46,10 @@
 - **两个方向都发**：AP→STA（客户端以为 AP 拆的）与 STA→AP（AP 自己拆发送会话）。一侧拆掉就够。
 - **不踢人**：链路一直连着，只是丢了 A-MPDU，退回单帧确认——这是它比 deauth 隐蔽的原因，
   也是它不能代替 deauth 的原因。
-- **混杂模式的限制**：ESP32 只递数据帧 + 广播管理帧，单播 ADDBA 与 BA/BAR 收不到，
-  所以 ADDBA 触发路径（`delbtr`）在本硬件上恒为 0，实际靠 QoS 数据帧学 TID + 周期重发。
+- **混杂模式的两级过滤**：类型 mask 里加 `WIFI_PROMIS_FILTER_MASK_CTRL` 只是第一级；
+  第二级 `esp_wifi_set_promiscuous_ctrl_filter()` 不设就一帧控制帧都收不到（默认全丢）。
+  两级都开之后 `rts/ack/ba/bar` 都能计数（实测 `ctrl=37 rts=10 ba=2 ack=24`），deauth 的控制帧触发
+  也才真正可用。
 
 ---
 

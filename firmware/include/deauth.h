@@ -85,6 +85,8 @@ uint16_t attack_reason_last(void);
 bool attack_reason_is_defined(uint16_t code);
 // Received frame mix: management subtypes 0..15 (deauth = 12), control and data.
 void attack_rx_mix(uint32_t mgmt_sub[16], uint32_t* ctrl, uint32_t* data);
+// Control subtypes (BAR=8, BA=9, PS-Poll=10, RTS=11, CTS=12, ACK=13, ...).
+void attack_rx_ctrl_mix(uint32_t sub[16]);
 uint32_t attack_rx_matches(void);
 int attack_rx_log_count(void);
 bool attack_rx_log_at(int i, uint8_t dest[6], uint8_t src[6], uint8_t bssid[6],

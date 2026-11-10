@@ -25,7 +25,7 @@
 | 白名单 deauth | `DEAUTH_ONLY i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
 | 黑名单 deauth | `DEAUTH_EXCEPT i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
 | CSA 欺骗（PMF 绕过） | `CSA <idx> [ch] [cnt] [secs]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板接收 `csa_action=12`、真实客户端现场生效（人工确认） |
-| DELBA 欺骗（拆 Block Ack 会话） | `DELBA <idx> [reason]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板收到 `delba=82`、实验室链路吞吐量 **-99%**（480→5 KiB/s，链路不掉线） |
+| DELBA 欺骗（拆 Block Ack 会话） | `DELBA <idx> [reason]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板收到 `delba=82`、ADDBA 精确补刀 `delbtr=5`、实验室链路吞吐量 **-99%**（480→5 KiB/s，链路不掉线） |
 | Probe 泛洪（Beacon + Probe Response） | `PROBE_BROADCAST` | ✅ | ✅ | ✅ | **双板实测**（另一块板扫到 37 个伪造 SSID） |
 | STA 嗅探 | `STATIONS [sec]` | ✅ | ✅ | ✅ | 实测（能给出 STA 及其所属 AP） |
 | 逐 AP 计数 | `STATS` | ✅ | ✅ | ✅ | 实测 |

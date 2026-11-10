@@ -137,6 +137,9 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `DELBASTOP` | 停止 DELBA | `OK DELBASTOP frames=347` |
 | `DELBATEST` | 打印 DELBA 帧的**原始字节** + TID/Initiator 位解码（格式自检） | `DELBATEST ap_to_sta len=30 cat=3 act=2 tid=0 init=1 reason=37 hex=D000...` |
 | `MON <ch> <secs>` | 被动监听（`ch=0` 表示逐信道跳），计数器从 0 开始，便于用第二块板验证注入 | `OK MON ch=6 8s` |
+| `RADIO` | 打印驱动的嗅探状态：`promisc`、类型 mask、**控制帧 subtype mask**、当前信道 | `RADIO promisc=1(0) filter=0x00000007(0) ctrl_filter=0xFF800000(0) ch=1` |
+| `CTRLFILTER [hex\|all\|none]` | 查询/设置二级控制帧过滤器（默认 `all`；设成 `0` 就一帧控制帧都收不到） | `OK CTRLFILTER set=0xFF800000 readback=0xFF800000 err=0` |
+| `CTRLTEST` | 注入 10 帧 RTS，用第二块板验证"控制帧到底能不能被上报" | `OK CTRLTEST sent=10` |
 | `PROBE_BROADCAST` | 随机 SSID/BSSID 泛洪 Beacon + Probe Response | `OK PROBE_BROADCAST` |
 | `STATIONS [sec]` | 跳信道嗅探 STA（默认 5 s） | `STA_BEGIN` / `STA ...` / `STA_END <n>` |
 | `STATS` | 逐 AP deauth 帧计数 | `STATS_BEGIN ...` / `AP ...` / `STATS_END` |
@@ -151,7 +154,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. rpopup=.. ritems=.. nets=..` |
 | `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/evil`），给自动化测试用 | `OK UISCREEN delba` |
 | `RXLOG` | 打印监听到的 802.11 帧（诊断）；收到的 CSA Action 会额外打印 `RXCSA <i> src=.. cat=4 act=4 nch=.. cnt=.. len=..` | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
-| `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧、`addba` / `delba` 统计 Block Ack 管理动作 | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
+| `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧、`addba` / `delba` 统计 Block Ack 管理动作、`bar/ba/pspoll/rts/cts/ack` 统计控制帧 subtype | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
 
 `reason` 缺省 1：
 
@@ -224,7 +227,9 @@ while True:
   CSA 不是 robust 管理帧，**PMF 不校验它**，所以这条路线对 WPA3 客户端仍然有效。
 - **DELBA 欺骗**（`DELBA`）：先听（QoS 数据帧的 TID、BA/BAR 的 TID、ADDBA 的 TID，同时学客户端 MAC），再对每个已知客户端按 TID 单播 DELBA——**AP→STA 和 STA→AP 两个方向都发**，每 100 ms 重发一轮；一个客户端都没听到时发广播 DELBA 兜底（`delbb=`）。
   它不踢人：客户端一直关联着，只是丢了 A-MPDU 聚合。实验室实测（ESP32 AP ↔ C5 客户端，TCP 下载）：480–630 KiB/s → 0–5 KiB/s（约 -99%），`ADDBA` 重建会被再拆一次。
-  可观测性限制：ESP32 的混杂模式只递**数据帧与广播管理帧**，单播 ADDBA 与 BA/BAR 控制帧基本收不到，所以 TID 主要来自 QoS 数据帧（见 §11 第 6 条）。
+  嗅探能力：单播管理帧（Auth/Assoc/ADDBA）**收得到**，所以“听到 ADDBA 立刻补刀”会真的触发
+  （实验室 `delbab=7`、`delbtr=5`）；BA/BAR 控制帧收不到（`ctrl=0`/`delbar=0`），
+  所以另用 QoS 数据帧的 TID 做周期扫描兜底（见 §11 第 6 条）。
 - 注入不在混杂回调里做：回调只把"该踢谁"塞进队列，主循环按 1 ms 节奏出队、失败退避 5 ms 重试。
   这是修掉"`deauth_frames` 在涨但帧没出去"那个 bug 的关键（见 §11）。
 - `PROBE_BROADCAST` 不需要目标也不需要扫描：4 帧/4 ms，SSID/BSSID 每帧随机，120 ms 换信道。
@@ -400,9 +405,11 @@ Wi-Fi 任务                         promiscuous 回调 sniffer()（只做判断
 4. ~~屏上弹窗的观感~~：已人工确认（描边/圆角/字号/行高/滑动/点击都正常）。
 5. **DELBA 只吃"有流量的客户端"**：没有在线流量就没有 BA 会话，DELBA 对它无效；
    静默 BSS 里只有广播兜底帧（`delbb=`），效果未验证。
-6. **混杂模式看不到单播管理帧**：ESP32 只递数据帧 + 广播管理帧，ADDBA/Assoc/Auth 与 BA/BAR
-   控制帧基本看不到（`RXMIX` 里 `action=0`、`ctrl=0`）。所以 DELBA 的 TID 从 QoS 数据帧学，
-   "ADDBA 一出现就补刀"那条路只在能收到 ADDBA 的芯片上才触发（`delbtr=` 计数）。
+6. **混杂模式是两级过滤，缺一不可**（已修）：`esp_wifi_set_promiscuous_filter()` 的 CTRL 位只表示
+   "控制帧这一类要"，`esp_wifi_set_promiscuous_ctrl_filter()` 才决定哪些 subtype 上报，而它的
+   默认值丢弃全部控制帧。实测：mask=`0` → `ctrl=0`；mask=`MASK_ALL` → `ctrl=37 rts=10 ba=2 ack=24`
+   （`rts=10` 是另一块板注入的 10 帧）。`start_promiscuous()` 现在固定设 `MASK_ALL`，
+   想复现"收不到"的状态可以用 `CTRLFILTER none`。
 
 第 1、2 条已记入[待修清单](测试报告.md#71-待修清单已记录尚未动手)（当前只记录，未动手）。
 UART 丢行已修复：`Serial.setRxBufferSize(4096)`（`SERIAL_RX_BUFFER_SIZE`），300 条 PING 洪泛实测 300/300 响应。
