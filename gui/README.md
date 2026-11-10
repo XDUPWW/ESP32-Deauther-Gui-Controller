@@ -29,7 +29,7 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 
 ```
 一级  [Deauth 攻击] [Probe 攻击] [CSA 欺骗]
-      [Evil Twin]  [设备状态] [日志]
+      [DELBA 欺骗]  [Evil Twin] [设备状态] [日志]
 
 二级  Deauth 攻击 -> [单个 AP] [全部 AP] [只打勾选] [排除勾选]
 
@@ -100,7 +100,21 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 
 想指定信道做单次播报仍可用串口：`CSA <idx> <ch> [count] [hold]`。
 
-### 2.4 Probe 攻击
+### 2.4 DELBA 欺骗
+
+`DELBA 欺骗` 页：`扫描 AP` → `选择目标…`（单选）→ 选 reason → `开始 DELBA` / `停止`。
+
+- 命令：`DELBA <idx> <reason>`，停止发 `DELBASTOP`
+- reason 下拉只给真实对端会用到的 5 个值（37 缺省：`37 - 不再使用该机制`），
+  填了别的值固件会直接回 `ERR`（这是有意为之：非法 reason 的 DELBA 会被驱动丢掉）
+- 底栏显示 `DELBA：on/off (帧数 / TID 位图)`，`设备状态` 页另外给出
+  `delbac`（学到的客户端数）、`delbab`（收到的 ADDBA）、`delbtr`（按 ADDBA 精确补刀次数）
+- 这一页不需要选信道：攻击板会停到目标 AP 的信道上去
+
+攻击会持续到点 `停止`；期间被攻击的客户端**不会掉线**，只是吞吐量塌到单帧确认
+（实验室实测 -99%，见 [固件测试报告](../firmware/测试报告.md)）。
+
+### 2.5 Probe 攻击
 
 只有一种：`开始泛洪` → `PROBE_BROADCAST`（**不需要扫描**，广播泛洪与环境无关）。
 固件持续广播 Beacon（子类型 8）+ Probe Response（5），SSID/BSSID 全随机，每 120 ms 跳信道。

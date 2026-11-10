@@ -19,6 +19,8 @@
 #include <esp_wifi.h>
 #include <string.h>
 
+#include "deauth.h"
+
 namespace {
 
 const uint8_t kBroadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -284,7 +286,9 @@ bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hol
     s_hold_until = millis() + s_hold_ms;
 
     esp_wifi_set_channel(s_ap_channel, WIFI_SECOND_CHAN_NONE);
-    esp_wifi_set_promiscuous(true);
+    // Same reason as DELBA: without the receive callback the HOLD phase never
+    // sees the client's auth/assoc requests.
+    attack_sniffer_enable();
     s_last_tick = millis() - 100;  // fire on the next step
     s_phase = CSA_ANNOUNCE;
     return true;

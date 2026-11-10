@@ -17,6 +17,9 @@
 | `[x]` | **CSA 现场验证**：真实客户端上确认攻击生效（人工观察），帧格式/上空气由 `CSATEST`、`RXCSA`、`csaauth`/`csarej` 佐证 |
 | `[x]` | **CSA 假 AP 接应**：新信道上伪装 AP，Auth 回成功、Assoc 回 status 17，每轮 500 ms |
 | `[x]` | **CSA 自动信道 + 循环**：2.4G AP 通告随机 5G 信道、5G AP 反之，每轮重掷，循环到 CSASTOP |
+| `[x]` | **DELBA 注入（拆 Block Ack 会话）**：伪造 Category 3 / Action 2 的 DELBA，按 TID 拆聚合 | `src/delba.cpp`、命令 `DELBA <idx> [reason]` / `DELBASTOP` / `DELBATEST` | 帧格式逐字节校验；实验室链路（ESP32 AP ↔ C5 STA）吞吐量 480→5 KiB/s（-99%）且客户端不掉线 |
+| `[x]` | **DELBA 的 TID 学习**：从 QoS 数据帧的 QoS Control、BA/BAR 控制帧的 BA Control、ADDBA 参数集三路识别 TID | `delba_on_rx()` | `STATUS` 的 `delbat` 位图随真实流量变化，帧量比"0–7 全打"更低 |
+| `[ ]` | **DELBA 对手机/PC 客户端的逐型号实测**：不同驱动的 BA 重建策略差别很大 | 实验室脚本扩展 | 至少两种手机 + Windows 客户端的吞吐量曲线 |
 | `[ ]` | **CSA 跟随**：解析目标 AP 的 CSA/ECSA IE，提前跳信道，注入与抓包不丢帧 | 复用 `deauth.cpp` 的信道调度 | 目标 AP 切信道后 200 ms 内仍能收到它的帧 |
 | `[ ]` | **WPA-Enterprise**：EAP-Identity 明文 + MSCHAPv2 响应哈希 | 命令 `EAP`、导出 hashcat 5500 | 抓到 `EAP_IDENTITY <user>` 与 `MSCHAPV2` 哈希对 |
 
@@ -33,6 +36,18 @@
   客户端就照单全收，主动切到指定信道去找"同名 AP"。
 - **Enterprise 抓的是凭据不是 PSK。** EAP-Identity 常常是明文用户名；MSCHAPv2 的
   Challenge/Response 可以离线做字典/彩虹表。导出成 hashcat 5500 格式。
+
+---
+
+### DELBA 设计要点
+
+- **盲发无效**：对没有该 TID 会话的对端发 DELBA，mac80211 直接丢。所以顺序是"先听 TID → 再按 TID 单播"，
+  一个客户端都没听到时才退化成广播 DELBA（`delbb=` 计数）。
+- **两个方向都发**：AP→STA（客户端以为 AP 拆的）与 STA→AP（AP 自己拆发送会话）。一侧拆掉就够。
+- **不踢人**：链路一直连着，只是丢了 A-MPDU，退回单帧确认——这是它比 deauth 隐蔽的原因，
+  也是它不能代替 deauth 的原因。
+- **混杂模式的限制**：ESP32 只递数据帧 + 广播管理帧，单播 ADDBA 与 BA/BAR 收不到，
+  所以 ADDBA 触发路径（`delbtr`）在本硬件上恒为 0，实际靠 QoS 数据帧学 TID + 周期重发。
 
 ---
 

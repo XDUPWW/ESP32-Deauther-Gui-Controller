@@ -6,6 +6,7 @@
 #include "csa.h"
 #include "deauth.h"
 #include "definitions.h"
+#include "delba.h"
 #include "types.h"
 
 int eliminated_stations;
@@ -126,6 +127,8 @@ volatile uint32_t s_rx_data = 0;
 volatile uint32_t s_rx_action = 0;      // management subtype 13
 volatile uint32_t s_rx_csa_action = 0;  // action category 4 / action 4
 volatile uint32_t s_rx_csa_ie = 0;      // beacon/probe response carrying element 37
+volatile uint32_t s_rx_addba = 0;       // action category 3, action 0/1 (ADDBA)
+volatile uint32_t s_rx_delba = 0;       // action category 3, action 2 (DELBA)
 // A few decoded CSA frames kept for RXLOG, so a receiver can print what it saw
 // (channel/count) instead of only counting them.
 const int kCsaLogSize = 4;
@@ -302,6 +305,8 @@ void reset_diag_counters(void) {
     s_rx_action = 0;
     s_rx_csa_action = 0;
     s_rx_csa_ie = 0;
+    s_rx_addba = 0;
+    s_rx_delba = 0;
     s_csa_log_count = 0;
     for (int i = 0; i < 16; i++) {
         s_rx_mgmt_sub[i] = 0;
@@ -453,6 +458,7 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         return;
     }
     csa_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+    delba_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
 
     // CSA recognition: action frames (cat 4 / act 4) and beacons with IE 37.
     uint8_t cat = 0;
@@ -467,6 +473,13 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
             act = payload[25];
             csa_ch = payload[27];
             csa_cnt = payload[28];
+            if (cat == 3) {
+                if (act <= 1) {
+                    s_rx_addba = s_rx_addba + 1;
+                } else if (act == 2) {
+                    s_rx_delba = s_rx_delba + 1;
+                }
+            }
             if (cat == 4 && act == 4) {
                 s_rx_csa_action = s_rx_csa_action + 1;
                 if (s_csa_log_count < kCsaLogSize) {
@@ -782,9 +795,21 @@ uint32_t attack_rx_csa_ie() {
     return s_rx_csa_ie;
 }
 
+uint32_t attack_rx_addba() {
+    return s_rx_addba;
+}
+
+uint32_t attack_rx_delba() {
+    return s_rx_delba;
+}
+
+void attack_sniffer_enable() {
+    start_promiscuous();
+}
+
 void attack_stop() {
     csa_stop();
-    esp_wifi_set_promiscuous(false);
+    delba_stop();    esp_wifi_set_promiscuous(false);
     deauth_active = false;
     s_mode = ATTACK_IDLE;
 }
@@ -792,6 +817,7 @@ void attack_stop() {
 void attack_step() {
     const uint32_t now = millis();
     csa_step();
+    delba_step();
 
     if (s_mon_active) {
         if (s_mon_channel == 0 && now - s_mon_last_hop > 150) {

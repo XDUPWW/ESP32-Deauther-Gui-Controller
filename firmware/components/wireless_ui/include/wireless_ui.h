@@ -67,6 +67,9 @@ int wireless_ui_touch_irq_level(void);
 // whether it is up / how many rows it built. Used by the `UITARGETS` / `UI`
 // serial commands so the UI can be checked without touching the panel.
 void wireless_ui_show_targets(void);
+// Switches to a named screen (menu/deauth/mode/probe/csa/delba/evil). Used by
+// the serial console so the UI can be regression-tested without a finger.
+bool wireless_ui_show_by_name(const char *name);
 // Reason-code popup: same idea as the target picker, one row per defined code.
 void wireless_ui_show_reasons(void);
 bool wireless_ui_reason_popup_visible(void);

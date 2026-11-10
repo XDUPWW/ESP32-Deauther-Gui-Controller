@@ -39,6 +39,16 @@ bool monitor_active(void);
 uint32_t attack_rx_action(void);
 uint32_t attack_rx_csa_action(void);
 uint32_t attack_rx_csa_ie(void);
+// Block Ack frames seen by this radio: ADDBA (category 3, action 0/1) and
+// DELBA (category 3, action 2).
+uint32_t attack_rx_addba(void);
+uint32_t attack_rx_delba(void);
+
+// Installs the promiscuous filter + receive callback (idempotent). Modules that
+// only need to *listen* (CSA, DELBA) must call this before turning promiscuous
+// mode on themselves: without the callback the radio receives nothing, which
+// silently degrades them to their blind paths.
+void attack_sniffer_enable(void);
 // Decoded CSA action frames seen by this radio (for RXLOG).
 int attack_csa_log_count(void);
 bool attack_csa_log_at(int i, uint8_t src[6], uint8_t* nch, uint8_t* cnt, uint8_t* cat,

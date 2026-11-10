@@ -25,6 +25,7 @@
 | 白名单 deauth | `DEAUTH_ONLY i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
 | 黑名单 deauth | `DEAUTH_EXCEPT i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
 | CSA 欺骗（PMF 绕过） | `CSA <idx> [ch] [cnt] [secs]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板接收 `csa_action=12`、真实客户端现场生效（人工确认） |
+| DELBA 欺骗（拆 Block Ack 会话） | `DELBA <idx> [reason]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板收到 `delba=82`、实验室链路吞吐量 **-99%**（480→5 KiB/s，链路不掉线） |
 | Probe 泛洪（Beacon + Probe Response） | `PROBE_BROADCAST` | ✅ | ✅ | ✅ | **双板实测**（另一块板扫到 37 个伪造 SSID） |
 | STA 嗅探 | `STATIONS [sec]` | ✅ | ✅ | ✅ | 实测（能给出 STA 及其所属 AP） |
 | 逐 AP 计数 | `STATS` | ✅ | ✅ | ✅ | 实测 |
@@ -111,6 +112,7 @@ python main.py --port COM5
 Deauth → One / All / Only / Except → [Scan] [Targets] [Start] / [Stop] [Back] / [Reason: 7 class-3 frame]
 Probe  → [Start] [Stop] [Back]
 CSA    → [Scan] [Targets] [Start] / [Stop] [Back]   （自动对向频段 + 循环）
+DELBA  → [Scan] [Targets] [Start] / [Stop] [Back]   （拆 Block Ack，固定 reason 37）
 Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ```
 
@@ -217,7 +219,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 
 上述 1、2 与 UART 丢行已记入[待修清单](firmware/测试报告.md#71-待修清单已记录尚未动手)，暂未动手。
 
-细节见 [测试报告](firmware/测试报告.md)。后续要做的能力（PMKID 抓取、CSA 注入、企业网络凭据、Android 上位机、BLE 广播泛洪）见 [TODO.md](TODO.md)。
+细节见 [测试报告](firmware/测试报告.md)。后续要做的能力（PMKID 抓取与导出、企业网络凭据、DELBA 的多客户端实测、Android 上位机、BLE 广播泛洪）见 [TODO.md](TODO.md)。
 
 ---
 

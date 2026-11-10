@@ -59,6 +59,7 @@ static lv_obj_t *s_mode_label;
 static lv_obj_t *s_evil_label;
 // CSA page: one target AP + a new channel, picked from a popup like the reason.
 static lv_obj_t *s_csa_label;
+static lv_obj_t *s_delba_label;
 static void reason_row_clicked(lv_event_t *event);
 // Deauth reason code picker on the mode page. Cycles through the three codes
 // people actually use plus "random"; the firmware keeps the authoritative value.
@@ -242,6 +243,7 @@ typedef enum {
     SCR_MODE,
     SCR_PROBE,
     SCR_CSA,
+    SCR_DELBA,
     SCR_EVIL,
     SCR_COUNT
 } ui_screen_t;
@@ -308,6 +310,22 @@ static void update_mode_label(void) {
             snprintf(text, sizeof(text), "CSA: pick a target (auto channel)");
         }
         lv_label_set_text(s_csa_label, text);
+    }
+
+    if (s_delba_label != NULL) {
+        if (s_selected >= 0) {
+            const char *ssid = "";
+            for (int i = 0; i < s_row_count; i++) {
+                if ((int)s_rows[i].index == s_selected) {
+                    ssid = s_rows[i].ssid;
+                    break;
+                }
+            }
+            snprintf(text, sizeof(text), "DELBA #%d %s reason=37", s_selected, ssid);
+        } else {
+            snprintf(text, sizeof(text), "DELBA: pick a target first");
+        }
+        lv_label_set_text(s_delba_label, text);
     }
 
     if (s_evil_label != NULL) {
@@ -423,6 +441,31 @@ static void csa_start_clicked(lv_event_t *event) {
 static void csa_stop_clicked(lv_event_t *event) {
     (void)event;
     emit("CSASTOP");
+}
+
+static void goto_delba(lv_event_t *event) {
+    (void)event;
+    s_tap_pick = 0;  // DELBA targets one AP
+    update_mode_label();
+    show_screen(SCR_DELBA);
+}
+
+static void delba_start_clicked(lv_event_t *event) {
+    (void)event;
+    if (s_selected < 0) {
+        if (s_log) lv_label_set_text(s_log, "pick an AP first");
+        return;
+    }
+    char command[32];
+    // reason 37 = "requested from peer STA as it does not want to use the
+    // mechanism", the value a real AP uses when it stops aggregating.
+    snprintf(command, sizeof(command), "DELBA %d 37", s_selected);
+    emit(command);
+}
+
+static void delba_stop_clicked(lv_event_t *event) {
+    (void)event;
+    emit("DELBASTOP");
 }
 
 static void goto_evil(lv_event_t *event) {
@@ -706,7 +749,9 @@ static bool build_main_ui(void) {
     make_button(m1, "Probe", goto_probe);
     lv_obj_t *m2 = make_row(s_screens[SCR_MENU]);
     make_button(m2, "CSA", goto_csa);
-    make_button(m2, "Evil", goto_evil);
+    make_button(m2, "DELBA", goto_delba);
+    lv_obj_t *m3 = make_row(s_screens[SCR_MENU]);
+    make_button(m3, "Evil", goto_evil);
 
     // ---- level 2: deauth mode menu
     s_screens[SCR_DEAUTH] = make_screen(root);
@@ -760,6 +805,22 @@ static bool build_main_ui(void) {
     lv_obj_t *c2 = make_row(s_screens[SCR_CSA]);
     make_button_h(c2, "Stop", csa_stop_clicked, 34);
     make_button_h(c2, "Back", goto_menu, 34);
+
+    // ---- level 2: DELBA (block ack teardown), same shape as the CSA page
+    s_screens[SCR_DELBA] = make_screen(root);
+    s_delba_label = lv_label_create(s_screens[SCR_DELBA]);
+    lv_obj_set_width(s_delba_label, 312);
+    lv_label_set_text(s_delba_label, "DELBA: pick a target first");
+    lv_obj_t *x_hint = lv_label_create(s_screens[SCR_DELBA]);
+    lv_label_set_text(x_hint, "Scan -> Targets -> Start (tear down BA)");
+    lv_obj_set_style_text_color(x_hint, lv_color_hex(0x666666), 0);
+    lv_obj_t *x1 = make_row(s_screens[SCR_DELBA]);
+    make_button_h(x1, "Scan", scan_clicked, 34);
+    make_button_h(x1, "Targets", targets_clicked, 34);
+    make_button_h(x1, "Start", delba_start_clicked, 34);
+    lv_obj_t *x2 = make_row(s_screens[SCR_DELBA]);
+    make_button_h(x2, "Stop", delba_stop_clicked, 34);
+    make_button_h(x2, "Back", goto_menu, 34);
 
     // ---- level 2: probe
     s_screens[SCR_PROBE] = make_screen(root);
@@ -1163,6 +1224,42 @@ void wireless_ui_show_reasons(void) {
     wireless_ui_port_unlock();
 }
 
+bool wireless_ui_show_by_name(const char *name) {
+    if (name == NULL) {
+        return false;
+    }
+    if (!wireless_ui_port_lock(200)) {
+        return false;
+    }
+    bool ok = true;
+    if (strcmp(name, "menu") == 0) {
+        show_screen(SCR_MENU);
+    } else if (strcmp(name, "deauth") == 0) {
+        show_screen(SCR_DEAUTH);
+    } else if (strcmp(name, "mode") == 0) {
+        s_mode_kind = 0;
+        update_mode_label();
+        show_screen(SCR_MODE);
+    } else if (strcmp(name, "probe") == 0) {
+        show_screen(SCR_PROBE);
+    } else if (strcmp(name, "csa") == 0) {
+        s_tap_pick = 0;
+        update_mode_label();
+        show_screen(SCR_CSA);
+    } else if (strcmp(name, "delba") == 0) {
+        s_tap_pick = 0;  // DELBA targets a single AP, like CSA
+        update_mode_label();
+        show_screen(SCR_DELBA);
+    } else if (strcmp(name, "evil") == 0) {
+        s_tap_pick = 0;
+        show_screen(SCR_EVIL);
+    } else {
+        ok = false;
+    }
+    wireless_ui_port_unlock();
+    return ok;
+}
+
 const char *wireless_ui_screen_name(void) {
     switch (s_screen) {
         case SCR_DEAUTH:
@@ -1175,6 +1272,8 @@ const char *wireless_ui_screen_name(void) {
             return "evil";
         case SCR_CSA:
             return "csa";
+        case SCR_DELBA:
+            return "delba";
         case SCR_MENU:
         default:
             return "menu";

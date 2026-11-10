@@ -180,6 +180,7 @@ class FirmwareFunctionalTests(unittest.TestCase):
         # 循环并停在 5G 信道上，残留状态会让后面的扫描/攻击用例偶发失败。
         self.client.command("STOP", lambda l: l.startswith("OK"), 3)
         self.client.command("CSASTOP", lambda l: l.startswith("OK CSASTOP"), 3)
+        self.client.command("DELBASTOP", lambda l: l.startswith("OK DELBASTOP"), 3)
         self.client.drain(0.2)
 
     def test_ping(self):
@@ -302,6 +303,82 @@ class FirmwareFunctionalTests(unittest.TestCase):
         else:
             self.assertLessEqual(ch, 14, "5G 的 AP 应被通告到 2.4G 信道")
         self.client.command("CSASTOP", lambda l: l.startswith("OK CSASTOP"), 5)
+
+    def test_delba_frame_format_and_run(self):
+        """DELBA：帧格式（Action cat=3 act=2 / TID 与 Initiator 位）+ 参数防呆 + 真的开始跑。
+
+        帧结构按 802.11-2020：24 字节头 + Category(3) + Action(2) + DELBA 参数集 +
+        reason；参数集 bit11 = Initiator、bit12-15 = TID。单播方向的 Addr2 必须是
+        目标 AP 的 BSSID，否则客户端按 DA/SA 找不到会话直接丢帧。
+        """
+        self.client.send("DELBATEST")
+        line, _ = self.client.command("", lambda l: l.startswith("DELBATEST ap_to_sta"), 6)
+        self.assertIsNotNone(line, "DELBATEST 无输出")
+        self.assertIn("len=30", line, "DELBA 帧应为 30 字节")
+        self.assertIn("cat=3", line, "Category 必须是 3 (Block Ack)")
+        self.assertIn("act=2", line, "Action 必须是 2 (DELBA)")
+        self.assertIn("init=1", line, "Initiator 位（bit11）必须置 1")
+        self.assertIn("hex=", line)
+        hexpart = line.split("hex=")[1]
+        self.assertTrue(hexpart.startswith("D000"), "管理帧 subtype 13 的 FC 是 D0 00")
+
+        # TID 编码：tid=3 时参数集高字节低半字节应为 3（bit12 起）
+        self.client.send("DELBATEST")
+        lines = []
+        deadline = time.time() + 6
+        while time.time() < deadline:
+            raw = self.client.ser.readline()
+            if not raw:
+                continue
+            text = raw.decode("utf-8", "replace").rstrip()
+            lines.append(text)
+            if "tid=3" in text:
+                break
+        tid3 = [l for l in lines if "tid=3" in l]
+        self.assertTrue(tid3, "DELBATEST 应覆盖 tid=3")
+        body = tid3[0].split("hex=")[1]
+        params_high = int(body[54:56], 16)  # frame[27]：bit12-15 = TID
+        self.assertEqual(params_high & 0xF0, 0x30, "TID 应编码在 bit12-15")
+
+        # reason 防呆：只接受真实对端会用到的 1/32/37/38/39
+        for bad in ("0", "7", "65535", "abc"):
+            line, _ = self.client.command(f"DELBA 0 {bad}", lambda l: l.startswith("ERR "), 3)
+            self.assertIsNotNone(line, f"DELBA reason={bad} 应被拒绝")
+
+        # 无扫描结果时不能启动
+        line, _ = self.client.command("DELBA 99 37", lambda l: l.startswith("ERR "), 3)
+        self.assertIsNotNone(line, "越界序号应报错")
+
+        # 真跑：扫描后对第一个 AP 发 DELBA，帧数要涨
+        self.client.send("SCAN")
+        line, _ = self.client.command("", lambda l: l.startswith("SCAN_END"), 40)
+        self.assertIsNotNone(line, "扫描超时")
+        ok, _ = self.client.command("DELBA 0 37", lambda l: l.startswith("OK DELBA"), 5)
+        self.assertIsNotNone(ok, "DELBA 启动失败")
+        time.sleep(2.0)
+        status, _ = self.client.command("STATUS", lambda l: l.startswith("STATUS "), 5)
+        info = protocol.parse_status(status)
+        print(f"\n  delba={info.get('delba')} frames={info.get('delbaf')} "
+              f"clients={info.get('delbac')} tids={info.get('delbat')}")
+        self.assertEqual(info.get("delba"), "on", "STATUS 应显示 delba=on")
+        self.assertGreater(int(info.get("delbaf", "0")), 0, "DELBA 帧数应大于 0")
+        stop, _ = self.client.command("DELBASTOP", lambda l: l.startswith("OK DELBASTOP"), 5)
+        self.assertIsNotNone(stop)
+        info = protocol.parse_status(
+            self.client.command("STATUS", lambda l: l.startswith("STATUS "), 5)[0])
+        self.assertEqual(info.get("delba"), "off", "STOP 后应回到 off")
+
+    def test_ui_screens_switch(self):
+        """LVGL：一级菜单新增 DELBA 后，每个屏幕都能构建出来（切屏后不崩、堆不塌）。"""
+        for name in ("menu", "deauth", "mode", "probe", "csa", "delba", "evil"):
+            line, _ = self.client.command(f"UISCREEN {name}",
+                                          lambda l: l.startswith(("OK UISCREEN", "ERR ")), 5)
+            self.assertIsNotNone(line, f"UISCREEN {name} 无响应")
+            if line.startswith("ERR "):
+                # 没有 LVGL 的构建（例如 C5）上这条要优雅地报错，不能挂
+                self.assertIn("LVGL", line)
+                return
+            self.assertIn(name, line)
 
     def test_reason_validation_and_random(self):
         """reason 防呆：0 / 越界 / 非数字要报错；random 模式要能在 STATUS 里看到。"""

