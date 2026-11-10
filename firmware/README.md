@@ -124,7 +124,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
 | `DEAUTH <idx> [reason\|random]` | 单目标 deauth | `OK DEAUTH <idx> <ssid>` / `ERR ...` |
 | `DEAUTH_ALL [reason]` | 扫描到的全部 AP 轮流打 | `OK DEAUTH_ALL ...` |
 | `DEAUTH_ONLY <i,j,..> [reason]` | 白名单 | `OK DEAUTH_ONLY <n> aps` |
@@ -132,7 +132,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `REASON [1-65535\|random]` | reason code：数字=固定值，`random`=每束随机，不带参数=查询当前值 | `OK REASON 7` / `OK REASON random` / `REASON 7` |
 | `CSA <idx> [ch] [cnt] [secs]` | CSA 欺骗。不给 `ch`（或写 `auto`）= 自动挑**对向频段**的随机信道并**循环**打；给了 `ch` 就是单次指定信道 | `OK CSA 0 auto(opposite-band) count=5 hold=5s loop=1 ssid=..` |
 | `CSASTOP` | 停止 CSA | `OK CSASTOP frames=31` |
-| `CSATEST` | 打印一帧 CSA Action 和一帧带 CSA IE 的 Beacon 的**原始字节**（格式自检） | `CSATEST action len=29 cat=4 act=4 ...` / `... hex=D0...` |
+| `CSATEST` | 打印 band 判定 + Action 帧 + 带 CSA IE 的 Beacon + Auth/Assoc 响应帧的**原始字节**（格式自检） | `CSATEST band ap_ch=1(2.4G) new_ch=153(5G) auto=1` / `CSATEST authresp ...` / `CSATEST assocresp ... status=17` |
 | `MON <ch> <secs>` | 被动监听（`ch=0` 表示逐信道跳），计数器从 0 开始，便于用第二块板验证注入 | `OK MON ch=6 8s` |
 | `PROBE_BROADCAST` | 随机 SSID/BSSID 泛洪 Beacon + Probe Response | `OK PROBE_BROADCAST` |
 | `STATIONS [sec]` | 跳信道嗅探 STA（默认 5 s） | `STA_BEGIN` / `STA ...` / `STA_END <n>` |
@@ -213,6 +213,10 @@ while True:
   克隆 beacon（同 BSSID/SSID/从真 beacon 抄来的 RSN IE）每 100 ms 顶 `hold` 秒。
   **默认自动**：2.4G 的 AP 被通告到一个随机 5G 信道，5G 的 AP 反之，每轮重新随机，一轮接一轮
   直到 `CSASTOP`（`STATUS` 的 `csaauto=1` / `csacycle=` 可观测）。
+- **新信道上冒充 AP**（每轮 500 ms，`CSA_AUTO_HOLD_MS`）：发克隆 beacon，收到客户端的
+  **Auth 请求就回成功**、收到 **Assoc/Reassoc 请求就回失败**（status 17「AP 无法再接客户端」）。
+  客户端于是"看得见、认证得过、就是连不上"，留在新信道反复重试，而不是马上回原信道。
+  计数看 `STATUS` 的 `csaauth=` / `csarej=`。
   CSA 不是 robust 管理帧，**PMF 不校验它**，所以这条路线对 WPA3 客户端仍然有效。
 - 注入不在混杂回调里做：回调只把"该踢谁"塞进队列，主循环按 1 ms 节奏出队、失败退避 5 ms 重试。
   这是修掉"`deauth_frames` 在涨但帧没出去"那个 bug 的关键（见 §11）。

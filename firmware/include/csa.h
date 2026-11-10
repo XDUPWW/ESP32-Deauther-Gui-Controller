@@ -27,8 +27,9 @@ extern "C" {
 // hold_seconds: how long to keep the cloned beacon on the new channel.
 // new_channel == 0 means "auto": a 2.4 GHz AP gets a random 5 GHz channel
 // (and the other way round), and the cycle repeats until csa_stop().
-bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hold_seconds,
-               bool loop);
+// hold_ms is the per-round impersonation window on the new channel (500 ms in
+// auto mode): beacons + auth accepted + assoc refused, so clients keep retrying.
+bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hold_ms, bool loop);
 
 void csa_stop(void);
 
@@ -51,6 +52,9 @@ uint8_t csa_new_channel(void);
 bool csa_auto_channel(void);
 // Completed announce+hold cycles (looping mode).
 uint32_t csa_cycles(void);
+// HOLD phase impersonation: auth answered with success, assoc refused on purpose.
+uint32_t csa_auth_replies(void);
+uint32_t csa_assoc_rejects(void);
 uint8_t csa_current_count(void);
 bool csa_have_rsn(void);
 const char* csa_phase_name(void);

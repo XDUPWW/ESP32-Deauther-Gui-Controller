@@ -11,6 +11,9 @@
 
 #include "csa.h"
 #include "deauth.h"
+
+// Auto CSA: per-round impersonation window on the announced channel.
+#define CSA_AUTO_HOLD_MS 500
 #include "definitions.h"
 #include "evil_twin.h"
 
@@ -300,6 +303,10 @@ void do_status() {
   Serial.print(csa_auto_channel() ? 1 : 0);
   Serial.print(" csacycle=");
   Serial.print((unsigned)csa_cycles());
+  Serial.print(" csaauth=");
+  Serial.print((unsigned)csa_auth_replies());
+  Serial.print(" csarej=");
+  Serial.print((unsigned)csa_assoc_rejects());
   Serial.print(" reason=");
   if (attack_reason_is_random()) {
     Serial.print("random");
@@ -388,18 +395,21 @@ void do_csa(int index, long channel, long count, long hold_seconds) {
     Serial.println("ERR count must be 2..8 (a real AP counts down)");
     return;
   }
-  if (hold_seconds < 1 || hold_seconds > 600) {
+  if (!auto_channel && (hold_seconds < 1 || hold_seconds > 600)) {
     Serial.println("ERR hold seconds must be 1..600");
     return;
   }
   const bool loop = auto_channel;
-  if (!csa_start(index, auto_channel ? 0 : (uint8_t)channel, (uint8_t)count,
-                 (uint16_t)hold_seconds, loop)) {
+  // Auto: 500 ms per round on the announced channel (beacons + auth ok + assoc
+  // refused). A fixed channel keeps the seconds-based one-shot window.
+  const uint16_t hold_ms =
+      auto_channel ? (uint16_t)CSA_AUTO_HOLD_MS : (uint16_t)(hold_seconds * 1000);
+  if (!csa_start(index, auto_channel ? 0 : (uint8_t)channel, (uint8_t)count, hold_ms, loop)) {
     Serial.println("ERR cannot start CSA on that network");
     return;
   }
-  Serial.printf("OK CSA %d %s count=%ld hold=%lds loop=%d ssid=%s\n", index,
-                auto_channel ? "auto(opposite-band)" : "fixed", count, hold_seconds, loop ? 1 : 0,
+  Serial.printf("OK CSA %d %s count=%ld hold=%ums loop=%d ssid=%s\n", index,
+                auto_channel ? "auto(opposite-band)" : "fixed", count, (unsigned)hold_ms, loop ? 1 : 0,
                 WiFi.SSID(index).c_str());
   ui_log("csa started");
 }
