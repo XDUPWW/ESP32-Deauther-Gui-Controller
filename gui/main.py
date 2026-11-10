@@ -303,9 +303,8 @@ class DeautherApp:
         self.stats_trees = {}
         self.reason_var = tk.StringVar(value=REASONS[0][1])
         self.reason_custom_var = tk.StringVar()
-        self.csa_channel_var = tk.StringVar(value="11")
-        self.csa_count_var = tk.StringVar(value="5")
-        self.csa_hold_var = tk.StringVar(value="15")
+        self.csa_mode_var = tk.StringVar(
+            value="自动：2.4G AP → 随机 5G 信道，5G AP → 随机 2.4G 信道；循环攻击直到停止")
         self.csa_label = None
 
         root.title("ESP32 Wireless Attack 上位机")
@@ -492,16 +491,7 @@ class DeautherApp:
 
         params = ttk.Frame(page)
         params.pack(fill="x", pady=(4, 6))
-        ttk.Label(params, text="新信道：").pack(side="left")
-        ttk.Combobox(params, textvariable=self.csa_channel_var, width=6,
-                     values=[str(c) for c in (1, 6, 11, 36, 40, 44, 48, 149, 153, 157, 161, 165)]
-                     ).pack(side="left")
-        ttk.Label(params, text="  count（倒数轮数，2–8）：").pack(side="left")
-        ttk.Spinbox(params, from_=2, to=8, width=4,
-                    textvariable=self.csa_count_var).pack(side="left")
-        ttk.Label(params, text="  hold（新信道接应秒数，1–600）：").pack(side="left")
-        ttk.Spinbox(params, from_=1, to=600, width=5,
-                    textvariable=self.csa_hold_var).pack(side="left")
+        ttk.Label(params, textvariable=self.csa_mode_var, foreground="#555555").pack(side="left")
 
         actions = ttk.Frame(page)
         actions.pack(fill="x", pady=(6, 4))
@@ -513,10 +503,10 @@ class DeautherApp:
         ttk.Label(
             page,
             text=("说明：\n"
-                  "• 需要在“选择目标…”里选一个 AP，新信道必须和它当前信道不同；\n"
+                  "• 选一个 AP 即可：2.4G 的 AP 会被通告到一个随机 5G 信道，5G 的 AP 反之；\n"
                   "• count 从 5 递减到 1、每 100 ms 一轮，同时发广播与单播 Action 帧 + 带 CSA IE 的 Beacon；\n"
-                  "• 倒计时结束后固件跳到新信道，用同 BSSID/SSID/RSN 的克隆 beacon 顶 hold 秒；\n"
-                  "• 底栏的 CSA 字段显示 idle / announce / hold，帧数看 STATUS 的 csaf。"),
+                  "• 每轮结束后在新信道用同 BSSID/SSID/RSN 的克隆 beacon 顶 5 秒，然后自动开始下一轮；\n"
+                  "• 循环直到“停止”；底栏 CSA 字段显示 idle / announce / hold，帧数看 csaf。"),
             justify="left",
         ).pack(anchor="w", pady=(12, 0))
         return page
@@ -724,9 +714,7 @@ class DeautherApp:
             else:
                 ssid = self.networks[str(single)]["ssid"] or "(隐藏)"
                 ch = self.networks[str(single)]["channel"]
-                self.csa_label.config(
-                    text=f"目标：#{single} {ssid}（当前 ch{ch}）→ 新信道 "
-                         f"{self.csa_channel_var.get()}")
+                self.csa_label.config(text=f"目标：#{single} {ssid}（当前 ch{ch}）→ 自动对向频段")
 
         if "evil" in self.count_labels:
             widget = self.count_labels["evil"]
@@ -815,43 +803,18 @@ class DeautherApp:
     def _joined_picked(self):
         return ",".join(sorted(self.picked, key=int))
 
-    def _csa_params(self):
-        """校验 CSA 参数；返回 (channel, count, hold)，非法时抛 ValueError。"""
-        if self.single_index is None:
-            raise ValueError("先在“选择目标…”里选一个 AP。")
-        target = self.networks.get(str(self.single_index), {})
-        ap_ch = target.get("channel")
-        try:
-            channel = int(self.csa_channel_var.get().strip(), 0)
-        except ValueError:
-            raise ValueError(f"新信道必须是整数，当前是 {self.csa_channel_var.get()!r}。")
-        if not (1 <= channel <= 14 or 36 <= channel <= 196):
-            raise ValueError("新信道必须是 1–14（2.4G）或 36–196（5G）。")
-        if ap_ch is not None and channel == int(ap_ch):
-            raise ValueError(f"新信道不能等于目标 AP 的信道（{ap_ch}）。")
-        try:
-            count = int(self.csa_count_var.get())
-            hold = int(self.csa_hold_var.get())
-        except ValueError:
-            raise ValueError("count / hold 必须是整数。")
-        if not 2 <= count <= 8:
-            raise ValueError("count 必须是 2–8（像真 AP 那样逐轮递减）。")
-        if not 1 <= hold <= 600:
-            raise ValueError("hold 必须是 1–600 秒。")
-        return channel, count, hold
-
     def start_csa(self):
         if not self._require_link():
             return
         if not self.networks:
             messagebox.showinfo("提示", "先点“扫描 AP”。")
             return
-        try:
-            channel, count, hold = self._csa_params()
-        except ValueError as exc:
-            messagebox.showerror("CSA 参数无效", str(exc))
+        if self.single_index is None:
+            messagebox.showerror("CSA 参数无效", "先在“选择目标…”里选一个 AP。")
             return
-        self._send(f"CSA {self.single_index} {channel} {count} {hold}")
+        # No channel argument: the firmware announces a random channel from the
+        # opposite band and keeps cycling until stopped.
+        self._send(f"CSA {self.single_index}")
 
     def csa_stop(self):
         self._send("CSASTOP")

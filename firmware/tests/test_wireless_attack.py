@@ -175,6 +175,13 @@ class FirmwareFunctionalTests(unittest.TestCase):
         if getattr(cls, "client", None):
             cls.client.close()
 
+    def setUp(self):
+        # 每条用例前把上一条可能留下的攻击/CSA 循环清掉：CSA 自动模式会一直
+        # 循环并停在 5G 信道上，残留状态会让后面的扫描/攻击用例偶发失败。
+        self.client.command("STOP", lambda l: l.startswith("OK"), 3)
+        self.client.command("CSASTOP", lambda l: l.startswith("OK CSASTOP"), 3)
+        self.client.drain(0.2)
+
     def test_ping(self):
         line, _ = self.client.command("PING", lambda l: l.startswith("OK PONG"), 3)
         self.assertIsNotNone(line, "PING 无响应")
@@ -277,6 +284,24 @@ class FirmwareFunctionalTests(unittest.TestCase):
         self.assertGreater(int(info.get("csaf", "0")), 0, "CSA 帧数应大于 0")
         stop, _ = self.client.command("CSASTOP", lambda l: l.startswith("OK CSASTOP"), 5)
         self.assertIsNotNone(stop)
+
+        # 自动模式：不指定信道 -> 对向频段随机信道 + 循环
+        ok, _ = self.client.command("CSA 0", lambda l: l.startswith("OK CSA"), 5)
+        self.assertIsNotNone(ok, "CSA 自动模式启动失败")
+        self.assertIn("auto", ok, "自动模式应在 OK 行里标出来")
+        time.sleep(6.0)  # 5 轮播报（约 0.5s）+ hold 5s，确保至少走完一轮
+        line, _ = self.client.command("STATUS", lambda l: l.startswith("STATUS "), 5)
+        info = protocol.parse_status(line)
+        print(f"\n  auto: csa={info.get('csa')} csaauto={info.get('csaauto')} "
+              f"csch={info.get('csch')} cycles={info.get('csacycle')}")
+        self.assertEqual(info.get("csaauto"), "1", "自动模式应标记 csaauto=1")
+        self.assertGreaterEqual(int(info.get("csacycle", "0")), 1, "应至少完成一轮")
+        ch = int(info.get("csch", "0"))
+        if ap_ch <= 14:
+            self.assertGreaterEqual(ch, 36, "2.4G 的 AP 应被通告到 5G 信道")
+        else:
+            self.assertLessEqual(ch, 14, "5G 的 AP 应被通告到 2.4G 信道")
+        self.client.command("CSASTOP", lambda l: l.startswith("OK CSASTOP"), 5)
 
     def test_reason_validation_and_random(self):
         """reason 防呆：0 / 越界 / 非数字要报错；random 模式要能在 STATUS 里看到。"""

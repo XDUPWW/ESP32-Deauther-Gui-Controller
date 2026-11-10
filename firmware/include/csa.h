@@ -25,7 +25,10 @@ extern "C" {
 // new_channel: where clients should go (validated by the caller: 1..196).
 // start_count: first CSA count value (2..8 recommended, mimics a real AP).
 // hold_seconds: how long to keep the cloned beacon on the new channel.
-bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hold_seconds);
+// new_channel == 0 means "auto": a 2.4 GHz AP gets a random 5 GHz channel
+// (and the other way round), and the cycle repeats until csa_stop().
+bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hold_seconds,
+               bool loop);
 
 void csa_stop(void);
 
@@ -44,6 +47,10 @@ bool csa_active(void);
 uint32_t csa_frames(void);
 uint32_t csa_clients(void);
 uint8_t csa_new_channel(void);
+// True when the announced channel is picked from the opposite band.
+bool csa_auto_channel(void);
+// Completed announce+hold cycles (looping mode).
+uint32_t csa_cycles(void);
 uint8_t csa_current_count(void);
 bool csa_have_rsn(void);
 const char* csa_phase_name(void);

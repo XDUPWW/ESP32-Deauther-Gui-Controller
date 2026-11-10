@@ -59,11 +59,7 @@ static lv_obj_t *s_mode_label;
 static lv_obj_t *s_evil_label;
 // CSA page: one target AP + a new channel, picked from a popup like the reason.
 static lv_obj_t *s_csa_label;
-static lv_obj_t *s_chan_popup;
-static lv_obj_t *s_chan_popup_list;
-static void chan_row_clicked(lv_event_t *event);
 static void reason_row_clicked(lv_event_t *event);
-static uint8_t s_csa_channel = 11;
 // Deauth reason code picker on the mode page. Cycles through the three codes
 // people actually use plus "random"; the firmware keeps the authoritative value.
 static uint16_t s_reason_selected = 7;
@@ -307,10 +303,9 @@ static void update_mode_label(void) {
                     break;
                 }
             }
-            snprintf(text, sizeof(text), "CSA #%d %s -> ch%u (cnt 5)", s_selected, ssid,
-                     (unsigned)s_csa_channel);
+            snprintf(text, sizeof(text), "CSA #%d %s -> auto (opposite band)", s_selected, ssid);
         } else {
-            snprintf(text, sizeof(text), "CSA: pick a target -> ch%u", (unsigned)s_csa_channel);
+            snprintf(text, sizeof(text), "CSA: pick a target (auto channel)");
         }
         lv_label_set_text(s_csa_label, text);
     }
@@ -412,71 +407,16 @@ static void goto_csa(lv_event_t *event) {
     show_screen(SCR_CSA);
 }
 
-static const uint8_t kChannelTable[] = {1,  2,  3,  4,  5,  6,  7,   8,   9,   10,  11, 12,
-                                        13, 36, 40, 44, 48, 149, 153, 157, 161, 165};
-#define CHANNEL_TABLE_LEN ((int)(sizeof(kChannelTable) / sizeof(kChannelTable[0])))
-
-static void chan_close(void) {
-    if (s_chan_popup != NULL) {
-        lv_obj_add_flag(s_chan_popup, LV_OBJ_FLAG_HIDDEN);
-        if (s_chan_popup_list != NULL) {
-            lv_obj_clean(s_chan_popup_list);
-        }
-    }
-}
-
-static void chan_build_rows(void) {
-    if (s_chan_popup_list == NULL || lv_obj_get_child_count(s_chan_popup_list) > 0) {
-        return;
-    }
-    for (int i = 0; i < CHANNEL_TABLE_LEN; i++) {
-        char text[24];
-        snprintf(text, sizeof(text), "channel %u", (unsigned)kChannelTable[i]);
-        lv_obj_t *btn = lv_button_create(s_chan_popup_list);
-        lv_obj_set_width(btn, lv_pct(100));
-        lv_obj_set_height(btn, 26);
-        lv_obj_set_style_pad_all(btn, 2, 0);
-        lv_obj_t *label = lv_label_create(btn);
-        lv_obj_set_width(label, lv_pct(96));
-        lv_label_set_long_mode(label, LV_LABEL_LONG_MODE_CLIP);
-        lv_label_set_text(label, text);
-        lv_obj_align(label, LV_ALIGN_LEFT_MID, 2, 0);
-        lv_obj_add_event_cb(btn, chan_row_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-    }
-}
-
-static void chan_row_clicked(lv_event_t *event) {
-    const int row = (int)(intptr_t)lv_event_get_user_data(event);
-    if (row >= 0 && row < CHANNEL_TABLE_LEN) {
-        s_csa_channel = kChannelTable[row];
-        update_mode_label();
-    }
-    chan_close();
-}
-
-static void chan_back_clicked(lv_event_t *event) {
-    (void)event;
-    chan_close();
-}
-
-static void chan_clicked(lv_event_t *event) {
-    (void)event;
-    if (s_chan_popup != NULL) {
-        chan_build_rows();
-        lv_obj_remove_flag(s_chan_popup, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_move_foreground(s_chan_popup);
-    }
-}
-
 static void csa_start_clicked(lv_event_t *event) {
     (void)event;
     if (s_selected < 0) {
         if (s_log) lv_label_set_text(s_log, "pick an AP first");
         return;
     }
-    char command[48];
-    // count fixed at 5 (a real AP countdown), hold 15 s for the clone beacons.
-    snprintf(command, sizeof(command), "CSA %d %u 5 15", s_selected, (unsigned)s_csa_channel);
+    char command[32];
+    // No channel: the firmware announces a channel from the opposite band and
+    // keeps cycling until Stop.
+    snprintf(command, sizeof(command), "CSA %d", s_selected);
     emit(command);
 }
 
@@ -811,14 +751,13 @@ static bool build_main_ui(void) {
     lv_obj_set_width(s_csa_label, 312);
     lv_label_set_text(s_csa_label, "CSA: pick a target -> ch11");
     lv_obj_t *c_hint = lv_label_create(s_screens[SCR_CSA]);
-    lv_label_set_text(c_hint, "Scan -> Targets -> Chan -> Start");
+    lv_label_set_text(c_hint, "Scan -> Targets -> Start (auto channel)");
     lv_obj_set_style_text_color(c_hint, lv_color_hex(0x666666), 0);
     lv_obj_t *c1 = make_row(s_screens[SCR_CSA]);
     make_button_h(c1, "Scan", scan_clicked, 34);
     make_button_h(c1, "Targets", targets_clicked, 34);
-    make_button_h(c1, "Chan", chan_clicked, 34);
+    make_button_h(c1, "Start", csa_start_clicked, 34);
     lv_obj_t *c2 = make_row(s_screens[SCR_CSA]);
-    make_button_h(c2, "Start", csa_start_clicked, 34);
     make_button_h(c2, "Stop", csa_stop_clicked, 34);
     make_button_h(c2, "Back", goto_menu, 34);
 
@@ -915,33 +854,6 @@ static bool build_main_ui(void) {
 
     s_reason_popup_items = REASON_TABLE_LEN + 1;  // rows are built on open
 
-    s_chan_popup = lv_obj_create(lv_layer_top());
-    lv_obj_set_size(s_chan_popup, UI_W - 12, UI_H - 12);
-    lv_obj_center(s_chan_popup);
-    lv_obj_remove_flag(s_chan_popup, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_set_style_radius(s_chan_popup, 8, 0);
-    lv_obj_set_style_border_width(s_chan_popup, 2, 0);
-    lv_obj_set_style_border_color(s_chan_popup, lv_color_hex(0x40C060), 0);
-    lv_obj_set_style_bg_color(s_chan_popup, lv_color_hex(0x101820), 0);
-    lv_obj_set_style_bg_opa(s_chan_popup, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(s_chan_popup, 4, 0);
-    lv_obj_set_flex_flow(s_chan_popup, LV_FLEX_FLOW_COLUMN);
-
-    lv_obj_t *ctitle = lv_label_create(s_chan_popup);
-    lv_label_set_text(ctitle, "CSA: new channel");
-    lv_obj_set_width(ctitle, UI_W - 28);
-
-    lv_obj_t *clist = lv_obj_create(s_chan_popup);
-    lv_obj_set_width(clist, lv_pct(100));
-    lv_obj_set_flex_grow(clist, 1);
-    lv_obj_set_style_pad_all(clist, 2, 0);
-    lv_obj_set_style_pad_row(clist, 2, 0);
-    lv_obj_set_flex_flow(clist, LV_FLEX_FLOW_COLUMN);
-    s_chan_popup_list = clist;  // rows are built on open
-    lv_obj_t *crow = make_row(s_chan_popup);
-    lv_obj_set_height(crow, 32);
-    make_button_h(crow, "Back", chan_back_clicked, 30);
-    lv_obj_add_flag(s_chan_popup, LV_OBJ_FLAG_HIDDEN);
 
     lv_obj_t *rrow = make_row(s_reason_popup);
     lv_obj_set_height(rrow, 32);

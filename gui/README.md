@@ -92,15 +92,13 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 
 ### 2.3 CSA 欺骗
 
-`CSA 欺骗` 页：`扫描 AP` → `选择目标…`（单选）→ 填 `新信道` / `count` / `hold` → `开始 CSA`。
+`CSA 欺骗` 页：`扫描 AP` → `选择目标…`（单选）→ `开始 CSA`。**不用选信道**：
 
-| 参数 | 范围 | 说明 |
-| --- | --- | --- |
-| 新信道 | 1–14 或 36–196 | 不能等于目标 AP 当前信道（GUI 先拦，固件再校验一次） |
-| count | 2–8 | 递减轮数，像真 AP 那样 5→1 |
-| hold | 1–600 秒 | 倒计时结束后在新信道顶克隆 beacon 的时长 |
+- 2.4G 的 AP 会被通告到一个随机 5G 信道；5G 的 AP 反之
+- 每轮（5 轮 countdown ≈ 0.5 s + 新信道顶 5 s 克隆 beacon）结束后自动开始下一轮，循环到 `停止`
+- 命令：`CSA <idx>`，`停止` 发 `CSASTOP`；底栏显示 `CSA：idle/announce/hold (帧数)`
 
-命令：`CSA <idx> <ch> <count> <hold>`，`停止` 发 `CSASTOP`。底栏显示 `CSA：idle/announce/hold (帧数)`。
+想指定信道做单次播报仍可用串口：`CSA <idx> <ch> [count] [hold]`。
 
 ### 2.4 Probe 攻击
 
