@@ -131,8 +131,6 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 固件持续广播 Beacon（子类型 8）+ Probe Response（5），SSID/BSSID 全随机，每 120 ms 跳信道。
 帧数看底栏 `Probe 帧：`。
 
-### 2.4 设备状态 / 日志
-
 - 设备状态：`STATUS` 的逐字段展示（模式、帧数、网络数、堆、`caps`、信道、`rx/rxm`）
 - 日志：带时间戳的分色输出（`>>` 是本机发出的命令，红色是 `ERR`/捕获到的凭据）
 

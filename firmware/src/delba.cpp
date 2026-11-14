@@ -98,10 +98,13 @@ const uint32_t kBaRoundMs = 40;   // one client per tick
 const uint32_t kBaDelbaEvery = 5; // DELBA cadence (rounds): clean slate + preempt
 const uint32_t kBaAddbaEvery = 25;  // ADDBA cadence (rounds): plant the window
 const uint8_t kBaBufSize = 0;       // buffer size field 0 = 1 buffer (smallest)
-// Injection budget. Each forged frame without a peer ACK occupies the driver's
-// TX path for a while; firing the whole (client, TID, direction) matrix at once
-// just returns ESP_ERR_NO_MEM (measured: 1559 refusals in 15 s). So a round
-// sends at most this many frames and stops at the first refusal.
+// Injection budget. Firing the whole (client, TID, direction) matrix at once just
+// returns ESP_ERR_NO_MEM (measured: 1559 refusals in 15 s): a BAR occupies one of
+// the 32 short buffers until it is transmitted, and a burst queues all 32 before
+// the radio has sent anything. Paced at 30 ms the same BAR loop passes 100 frames
+// with zero refusals (BARSEQ 100 30), so the pool does recycle BARs -- the cap is
+// burst size, not a lifetime budget. A round therefore sends at most this many
+// frames and stops at the first refusal.
 const uint32_t kBaFramesPerRound = 4;
 uint32_t s_ba_pause_until;
 // One-shot mode: send a couple of forged ADDBA frames (plant the window) and then
@@ -727,6 +730,62 @@ void delba_ba_tx_probe(const uint8_t mac[6]) {
 
     Serial.printf("BATX delba(30B)=%d addba(33B)=%d bar(20B)=%d\n", (int)e1, (int)e2, (int)e3);
 }
+
+// Budget probe: how does a BAR (control subtype 8, 20 bytes) behave when hammered
+// back to back? It sits in the exact same corner as the CTS/RTS that stop after
+// 32 frames -- control frame *and* below the 24 byte minimum -- so this decides
+// whether the BA window walk only ever gets ~32 pushes per boot.
+void delba_bar_probe(int count, int gap_ms, bool bcast) {
+    // Locally administered placeholder addresses: the driver does not care, and
+    // this must run without a scan (the pool probe must be the first thing after
+    // a reset, otherwise the result is polluted).
+    static const uint8_t ra[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    static const uint8_t ta[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    const uint8_t* dst = bcast ? kBroadcast : ra;
+    uint8_t frame[40];
+    int ok = 0;
+    int first_fail = -1;
+    int err = 0;
+    int last_err = 0;
+    for (int i = 0; i < count; i++) {
+        const size_t len = build_bar(frame, dst, ta, 0, 1175);
+        const esp_err_t e = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+        if (e == ESP_OK) {
+            ok++;
+        } else {
+            if (first_fail < 0) {
+                first_fail = i;
+                err = (int)e;
+            }
+            last_err = (int)e;
+        }
+        if (gap_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(gap_ms));
+        }
+    }
+    // One management frame of the same family at the end: 0 = a buffer was still
+    // there, 0x101 = the BARs took the shared pool with them.
+    const size_t dlen = build_delba(frame, ra, ta, ta, 0, true, 37);
+    const esp_err_t mgmt = esp_wifi_80211_tx(WIFI_IF_STA, frame, (uint16_t)dlen, false);
+
+    Serial.print("BARSEQ n=");
+    Serial.print(count);
+    Serial.print(" gap_ms=");
+    Serial.print(gap_ms);
+    Serial.print(" bcast=");
+    Serial.print(bcast ? 1 : 0);
+    Serial.print(" ok=");
+    Serial.print(ok);
+    Serial.print(" first_fail=");
+    Serial.print(first_fail);
+    Serial.print(" err=");
+    Serial.print(err);
+    Serial.print(" lae=");
+    Serial.print(last_err);
+    Serial.print(" delba30=");
+    Serial.println((int)mgmt);
+}
+
 
 // Dumps one forged ADDBA Request and one forged BAR with decoded fields, so the
 // layout can be compared against 802.11-2020 / mac80211 without a second radio.

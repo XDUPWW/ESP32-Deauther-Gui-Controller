@@ -49,7 +49,7 @@ firmware/
 │   ├── general.cpp           公共工具（信道、国家码、随机 SSID/MAC）
 │   └── storage.cpp           用 nvs_flash 实现 UI 的 load/save/clear
 ├── components/wireless_ui/   可选 LVGL 界面（见 §7）
-├── tests/test_wireless_attack.py   36 项自动化用例
+├── tests/test_wireless_attack.py   44 项自动化用例
 └── tools/gen_cjk_font.py     生成界面 CJK 子集字库
 ```
 
@@ -141,10 +141,6 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `BARPUSH <idx> [step]` | 只发 BAR（不发 ADDBA/DELBA）后静默，用来隔离"推窗"与"会话改写" | `OK BARPUSH 0 step=512 ch=1` |
 | `BASTOP` | 停止 BA 攻击 | `OK BASTOP delba=54 addba=1 bar=256` |
 | `BATEST` / `BATX` | 打印伪造 ADDBA/BAR 的字节与解码 / 各发一帧并打印驱动返回值 | `BATEST addba len=33 ...` / `BATX delba(30B)=0 addba(33B)=0 bar(20B)=0` |
-| `NAV <idx> [cts\|rts\|rtsap\|mgmt\|cfend\|hybrid] [dur]` | 虚拟载波侦听攻击：用 Duration 预约信道（`mgmt` 能持续发；控制帧在 ESP32 上只能发 32 帧） | `OK NAV 0 mode=mgmt dur=32767 ch=1` |
-| `NAVSTOP` / `NAVSTAT` / `NAVTEST` / `NAVTX` | 停止 / 计数器（含最后一次错误码 `lae=`）/ 帧字节 / 驱动返回值 | `NAVSTAT mode=mgmt active=1 frames=597 errs=415 lae=257` |
-| `NAVSEQ` | 预算探针：RTS 发到失败，再试 CTS / CF-End（判是否共享队列） | `NAVSEQ rts_ok=32 rts_first_fail=32 rts_err=257 cts_ok=0 cts_err=257 ...` |
-| `NAVBURST <n> [release]` | 硬 burst：n 帧 CTS（每帧 32.7 ms 预约，30 ms 间隔），可选 CF-End 释放 | `NAVBURST sent=32 cover_ms=1056` |
 | `RESTART` | `esp_restart()`；注意 burst 之后它可能卡在 wifi 反初始化，恢复靠主机拉 RTS | `OK RESTART` |
 | `MON <ch> <secs>` | 被动监听（`ch=0` 表示逐信道跳），计数器从 0 开始，便于用第二块板验证注入 | `OK MON ch=6 8s` |
 | `RADIO` | 打印驱动的嗅探状态：`promisc`、类型 mask、**控制帧 subtype mask**、当前信道 | `RADIO promisc=1(0) filter=0x00000007(0) ctrl_filter=0xFF800000(0) ch=1` |
@@ -162,7 +158,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `UITARGETS` | 打开屏上目标弹窗（等价点 `Targets`） | `OK UITARGETS` |
 | `UIREASON` | 打开屏上 reason 弹窗（等价点 `R:x`） | `OK UIREASON` |
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. rpopup=.. ritems=.. nets=..` |
-| `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/evil`），给自动化测试用 | `OK UISCREEN delba` |
+| `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/ba/evil`），给自动化测试用 | `OK UISCREEN delba` |
 | `RXLOG` | 打印监听到的 802.11 帧（诊断）；收到的 CSA Action 会额外打印 `RXCSA <i> src=.. cat=4 act=4 nch=.. cnt=.. len=..` | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
 | `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧、`addba` / `delba` 统计 Block Ack 管理动作、`bar/ba/pspoll/rts/cts/ack` 统计控制帧 subtype | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
 

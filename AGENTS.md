@@ -1,0 +1,242 @@
+# AGENTS.md
+
+给 AI 编码代理的项目指南。默认读者**完全不了解**本仓库，读完应能独立编译、改动、测试。
+
+文档与注释主要语言：中文（`README.md`、`firmware/*.md`、`gui` 的界面文案与 docstring）。
+固件源码注释是英文（少量历史文件是葡萄牙语），新代码按文件现有语言写，不要混排。
+
+---
+
+## 1. 项目是什么
+
+ESP32 / ESP32-C5 的 **802.11 无线安全测试工具**，由三块代码组成：
+
+- `firmware/` —— ESP-IDF v6.1 工程（Arduino 作为 IDF 组件）。默认**完全静默**：`WiFi.mode(WIFI_MODE_STA)` + `disconnect()`，
+  不建 AP、不发 beacon、没有 Web 控制台；扫描与攻击全部由串口命令行驱动。ESP32 目标可选带 LVGL 触摸界面。
+- `gui/` —— Windows 桌面上位机（tkinter + pyserial），把同一套协议行包装成三/四级页面；**不含攻击逻辑**。
+- `lab/rf_throughput/` —— 独立的迷你 ESP-IDF 工程（一块板当 AP、一块当 STA，TCP 4444 打流），只用于测量 DELBA / BA 攻击对吞吐的影响，不是产品代码。
+
+核心设计：**串口行协议是唯一控制面**。触摸屏按钮、GUI、脚本都只发协议行；攻击实现只有一份（`firmware/src/`）。
+改功能时不要为某个界面单独写一条执行路径。
+
+已实现的攻击：deauth（单/全/白/黑名单）、Probe/Beacon 泛洪、CSA 欺骗、DELBA 欺骗、BA 会话劫持、Evil Twin。
+**NAV（虚拟载波侦听）已删除**：注入帧的 Duration 字段由驱动/MAC 重算，应用层改不了，详见 §11 第 1 条。
+`TODO.md` 里是未做的能力（PMKID、WPA-Enterprise、Android 上位机、BLE 泛洪）。
+
+**合规边界**：README §8 声明仅限自有/授权网络。所有改动都要保留该声明，不要为了"方便"去掉确认框、目标校验或免责提示。
+
+## 2. 关键配置文件
+
+| 路径 | 作用 | 入库 |
+| --- | --- | --- |
+| `firmware/CMakeLists.txt` | `project(wireless_attack)`；强制 Ninja 响应文件；`-Wno-error=missing-field-initializers`；`-Wl,-z,muldefs` | 是 |
+| `firmware/main/CMakeLists.txt` | 列出 `../src/*.cpp` 源文件、`INCLUDE_DIRS "../include"`、`REQUIRES arduino-esp32 wireless_ui nvs_flash` | 是 |
+| `firmware/main/idf_component.yml` | 钉住 `espressif/arduino-esp32: 4.0.0-rc1` | 是 |
+| `firmware/components/wireless_ui/idf_component.yml` | `lvgl ^9.4`、`esp_lvgl_port ^2.7`、`esp_lcd_ili9341 ^2.0`，限定 `target == esp32` | 是 |
+| `firmware/components/wireless_ui/Kconfig` | `WIRELESS_ATTACK_LVGL_SUPPORT`（`depends on IDF_TARGET_ESP32`，Kconfig 默认 n，`sdkconfig.defaults` 里开成 y）、`WIRELESS_UI_CJK_CUSTOM` | 是 |
+| `firmware/sdkconfig.defaults` | ESP32 默认配置；**改配置改这里** | 是 |
+| `firmware/sdkconfig.c5` | ESP32-C5 的完整配置（独立 build 目录用） | 是 |
+| `firmware/sdkconfig` | `idf.py set-target` 生成的产物 | 否（`.gitignore`） |
+| `firmware/partitions.csv` | 4 MB：nvs 24 K @0x9000、phy、factory 3 MB @0x10000、spiffs 960 K @0x310000 | 是 |
+| `firmware/dependencies.lock` | 组件管理器解析结果 | 是 |
+| `firmware/include/definitions.h` | 运行参数宏（帧数/周期/缓冲/LED/调试开关） | 是 |
+| `gui/requirements.txt` | 唯一运行依赖 `pyserial>=3.5` | 是 |
+
+仓库里**没有** `pyproject.toml` / `package.json` / `setup.py` / lint 配置 / CI 配置：
+`gui` 是裸脚本（`import protocol` 按当前目录导入模块，不是包），固件由 ESP-IDF 自己驱动构建。
+
+## 3. 构建
+
+版本要求：**ESP-IDF v6.1**（EIM 安装）、**arduino-esp32 4.0.0-rc1**（首次构建自动下载）、Python 用 IDF 自带 venv 或系统 3.13。
+
+Windows 上必须在 **PowerShell 或 cmd** 里跑 `idf.py`。Git Bash 里 IDF 6.1 会因 `MSYSTEM` 环境变量直接退出（不是工程问题）。
+
+ESP32（含触摸屏界面，build 目录 `build/`）：
+
+```powershell
+& 'C:\Espressif\tools\Microsoft.v6.1.PowerShell_profile.ps1'
+cd firmware
+idf.py set-target esp32
+idf.py build
+idf.py -p COM5 flash
+idf.py -p COM5 monitor
+```
+
+ESP32-C5（双频，无触摸屏界面；**独立 build 目录 + 独立 sdkconfig**，与 ESP32 互不覆盖）：
+
+```powershell
+idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 set-target esp32c5
+idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 build
+idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
+```
+
+两条 `CMakeLists.txt` 的特殊设置不能删：
+
+- `-Wno-error=missing-field-initializers`：arduino-esp32 4.0.0-rc1 与 IDF 6.1 的结构体新增字段冲突，会触发 Arduino 核里的 `-Werror`。
+- `-Wl,-z,muldefs`：`src/deauth.cpp` 覆盖了 `libnet80211.a` 里的 `ieee80211_raw_frame_sanity_check()`（raw 帧注入的前提），重定义不能报错。
+- `CMAKE_NINJA_FORCE_RESPONSE_FILE`：工程路径含空格/较长，arduino-esp32 的几十个 include 目录会把命令行顶爆。
+
+产物大小参考：ESP32 带 LVGL 约 1.37 MB，C5 约 1.13 MB（factory 分区 3 MB）。
+
+`lab/rf_throughput/` 是同样方式构建的独立工程（自己的 `build/`、`build_c5/`，`sdkconfig.c5` 不入库）。
+
+## 4. 运行时架构
+
+```
+串口字节 → 行缓冲 → dispatch()  →  do_scan / do_deauth / do_probe … → deauth/csa/delba/evil_twin
+                          ▲                        │
+LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 状态（不打印）
+                                                        │
+                                              console 层统一打印协议行
+```
+
+- `src/main.cpp` 的 `setup()`：初始化串口 → STA 静默 → `init_evil_twin()` → 可选 LVGL 初始化（失败则打印 `WARN` 并回到纯串口形态）。
+- `loop()` 每轮：`handle_serial_console()` → `ui_commands_drain()` → `wireless_ui_tick()` → `attack_step()` → `delay(2)` → Evil Twin 捕获期轮询。
+- 任务划分：Arduino `loopTask`（主循环；`sdkconfig.defaults` 里 `CONFIG_ARDUINO_RUNNING_CORE=1`，`sdkconfig.c5` 是 0）、
+  `scan_task`（prio 2，阻塞式扫描，避免卡主循环）、
+  LVGL 任务（`esp_lvgl_port`，prio 4）、Wi-Fi 任务的混杂回调 `sniffer()`（`IRAM_ATTR`，只判断 + 入队，不打印、不发包）。
+- **注入不在混杂回调里做**：回调只把"该打谁"塞进队列，主循环 `attack_step()` → `drain_tx_queue()` 按 1 ms 节奏出队，
+  驱动拒收（`ESP_ERR_NO_MEM`）时退避 5 ms 重试。这条约束修掉过"计数在涨但帧没出去"的缺陷，别改回去。
+- 界面与固件解耦：`components/wireless_ui/` 只暴露纯 C 的 `wireless_ui.h`，按钮通过 `wireless_ui_set_command_cb()`
+  注入的回调发协议行；固件 → UI 方向只调 `wireless_ui_scan_begin/add_network/scan_end/status/log` 置标志，
+  UI 更新由 `wireless_ui_tick()` 在主循环里加锁应用（不要跨任务直接调 LVGL）。
+- NVS 由应用侧注入（`src/storage.cpp`，命名空间 `wui`、键 `calib`），UI 组件不认识 NVS。
+- 频段是**运行时**切的：按目标信道设国家码（1–11 → `01`；12–13 → `CN`；≥15 → `CN` + 5 GHz 信道掩码），
+  C5 另设 `WIFI_BAND_MODE_AUTO`。不需要为 2.4G/5G 准备两套 sdkconfig。
+
+## 5. 代码组织
+
+固件（`firmware/include/*.h` + `firmware/src/*.cpp`，一个模块一个头）：
+
+| 文件 | 职责 |
+| --- | --- |
+| `main.cpp` | 启动、UI 命令队列、主循环调度 |
+| `serial_console.cpp` | 行缓冲、`dispatch()` 命令分发、所有协议输出（`OK/ERR/INFO/STATUS/NET/…`）、`scan_task` |
+| `deauth.cpp` | deauth 攻击、混杂回调 `sniffer()`、AP/STA 表、注入队列、逐 AP 计数、`attack_step()`、reason code 池、raw 帧构造 |
+| `csa.cpp` | CSA 欺骗（倒计时播报、单播/广播混合、新信道克隆 beacon、Auth 成功 / Assoc status 17） |
+| `delba.cpp` | DELBA 欺骗 + BA 会话劫持（DELBA → 伪造 ADDBA → BAR）、TID 学习 |
+| `evil_twin.cpp` | 克隆热点、DNSServer 劫持、Captive Portal（8080）、凭据表（RAM） |
+| `general.cpp` | LED 闪烁等公共工具 |
+| `storage.cpp` | NVS blob 封装，供 UI 校准数据使用 |
+| `components/wireless_ui/src/` | `ui.c` 界面与对象树、`ui_port.c` LCD/触摸移植、`calib.c` 四角校准 |
+| `tools/gen_cjk_font.py` | 生成 `fonts/lv_font_ui_cjk.c`（需 Node + `lv_font_conv` + Windows 自带 Noto Sans SC，产物已入库） |
+
+上位机：`gui/protocol.py` 是纯函数解析层（`classify/parse_net/parse_status/parse_cred/parse_caps/band_of_channel`，
+无 Tk 无 IO），`gui/main.py` 是串口线程 + 页面 + 目标弹窗（`SerialLink`、`TargetDialog`、`DeautherApp`）。
+页面键：`home / deauth / one / all / only / except / probe / csa / delba / ba / evil / status / log`。
+
+**新增源文件必须同时加进 `firmware/main/CMakeLists.txt` 的 `SRCS`**，否则不会参与编译。
+**新增功能的两端顺序**：先在 `gui/protocol.py` 加解析（可单测）→ 再在 `main.py` 加控件；固件侧先加头文件 + 计数器，再在 `dispatch()` 接线。
+
+## 6. 串口协议（改动必须遵守）
+
+- 115200 8N1，一行一条命令，`\r\n` 结尾；行缓冲 112 字节，超长回 `ERR line too long`。
+- 命令在 `dispatch(char* line)` 里先整体 `toupper()` 再 `strcmp()`，参数用 `strtok`（因此命令大小写不敏感、参数区分大小写）。
+  **同一语句里不要写两次 `strtok()`**（求值顺序未定义），`DEAUTH` 里已有注释说明。
+- 输出是行式纯文本，前缀固定：`OK …` / `ERR …` / `INFO …` / `SCAN_BEGIN` / `NET <idx> <rssi> <ch> <enc> <bssid> <ssid>` /
+  `SCAN_END <n>` / `STATUS key=value …` / `STATS_BEGIN|AP|STATS_END` / `STA_BEGIN|STA|STA_END` /
+  `CREDS_BEGIN|CRED|CREDS_END` / `RX …` / `RXMIX …` / `UI …`。SSID 含空格且放在 `NET` 行最后。
+- `STATUS` 的 `key=value` 是机器可读契约（GUI 底栏、测试、`caps` 能力位都靠它）。加字段是兼容的，**改名/删字段会破坏 GUI 与测试**。
+- `<idx>` 只在最近一次 `SCAN` 内有效；重扫后旧索引无意义。
+- reason code：缺省 1；`1..65535` 或 `random`（每束从标准定义的 1–11、13–24 里重掷）；非法值（0、负数、越界、非数字）必须 `ERR`，
+  不允许静默退化。DELBA 的 reason 只接受 1/32/37/38/39。
+- 加命令时要同步：`print_help()` 文本、`firmware/README.md §4.1`、必要的 `gui` 页面、`tests/test_wireless_attack.py`。
+- LVGL 界面**只能**通过协议行动作（`wireless_console_execute()`），并提供 `UI`/`UISCREEN`/`UITARGETS`/`UIREASON` 之类的无手指诊断命令，
+  以便自动化回归。
+
+## 7. 开发约定
+
+- 缩进：绝大多数 C/C++ 文件 4 空格，左大括号与语句同行；`serial_console.cpp` 与 `include/types.h` 沿用 2 空格的 IDF 风格。
+  **按文件现状写，不要整文件重排格式。** Python 4 空格。
+- 命名：固件函数/变量 `snake_case`，静态变量 `s_` 前缀（`serial_console.cpp` 里文件级全局用 `g_`），常量 `kCamelCase`，宏 `UPPER_SNAKE`，
+  结构体 `xxx_t`。头文件用 `#pragma once`（早期文件是 include guard，保持原样）。
+- 攻击模块只更新计数器和状态，**不直接 `Serial.print`**；协议输出集中在 `serial_console.cpp`，避免污染机器可读流。
+- 每个可观测行为都要有计数器，并能从 `STATUS` 读出来（如 `txok/txerr/txec/blind/rev/delbtr/bassn`）。调参靠数据，不靠感觉。
+- 运行参数放 `include/definitions.h`（帧数、周期、缓冲）；改帧数时注意 TX 缓冲会被 ACK 超时占满（单播帧尤其）。
+- 不要复活 Web 控制台/SoftAP（上游有、本工程有意移除）。
+- LVGL 侧约束：回调里不能阻塞（扫描必须进 `scan_task`）；`lv_layer_top()` 上的弹窗行数受 `LIST_ROWS=30`（数据上限 `MAX_ROWS=64`）限制；
+  `CONFIG_LV_MEM_SIZE_KILOBYTES=80`（默认 32 KB 装不下列表，会 `LV_ASSERT_HANDLER` 死机）；中文用自带子集字库，不要换回 191 KB 的 LVGL 合集。
+- 日志：`CONFIG_LOG_DEFAULT_LEVEL_WARN`，串口流里不要出现 INFO/DEBUG 噪声；固件调试打印用 `DEBUG_PRINT*`（默认编译为空）。
+- 注释写"为什么"（硬件坑、驱动行为、实测数字），不要写"做了什么"；改动后清掉描述旧行为的注释。
+- `evil_twin.cpp` 与 `evil_twin.h` 的葡萄牙语注释/文案来自上游，只在新改动的行里改语言。
+
+## 8. 测试
+
+固件测试套件 `firmware/tests/test_wireless_attack.py`（44 个用例，unittest）：
+
+```powershell
+cd firmware
+$env:DEAUTHER_PORT = "COM5"      # 默认就是 COM5
+python -m unittest discover -s tests -v
+```
+
+- 端口打不开或固件无响应时，硬件相关测试类会 `SkipTest`（所以不接板子也能跑通，只是大部分跳过）。
+- 纯 Python 的协议解析用例（10 个）不需要硬件，任何时候都应通过。
+- 用例**不发攻击帧**（唯一例外是 `PROBE_BROADCAST` 的 3 秒计数用例）。新增用例请保持这个边界，
+  不要写"对真实 AP deauth"的自动化测试。
+- 硬件类用例在 `setUp` 里先发 `STOP/CSASTOP/DELBASTOP/BASTOP` 清残留状态（CSA 自动模式会停在 5G 信道，残留会让后续扫描偶发失败），
+  新用例也要遵守这个清理约定。
+- 自动化覆盖：协议解析、PING/HELP/STATUS/SCAN、参数校验、`DELBATEST`/`BATEST` 帧字节、`UISCREEN` 逐屏切换、
+  堆稳定性、命令洪泛、垃圾字节、PING/STATUS/扫描耗时、LVGL 就绪与弹窗行数/堆余量。
+- 上位机冒烟（不建窗口，可用于验证导入/布局没有崩）：
+
+```powershell
+cd gui
+python main.py --self-test
+```
+
+- 测试数据、性能数字、已修缺陷都写在 `firmware/测试报告.md`。改完行为要更新那里的用例矩阵与数字，不要只改 README。
+  现有实证手段：`STATUS` 的 `txok/txerr`、第二块板的 `MON` + `RXMIX`、`CSATEST`/`DELBATEST`/`BATEST` 的逐字节输出。
+- 报告结论要区分"帧上空气"和"客户端真的断开"：后者受对端 PMF/PHY 代际影响，不在固件可控范围。
+
+## 9. 提交与文档
+
+- 提交信息用 **Conventional Commits**，`type(scope): 中文简述`，简述不加句号。
+  现有 scope（取自提交历史）：`deauth`、`csa`、`delba`、`ba`、`ui`、`lvgl`、`sniffer`；`type` 用过 `feat/fix/docs/test/chore/ux`。
+  例：`fix(ui): 目标弹窗建到 25 行时耗尽 LVGL 池，整机静默死机`、`feat(delba): Block Ack 会话拆除攻击（DELBA 欺骗）`。
+- 一次提交只做一件事（功能 / 实验数据 / 文档分开），大型实验结论单独提交并在 `测试报告.md` 里落数字。
+- 改功能时按需同步：`README.md`（能力矩阵/协议速查）、`firmware/README.md`（协议/行为/限制）、`firmware/测试报告.md`（实测数据）、
+  `TODO.md`（状态 `[x]/[~]/[ ]`）、`gui/README.md`（页面与命令映射）。
+- 不要提交：`build*`、`managed_components/`、`sdkconfig`、`sdkconfig*.old`、`__pycache__/`、`*.bin/*.elf/*.map`；
+  根 `.gitignore` 还排除了 `/blog/`、`/参考博文/`、`/lab/rf_throughput/sdkconfig.c5` 与上游参考树。
+  这些目录在磁盘上存在是正常的，不要"顺手加进 git"。
+- 仓库没有任何 CI；"构建 + 接板子跑 unittest + `--self-test`"就是提交前的验证清单。
+
+## 10. 安全与合规注意事项
+
+- 仅限自有/授权网络。README 的免责声明、GUI 的确认框（`DEAUTH_ALL`、Evil Twin）、参数校验都是有意设计，不要移除。
+- 默认静默是硬要求：不要引入 SoftAP、beacon 或 HTTP 服务作为常规路径（Evil Twin 是显式命令触发的临时状态，`STOP`/`EVILTWIN_STOP` 必须能回到静默）。
+- `ieee80211_raw_frame_sanity_check()` 的覆盖是攻击能力的基础，属于有意为之；不要"修好"它，也不要把它扩散到其它符号。
+- 抓到的凭据只存在 RAM（`captured_creds`，上限 50），没有持久化；新增存储要显式说明并考虑擦除路径。
+- 串口连接**不要拉低 DTR/RTS**：CH340 会把板子按进复位/下载模式（GUI 与测试客户端都已显式关闭）。
+- 不要提交任何真实 SSID/密码/抓包、个人串口或本机路径配置；`firmware/.vscode/settings.json` 含本机 IDF 路径，已被 `.gitignore` 排除。
+- 许可是 GPLv3：二次分发保留 `LICENSE` 与致谢章节；新增文件沿用仓库现有版权头风格（本仓库文件普遍没有版权头，按现状）。
+
+## 11. 已知坑与文档漂移
+
+实现层面的坑：
+
+1. **写入的 Duration 上不了空口（NAV 因此被删除）**：`esp_wifi_80211_tx()` 注入的帧，
+   Duration 字段由驱动/MAC 重算——单播一律 `SIFS+ACK@1Mbps`（30/26/20 字节的 action/BAR/data 实测都是 314 µs），
+   广播 CF-End 一律 0，RTS 恒 990–1102 µs（随重发速率变）。设 1 µs 与设 32767 µs 结果完全相同，
+   六种帧型都不带出我们写的值（C5 抓包实测，`测试报告.md §4.3.4`）。所以"用 Duration 预约信道"
+   在本驱动上不可能，任何"覆盖率 = 帧率 × 声明时长"的算法都是假的。
+2. **注入帧共享同一个 32 缓冲池，其中只有 CTS 不回收**：池大小 = `mgmt_sbuf_num`（上限 32，改 Kconfig 无效），
+   池空即返回 `0x101`。紧循环时任何帧型都在 32 帧处停住（那只是"32 个缓存同时在途"）；把节拍拉到 30 ms，
+   **RTS / CF-End / BAR 都能过 100 帧**，唯一例外是 **CTS**：每帧永久吃掉一个缓存，30/200/500 ms 节拍都是 32 帧封顶，
+   10 s 静置也不恢复，之后连 wifi 配置 API 都会卡在锁上，只能硬复位。
+3. **混杂模式是两级过滤**：`esp_wifi_set_promiscuous_filter()` 的 CTRL 位只是第一级，
+   `esp_wifi_set_promiscuous_ctrl_filter()` 默认丢弃全部控制帧；`start_promiscuous()` 已固定设 `MASK_ALL`，别退回默认值。
+4. **11n 射频解不出 Wi-Fi 6（HE）PPDU**：目标 BSS 里只有 HE 客户端时抓不到 client→AP 帧，
+   靠 500 ms 广播兜底（`blind=`）保底；客户端是否真断开取决于对端是否强制 PMF（WPA3/802.11w）。
+5. **触摸板 PENIRQ（GPIO36）未引到排针**，只能用原始值窗口 + 稳定判据判断按压；屏幕花屏/上下颠倒靠 `invert_color` + `mirror_x/y`。
+6. **阻塞扫描会饿死 idle 任务**，所以 `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_*` 关闭；否则 WDT backtrace 会打进协议流。
+7. **UART RX 环形缓冲**默认 256 B 会丢整行，必须保持 `SERIAL_RX_BUFFER_SIZE=4096` 且在 `Serial.begin()` 之前设置。
+
+文档与代码不一致处（以代码为准，改动时顺手修正）：
+
+- 根 `README.md` 与 `firmware/README.md` 写"36 项"测试，`firmware/测试报告.md` 与测试文件实际是 **43** 个用例。
+- `firmware/README.md §7.4` 写 LVGL 堆 64 KB，`sdkconfig.defaults` 实际是 **80 KB**（注释解释了 64 KB 不够）。
+- `firmware/README.md §2` 的 `src/` 清单缺少 `csa.cpp`、`delba.cpp`。
+- `firmware/代码框架与攻击原理.md §3.3` 仍写"每命中 +16 帧"，实际是 `1 单播 + 1 反向 + 1 广播 = 3 帧/命中`（见 `definitions.h` 与 `drain_tx_queue()`）。
+- `tests/test_wireless_attack.py` 里 `ESPTOOL_PY` 常量目前未被使用。

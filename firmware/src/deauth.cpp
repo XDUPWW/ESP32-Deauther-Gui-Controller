@@ -7,7 +7,6 @@
 #include "deauth.h"
 #include "definitions.h"
 #include "delba.h"
-#include "nav.h"
 #include "types.h"
 
 int eliminated_stations;
@@ -469,7 +468,6 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     }
     csa_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
     delba_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
-    nav_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
 
     // CSA recognition: action frames (cat 4 / act 4) and beacons with IE 37.
     uint8_t cat = 0;
@@ -840,7 +838,7 @@ void attack_sniffer_enable() {
 void attack_stop() {
     csa_stop();
     delba_stop();
-    nav_stop();    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous(false);
     deauth_active = false;
     s_mode = ATTACK_IDLE;
 }

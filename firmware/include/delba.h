@@ -60,6 +60,9 @@ uint32_t delba_ba_errors(void);
 int32_t delba_ba_last_error(void);
 // Debug: send one DELBA / ADDBA Request / BAR to `mac`, print the three results.
 void delba_ba_tx_probe(const uint8_t mac[6]);
+// Debug: hammer `count` BARs back to back and report where the driver stops
+// accepting them (the BAR is both a control frame and shorter than 24 bytes).
+void delba_bar_probe(int count, int gap_ms, bool bcast);
 
 void delba_stop(void);
 

@@ -137,7 +137,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 │   ├── CMakeLists.txt / sdkconfig.defaults / sdkconfig.c5 / partitions.csv
 │   ├── include/  src/            ← 攻击逻辑 + 串口协议
 │   ├── components/wireless_ui/   ← 可选 LVGL 界面（宏控，与主固件解耦）
-│   ├── tests/                    ← 自动化用例（36 项）
+│   ├── tests/                    ← 自动化用例（44 项）
 │   └── tools/gen_cjk_font.py     ← 生成界面用 CJK 子集字库
 └── gui/                          ← Windows 上位机
     ├── README.md
@@ -202,7 +202,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 
 **已验证**
 
-- 自动化：36/36 通过（`python -m unittest discover -s tests`，需接板子）
+- 自动化：44/44 通过（`python -m unittest discover -s tests`，需接板子）
 - 双板交叉：ESP32 泛洪期间，ESP32-C5 扫到 37 个伪造 SSID → 泛洪真的上了空口
 - 触摸屏：四角校准 → 解算 → 存 NVS → 掉电保持；三级菜单 + 弹窗；`UITARGETS`/`UI` 可无手指复现
 - 上位机：无头结构测试（页面组织、弹窗勾选、命令拼接）+ 人工点击
