@@ -19,6 +19,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "lvgl.h"
 #include "ui_port.h"
 
@@ -84,6 +85,7 @@ static int s_selected_before = -1;
 static uint16_t s_item_row[LIST_ROWS];    // s_rows[] slot shown by each list item
 static lv_obj_t *s_item_label[LIST_ROWS]; // its label, updated in place on tap
 static int s_item_count;
+static int s_rows_shown;  // rows actually built (less than the limit if the pool is tight)
 static void rebuild_popup_list(void);
 static void refresh_item_labels(void);
 static void update_mode_label(void);
@@ -194,6 +196,35 @@ static void refresh_item_labels(void) {
     }
 }
 
+// LVGL's stock assert handler is a bare `while(1);` (lv_conf_internal.h), so an
+// out-of-memory in lv_malloc() freezes the firmware with no output and no
+// reboot. Building a list is the only place we knowingly approach the pool
+// limit, so it runs under a timer that reboots if the build stops making
+// progress -- a frozen screen is worse than a restart.
+static TimerHandle_t s_build_guard;
+
+static void build_guard_cb(TimerHandle_t timer) {
+    (void)timer;
+    printf("\nERR LVGL list build hung, rebooting\n");
+    fflush(stdout);
+    esp_restart();
+}
+
+static void build_guard(bool arm) {
+    if (s_build_guard == NULL) {
+        s_build_guard = xTimerCreate("ui_guard", pdMS_TO_TICKS(3000), pdFALSE, NULL,
+                                     build_guard_cb);
+        if (s_build_guard == NULL) {
+            return;
+        }
+    }
+    if (arm) {
+        xTimerStart(s_build_guard, 0);
+    } else {
+        xTimerStop(s_build_guard, 0);
+    }
+}
+
 static void rebuild_popup_list(void) {
     if (s_popup_list == NULL) {
         return;
@@ -203,11 +234,23 @@ static void rebuild_popup_list(void) {
     for (int slot = 0; slot < LIST_ROWS; slot++) {
         s_item_label[slot] = NULL;
     }
-    // Each row costs LVGL heap; bound it so a dense radio environment cannot
-    // exhaust the UI heap.
+    // Each row costs ~580 B of LVGL's own pool (not the system heap), and a
+    // failed allocation inside LVGL halts the whole firmware (LV_ASSERT_HANDLER),
+    // so stop before the pool runs dry instead of trusting LIST_ROWS alone.
     const int limit = s_row_count < LIST_ROWS ? s_row_count : LIST_ROWS;
     char text[SSID_LEN + 64];
+    s_rows_shown = 0;
+    build_guard(true);
     for (int i = 0; i < limit; i++) {
+        if (i > 0) {
+            lv_mem_monitor_t mon;
+            lv_mem_monitor(&mon);
+            if (mon.free_size < 6144) {
+                ESP_LOGW(TAG, "popup capped at %d rows (lvgl free %u)", i,
+                         (unsigned)mon.free_size);
+                break;
+            }
+        }
         s_item_row[i] = (uint16_t)i;
         row_text(i, text, sizeof(text));
         lv_obj_t *btn = lv_button_create(s_popup_list);
@@ -226,7 +269,9 @@ static void rebuild_popup_list(void) {
                             (void *)(intptr_t)s_rows[i].index);
         s_item_label[i] = label;
         s_item_count = i + 1;
+        s_rows_shown = s_item_count;
     }
+    build_guard(false);
 }
 
 static void update_popup_title(void) {
@@ -234,7 +279,7 @@ static void update_popup_title(void) {
         return;
     }
     char text[64];
-    snprintf(text, sizeof(text), "pick targets (%d) - %s", s_row_count,
+    snprintf(text, sizeof(text), "pick targets (%d/%d) - %s", s_rows_shown, s_row_count,
              s_tap_pick ? "multi" : "single");
     lv_label_set_text(s_popup_title, text);
 }
@@ -429,8 +474,8 @@ static void targets_open(void) {
     }
     memcpy(s_picked_before, s_picked, sizeof(s_picked));
     s_selected_before = s_selected;
-    update_popup_title();
     rebuild_popup_list();  // rows only exist while the popup is open
+    update_popup_title();  // after the rebuild: the title reports how many rows fit
     lv_obj_remove_flag(s_popup, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(s_popup);
 }
@@ -747,6 +792,7 @@ static void reason_build_rows(void) {
     if (s_reason_popup_list == NULL || lv_obj_get_child_count(s_reason_popup_list) > 0) {
         return;
     }
+    build_guard(true);
     for (int i = 0; i <= REASON_TABLE_LEN; i++) {
         const char *text = (i == REASON_RANDOM_ROW) ? "random (per burst)" : kReasonTable[i].text;
         lv_obj_t *btn = lv_button_create(s_reason_popup_list);
@@ -760,6 +806,7 @@ static void reason_build_rows(void) {
         lv_obj_align(label, LV_ALIGN_LEFT_MID, 2, 0);
         lv_obj_add_event_cb(btn, reason_row_clicked, LV_EVENT_CLICKED, (void *)(intptr_t)i);
     }
+    build_guard(false);
 }
 
 static void reason_row_clicked(lv_event_t *event) {
@@ -1290,6 +1337,7 @@ int wireless_ui_touch_irq_level(void) {
 
 void wireless_ui_show_targets(void) {
     if (!wireless_ui_port_lock(200)) {
+        ESP_LOGW(TAG, "UITARGETS: LVGL lock timeout");
         return;
     }
     targets_open();

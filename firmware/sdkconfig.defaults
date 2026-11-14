@@ -34,9 +34,13 @@ CONFIG_LOG_DEFAULT_LEVEL_WARN=y
 # IDF_TARGET_ESP32, so building for ESP32-C5 simply leaves it out.
 CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT=y
 
-# LVGL 9 tuning for a 320x240 screen on a plain ESP32 (no PSRAM)
+# LVGL 9 tuning for a 320x240 screen on a plain ESP32 (no PSRAM).
+# The pool holds every screen (7 of them, ~48 KB) plus list rows: a target popup
+# with 30 rows costs ~17 KB, so 64 KB was too small and lv_malloc() failed ->
+# LV_ASSERT_HANDLER halted the firmware. 80 KB leaves ~15 KB of slack; the popup
+# also stops building rows before the pool runs dry.
 CONFIG_LV_COLOR_DEPTH_16=y
-CONFIG_LV_MEM_SIZE_KILOBYTES=64
+CONFIG_LV_MEM_SIZE_KILOBYTES=80
 # SSIDs are frequently CJK; the default Montserrat font has no such glyphs.
 # LVGL's built-in CJK subset is 191 KB; the project ships its own ~60 KB subset.
 # CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_16_CJK is not set
