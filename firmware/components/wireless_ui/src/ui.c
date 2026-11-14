@@ -60,6 +60,7 @@ static lv_obj_t *s_evil_label;
 // CSA page: one target AP + a new channel, picked from a popup like the reason.
 static lv_obj_t *s_csa_label;
 static lv_obj_t *s_delba_label;
+static lv_obj_t *s_ba_label;
 static void reason_row_clicked(lv_event_t *event);
 // Deauth reason code picker on the mode page. Cycles through the three codes
 // people actually use plus "random"; the firmware keeps the authoritative value.
@@ -244,6 +245,7 @@ typedef enum {
     SCR_PROBE,
     SCR_CSA,
     SCR_DELBA,
+    SCR_BA,
     SCR_EVIL,
     SCR_COUNT
 } ui_screen_t;
@@ -326,6 +328,22 @@ static void update_mode_label(void) {
             snprintf(text, sizeof(text), "DELBA: pick a target first");
         }
         lv_label_set_text(s_delba_label, text);
+    }
+
+    if (s_ba_label != NULL) {
+        if (s_selected >= 0) {
+            const char *ssid = "";
+            for (int i = 0; i < s_row_count; i++) {
+                if ((int)s_rows[i].index == s_selected) {
+                    ssid = s_rows[i].ssid;
+                    break;
+                }
+            }
+            snprintf(text, sizeof(text), "BA #%d %s step=512", s_selected, ssid);
+        } else {
+            snprintf(text, sizeof(text), "BA: pick a target first");
+        }
+        lv_label_set_text(s_ba_label, text);
     }
 
     if (s_evil_label != NULL) {
@@ -466,6 +484,30 @@ static void delba_start_clicked(lv_event_t *event) {
 static void delba_stop_clicked(lv_event_t *event) {
     (void)event;
     emit("DELBASTOP");
+}
+
+static void goto_ba(lv_event_t *event) {
+    (void)event;
+    s_tap_pick = 0;  // BA attack targets one AP
+    update_mode_label();
+    show_screen(SCR_BA);
+}
+
+static void ba_start_clicked(lv_event_t *event) {
+    (void)event;
+    if (s_selected < 0) {
+        if (s_log) lv_label_set_text(s_log, "pick an AP first");
+        return;
+    }
+    char command[32];
+    // step 512: plant WinStartB ~512 sequence numbers ahead of the live traffic.
+    snprintf(command, sizeof(command), "BAATTACK %d 512", s_selected);
+    emit(command);
+}
+
+static void ba_stop_clicked(lv_event_t *event) {
+    (void)event;
+    emit("BASTOP");
 }
 
 static void goto_evil(lv_event_t *event) {
@@ -751,6 +793,7 @@ static bool build_main_ui(void) {
     make_button(m2, "CSA", goto_csa);
     make_button(m2, "DELBA", goto_delba);
     lv_obj_t *m3 = make_row(s_screens[SCR_MENU]);
+    make_button(m3, "BA", goto_ba);
     make_button(m3, "Evil", goto_evil);
 
     // ---- level 2: deauth mode menu
@@ -821,6 +864,22 @@ static bool build_main_ui(void) {
     lv_obj_t *x2 = make_row(s_screens[SCR_DELBA]);
     make_button_h(x2, "Stop", delba_stop_clicked, 34);
     make_button_h(x2, "Back", goto_menu, 34);
+
+    // ---- level 2: BA session hijack (DELBA -> forged ADDBA -> BAR)
+    s_screens[SCR_BA] = make_screen(root);
+    s_ba_label = lv_label_create(s_screens[SCR_BA]);
+    lv_obj_set_width(s_ba_label, 312);
+    lv_label_set_text(s_ba_label, "BA: pick a target first");
+    lv_obj_t *b_hint = lv_label_create(s_screens[SCR_BA]);
+    lv_label_set_text(b_hint, "Scan -> Targets -> Start (BA hijack, step 512)");
+    lv_obj_set_style_text_color(b_hint, lv_color_hex(0x666666), 0);
+    lv_obj_t *b1 = make_row(s_screens[SCR_BA]);
+    make_button_h(b1, "Scan", scan_clicked, 34);
+    make_button_h(b1, "Targets", targets_clicked, 34);
+    make_button_h(b1, "Start", ba_start_clicked, 34);
+    lv_obj_t *b2 = make_row(s_screens[SCR_BA]);
+    make_button_h(b2, "Stop", ba_stop_clicked, 34);
+    make_button_h(b2, "Back", goto_menu, 34);
 
     // ---- level 2: probe
     s_screens[SCR_PROBE] = make_screen(root);
@@ -1250,6 +1309,10 @@ bool wireless_ui_show_by_name(const char *name) {
         s_tap_pick = 0;  // DELBA targets a single AP, like CSA
         update_mode_label();
         show_screen(SCR_DELBA);
+    } else if (strcmp(name, "ba") == 0) {
+        s_tap_pick = 0;
+        update_mode_label();
+        show_screen(SCR_BA);
     } else if (strcmp(name, "evil") == 0) {
         s_tap_pick = 0;
         show_screen(SCR_EVIL);
@@ -1274,6 +1337,8 @@ const char *wireless_ui_screen_name(void) {
             return "csa";
         case SCR_DELBA:
             return "delba";
+        case SCR_BA:
+            return "ba";
         case SCR_MENU:
         default:
             return "menu";

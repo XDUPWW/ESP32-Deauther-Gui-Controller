@@ -415,7 +415,7 @@ class FirmwareFunctionalTests(unittest.TestCase):
 
     def test_ui_screens_switch(self):
         """LVGL：一级菜单新增 DELBA 后，每个屏幕都能构建出来（切屏后不崩、堆不塌）。"""
-        for name in ("menu", "deauth", "mode", "probe", "csa", "delba", "evil"):
+        for name in ("menu", "deauth", "mode", "probe", "csa", "delba", "ba", "evil"):
             line, _ = self.client.command(f"UISCREEN {name}",
                                           lambda l: l.startswith(("OK UISCREEN", "ERR ")), 5)
             self.assertIsNotNone(line, f"UISCREEN {name} 无响应")

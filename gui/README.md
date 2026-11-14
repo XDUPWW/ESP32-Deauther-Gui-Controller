@@ -29,7 +29,7 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 
 ```
 一级  [Deauth 攻击] [Probe 攻击] [CSA 欺骗]
-      [DELBA 欺骗]  [Evil Twin] [设备状态] [日志]
+      [DELBA 欺骗]  [BA 会话攻击] [Evil Twin] [设备状态] [日志]
 
 二级  Deauth 攻击 -> [单个 AP] [全部 AP] [只打勾选] [排除勾选]
 
@@ -114,7 +114,18 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 攻击会持续到点 `停止`；期间被攻击的客户端**不会掉线**，只是吞吐量塌到单帧确认
 （实验室实测 -99%，见 [固件测试报告](../firmware/测试报告.md)）。
 
-### 2.5 Probe 攻击
+### 2.5 BA 会话攻击
+
+`BA 会话攻击` 页：`扫描 AP` → `选择目标…`（单选）→ 选 SN 步进 → `开始 BA 攻击` / `停止`。
+
+- 命令：`BAATTACK <idx> <step>`，停止发 `BASTOP`
+- 步进下拉：`512 / 256 / 1024 / 2047 / 0（对照组，SSN 不推窗口）`；越界值在界面侧就拦住
+- 底栏显示 `BA：on/off (BAR 帧数 / 最后写入的 SSN)`；`设备状态` 页另有
+  `baaddba`（ADDBA 帧数）、`badlba`（DELBA 帧数）、`baerr`（驱动拒收帧数）
+- 实验室结论：只发 2 帧伪造 ADDBA 就能让该 TID 冻结且不自愈（需重新关联）；
+  "窗口被推走"这一步未单独证明（见 [测试报告](../firmware/测试报告.md)）
+
+### 2.6 Probe 攻击
 
 只有一种：`开始泛洪` → `PROBE_BROADCAST`（**不需要扫描**，广播泛洪与环境无关）。
 固件持续广播 Beacon（子类型 8）+ Probe Response（5），SSID/BSSID 全随机，每 120 ms 跳信道。

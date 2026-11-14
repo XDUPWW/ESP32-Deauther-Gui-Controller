@@ -52,6 +52,9 @@ void delba_ba_selftest(void);
 // `ssn_step` 0..127 = control run (window not actually moved).
 bool delba_ba_plant_once(int index, uint16_t ssn_step);
 uint32_t delba_ba_planted_frames(void);
+// One-shot pass that sends only BAR frames (no ADDBA, no DELBA): isolates the
+// reorder-window update from BA session churn.
+bool delba_ba_bar_once(int index, uint16_t ssn_step);
 // Frames the driver refused, and the last esp_err_t it returned.
 uint32_t delba_ba_errors(void);
 int32_t delba_ba_last_error(void);

