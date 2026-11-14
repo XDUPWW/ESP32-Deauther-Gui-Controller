@@ -23,6 +23,7 @@
 #include <string.h>
 
 #include "deauth.h"
+#include "esp_private/wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -346,6 +347,38 @@ void nav_tx_probe(void) {
     Serial.print((int)e2);
     Serial.print(" cfend=");
     Serial.println((int)e3);
+}
+
+// Does the private TX API (no sanity check) let us push control frames at a
+// useful rate? esp_wifi_internal_tx documents ESP_ERR_WIFI_NOT_ASSOC, and our
+// interface is deliberately unassociated, so this needs a measurement.
+void nav_itx_probe(void) {
+    uint8_t frame[16];
+    uint8_t ra[6];
+    pick_ra(ra);
+    const size_t len = build_cts(frame, ra, 5000);
+    int ok = 0;
+    int fail = 0;
+    int last = 0;
+    const uint32_t t0 = millis();
+    for (int i = 0; i < 500; i++) {
+        const int r = esp_wifi_internal_tx(WIFI_IF_STA, frame, (uint16_t)len);
+        if (r == 0) {
+            ok++;
+        } else {
+            fail++;
+            last = r;
+        }
+    }
+    const uint32_t ms = millis() - t0;
+    Serial.print("NAVITX ok=");
+    Serial.print(ok);
+    Serial.print(" fail=");
+    Serial.print(fail);
+    Serial.print(" last_err=");
+    Serial.print(last);
+    Serial.print(" ms=");
+    Serial.println((unsigned)ms);
 }
 
 bool nav_active(void) {

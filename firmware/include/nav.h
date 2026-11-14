@@ -41,6 +41,8 @@ void nav_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subtype
 void nav_selftest(void);
 // Send one CTS / RTS / CF-End and print the driver's verdict for each (debug).
 void nav_tx_probe(void);
+// Probe the private esp_wifi_internal_tx() path with 500 CTS frames.
+void nav_itx_probe(void);
 // Frames the driver refused.
 uint32_t nav_tx_errors(void);
 

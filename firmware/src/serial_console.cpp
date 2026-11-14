@@ -120,6 +120,7 @@ void print_help() {
   Serial.println("INFO NAV <idx> [cts|rts|rtsap|mgmt|cfend|hybrid] [dur]  virtual carrier sense attack");
   Serial.println("INFO NAVSTAT                       NAV counters only (short line while NAV runs)");
   Serial.println("INFO NAVTX                         send one CTS/RTS/CF-End and print the driver verdict");
+  Serial.println("INFO NAVITX                        probe esp_wifi_internal_tx with 500 CTS frames");
   Serial.println("INFO NAVSTOP                       stop the NAV attack");
   Serial.println("INFO NAVTEST                       dump the forged CTS/RTS/CF-End bytes");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
@@ -1217,6 +1218,8 @@ void dispatch(char* line) {
     do_nav_stat();
   } else if (strcmp(command, "NAVTX") == 0) {
     nav_tx_probe();
+  } else if (strcmp(command, "NAVITX") == 0) {
+    nav_itx_probe();
   } else if (strcmp(command, "BARPUSH") == 0) {
     char* idx_token = strtok(nullptr, " \t");
     char* step_token = strtok(nullptr, " \t");
