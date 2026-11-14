@@ -26,7 +26,7 @@
 | 黑名单 deauth | `DEAUTH_EXCEPT i,j` | ✅ | ✅ | ✅ | 命令/参数校验验证 |
 | CSA 欺骗（PMF 绕过） | `CSA <idx> [ch] [cnt] [secs]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板接收 `csa_action=12`、真实客户端现场生效（人工确认） |
 | DELBA 欺骗（拆 Block Ack 会话） | `DELBA <idx> [reason]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板收到 `delba=82`、ADDBA 精确补刀 `delbtr=5`、实验室链路吞吐量 **-99%**（480→5 KiB/s，链路不掉线） |
-| BA 会话劫持（DELBA→伪造 ADDBA→BAR） | `BAATTACK <idx> [step]` / `BAPLANT` / `BARPUSH` | ✅ | ✅ | ✅ | 帧格式逐字节校验；只发 2 帧伪造 ADDBA 就把 4 Mbit/s 的流冻结且不自愈（需重连）；“窗口被推走”这一步未单独证明 |
+| BA 会话劫持（DELBA→伪造 ADDBA→BAR） | `BAATTACK <idx> [step]` / `BAPLANT` / `BARPUSH` | ✅ | ✅ | ✅ | 帧格式逐字节校验；伪造 ADDBA 可让 4 Mbit/s 的流冻结且不自愈（需重连）；**Android 客户端 A/B 判定：step=512 卡死、step=0 无影响 → 推窗机制成立** |
 | Probe 泛洪（Beacon + Probe Response） | `PROBE_BROADCAST` | ✅ | ✅ | ✅ | **双板实测**（另一块板扫到 37 个伪造 SSID） |
 | STA 嗅探 | `STATIONS [sec]` | ✅ | ✅ | ✅ | 实测（能给出 STA 及其所属 AP） |
 | 逐 AP 计数 | `STATS` | ✅ | ✅ | ✅ | 实测 |
