@@ -21,7 +21,8 @@
 | `[x]` | **DELBA 的 TID 学习**：从 QoS 数据帧的 QoS Control、BA/BAR 控制帧的 BA Control、ADDBA 参数集三路识别 TID | `delba_on_rx()` | `STATUS` 的 `delbat` 位图随真实流量变化，帧量比"0–7 全打"更低 |
 | `[ ]` | **DELBA 对手机/PC 客户端的逐型号实测**：不同驱动的 BA 重建策略差别很大 | 实验室脚本扩展 | 至少两种手机 + Windows 客户端的吞吐量曲线 |
 | `[~]` | **BA 会话劫持（Bl0ck / CVE-2022-32666 方向）**：DELBA 清场 + 伪造 ADDBA 种 WinStartB + BAR 推窗 | `src/delba.cpp`、命令 `BAATTACK` / `BAPLANT` / `BATEST` | 会话级 DoS 已复现（2 帧 ADDBA 就冻结，需重连才恢复）；**窗口技巧本身未单独证明**，缺 mac80211 类目标 |
-| `[ ]` | **BA 窗口机制的单独验证**（Bl0ck 的核心那一步）：需要按 802.11-2020 10.25.6.6.3 更新 WinStartB 的目标 | 实验台建设 | 可选路线：① 买一块 MT7601U/RTL8188EU USB 网卡 + VirtualBox 直通，Linux 里 hostapd 起 AP、另一台设备当客户端，ESP32 攻击；② 树莓派/旧笔记本当 AP；③ 双系统/Ubuntu Live 用本机的 AX1650i（iwlwifi/mac80211）。判据：`step=512` 把吞吐打到 0 而 `step=0` 不受影响 |
+| `[~]` | **BA 窗口机制的单独验证**（Bl0ck 的核心那一步）——决定用**手机客户端自测** | 手机 + 攻击板，不需要额外设备 | 步骤：① 手机连自家 Wi-Fi 并播放视频/跑测速（要持续有下载流量）；② 攻击板 `SCAN` 找到该 AP 的序号；③ `BARPUSH <idx> 512`，静默后看手机是否卡住、Wi-Fi 图标是否仍显示已连接；④ 手机 Wi-Fi 关开恢复后重复 `BARPUSH <idx> 0` 做对照。判据：`step=512` 卡死而 `step=0` 不影响 → 窗口机制成立；两者都卡死 → 只是会话被打断（与 ESP-IDF 目标的结论一致）。记录 `STATUS` 的 `delbac/bassn/baplant` 与手机型号、系统版本 |
+| `[ ]` | （备选）用 Linux 目标复现：MT7601U/RTL8188EU USB 网卡 + VirtualBox 直通，或树莓派/旧笔记本当 AP/客户端 | 实验台 | 与上一条同一判据；mac80211 是标准实现，最适合证明"推窗"这一步 |
 | `[ ]` | **CSA 跟随**：解析目标 AP 的 CSA/ECSA IE，提前跳信道，注入与抓包不丢帧 | 复用 `deauth.cpp` 的信道调度 | 目标 AP 切信道后 200 ms 内仍能收到它的帧 |
 | `[ ]` | **WPA-Enterprise**：EAP-Identity 明文 + MSCHAPv2 响应哈希 | 命令 `EAP`、导出 hashcat 5500 | 抓到 `EAP_IDENTITY <user>` 与 `MSCHAPV2` 哈希对 |
 
