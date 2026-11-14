@@ -26,7 +26,8 @@
 | `[ ]` | （备选）用 Linux 目标复现：MT7601U/RTL8188EU USB 网卡 + VirtualBox 直通，或树莓派/旧笔记本当 AP/客户端 | 实验台 | 与上一条同一判据；mac80211 是标准实现，最适合证明"推窗"这一步 |
 | `[x]` | **NAV 控制帧预算的机制与边界**：32 帧共享队列（RTS/CTS/CF-End 不独立）、错误码 `0x101`、耗尽后 wifi API 全阻塞；`esp_restart` 在 burst 后不可用，需主机 RTS 复位 | `NAVSEQ` / `NAVBURST` / `RESTART` | 实测：`rts_ok=32 first_fail=32`；burst+复位的占空比约 32%（1.06 s 覆盖 / 3.27 s 一轮） |
 | `[x]` | **CTS 的干净对照**（dur=32767 vs dur=1，20 帧/轮，3 轮）：两者吞吐一致（462 vs 440 KiB/s），**无可测效果**；帧归属因背景控制帧太多无法做（ch1/ch12 各 500+/20 s） | `NAVBURST`、`nav_ab.py` | 已记录为"CTS 路径在这对设备上无效"，不再作为可用手段 |
-| `[ ]` | **控制帧的持续高频注入**：应用层杠杆（Kconfig 池大小、`esp_wifi_internal_tx`、API 组合）已证伪或存疑 | 需 blob patch | Frankenstein 类方案；判据是能持续 >30 fps 发 RTS/CTS |
+| `[x]` | **32 帧上限的根因（静态分析定论）**：读本机 IDF 的 wifi blob（符号未 strip）→ `esp_wifi_80211_tx()` 内先过 `ieee80211_raw_frame_sanity_check()`，再调 `ic_ebuf_alloc()`（`libpp.a` 里是 `esf_buf_alloc()` 的转发），返回 NULL 就直接 `return 0x101`。池子 = **管理帧 short buffer**：`mgmt_sbuf_num`（`esp_wifi.h` 注释：min 6 / **max 32**）、Kconfig `ESP_WIFI_MGMT_SBUF_NUM` `range 6 32` | `xtensa-esp32-elf-objdump` + `libnet80211.a` / `libpp.a` | 结论：32 是 **API 级硬上限**，调不上去；解释了改 `DYNAMIC_TX_BUFFER_NUM` 无效（不是那个池）、子类型共享预算（同一个池）、`esp_restart()` 卡死（反初始化要回收这个池而控制帧占的 buffer 永不归还） |
+| `[ ]` | **控制帧的持续高频注入**：应用层杠杆已全部证伪（Kconfig 池大小、`esp_wifi_internal_tx`、API 组合、32 帧上限本身） | 只剩 blob 补丁一条路 | 候选：给控制帧补 TX-done 回收（跨 IDF 版本失效）或换 esp32-open-mac 自管 TX 环（只支持经典 ESP32、需 IDF 5.0.1 + Rust、无 WPA2/AP 模式）。**当前判断：不值得做**，NAV 保留为"每开机 32 帧 burst + 硬复位"的实验能力 |
 | `[~]` | **NAV / CF-End 攻击**：管理帧携带 Duration 预约信道、CF-End 解冻 | `src/nav.cpp`、命令 `NAV/NAVSTOP/NAVSTAT/NAVTEST/NAVTX` | 已实现并可跑：`mgmt 32767` 让链路 -80%、停手即恢复；**但对照（Duration=1）也掉 69%**，纯 NAV 效果待在不因第三方帧降速的目标上复核；控制帧受 ESP32 32 帧上限 |
 | `[ ]` | **CSA 跟随**：解析目标 AP 的 CSA/ECSA IE，提前跳信道，注入与抓包不丢帧 | 复用 `deauth.cpp` 的信道调度 | 目标 AP 切信道后 200 ms 内仍能收到它的帧 |
 | `[ ]` | **WPA-Enterprise**：EAP-Identity 明文 + MSCHAPv2 响应哈希 | 命令 `EAP`、导出 hashcat 5500 | 抓到 `EAP_IDENTITY <user>` 与 `MSCHAPV2` 哈希对 |
