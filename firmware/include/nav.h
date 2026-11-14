@@ -46,7 +46,7 @@ void nav_itx_probe(void);
 // Budget probe: RTS until it fails, then one CTS / CF-End (per-subtype queue?).
 void nav_budget_probe(void);
 // Hard burst of `count` CTS frames (32.7 ms reservation each), optional CF-End release.
-void nav_burst(int count, bool cfend_release);
+void nav_burst(int count, uint16_t duration, bool cfend_release, uint8_t channel);
 // Frames the driver refused.
 uint32_t nav_tx_errors(void);
 // Last esp_err_t the raw TX path returned (0x101 = out of TX buffers).

@@ -454,14 +454,14 @@ void nav_budget_probe(void) {
 // Hard NAV burst: `count` control frames spaced 30 ms so their durations chain
 // into an unbroken reservation (~count * 32.7 ms). No wifi config API is touched
 // after the first frame, because the pool is gone for good once it is exhausted.
-void nav_burst(int count, bool cfend_release) {
+void nav_burst(int count, uint16_t duration, bool cfend_release, uint8_t channel) {
     uint8_t frame[16];
     uint8_t ra[6];
-    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    esp_wifi_set_channel(channel == 0 ? 1 : channel, WIFI_SECOND_CHAN_NONE);
     int ok = 0;
     for (int i = 0; i < count; i++) {
         pick_ra(ra);
-        if (esp_wifi_80211_tx(WIFI_IF_STA, frame, (uint16_t)build_cts(frame, ra, 32767), false) == ESP_OK) {
+        if (esp_wifi_80211_tx(WIFI_IF_STA, frame, (uint16_t)build_cts(frame, ra, duration), false) == ESP_OK) {
             ok++;
         } else {
             break;  // budget gone; further calls only spin
@@ -471,12 +471,24 @@ void nav_burst(int count, bool cfend_release) {
     Serial.print("NAVBURST sent=");
     Serial.print(ok);
     Serial.print(" cover_ms=");
-    Serial.println((unsigned)(ok * 33));
+    Serial.print((unsigned)(ok * (duration / 1000)));
+    Serial.print(" dur=");
+    Serial.println((unsigned)duration);
     if (cfend_release && ok > 0) {
-        uint8_t bssid[6];
-        pick_ra(bssid);
-        esp_wifi_80211_tx(WIFI_IF_STA, frame, (uint16_t)build_cfend(frame, kBroadcast, bssid), false);
-        Serial.println("NAVBURST release=1");
+        // A few CF-End frames release the NAV we just declared. They have to come
+        // out of the same 32 frame budget, so the burst must leave room for them.
+        int released = 0;
+        for (int i = 0; i < 4; i++) {
+            uint8_t bssid[6];
+            pick_ra(bssid);
+            if (esp_wifi_80211_tx(WIFI_IF_STA, frame, (uint16_t)build_cfend(frame, kBroadcast, bssid),
+                                  false) == ESP_OK) {
+                released++;
+            }
+            vTaskDelay(pdMS_TO_TICKS(5));
+        }
+        Serial.print("NAVBURST released=");
+        Serial.println(released);
     }
 }
 

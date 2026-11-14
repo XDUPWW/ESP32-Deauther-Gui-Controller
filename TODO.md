@@ -24,6 +24,9 @@
 | `[x]` | **BA 窗口机制的单独验证**（Bl0ck 的核心那一步）：**Android 客户端上成立**——`BARPUSH 512` 视频卡死（且仍显示已连接、需关开 Wi-Fi 恢复），`BARPUSH 0` 无影响；两次只差 SSN、都在静默期观察 | — | 已由用户现场确认（单设备单次、无抓包） |
 | `[x]` | ↳ 复现步骤（手机客户端自测，已执行） | 手机 + 攻击板，不需要额外设备 | 步骤：① 手机连自家 Wi-Fi 并播放视频/跑测速（要持续有下载流量）；② 攻击板 `SCAN` 找到该 AP 的序号；③ `BARPUSH <idx> 512`，静默后看手机是否卡住、Wi-Fi 图标是否仍显示已连接；④ 手机 Wi-Fi 关开恢复后重复 `BARPUSH <idx> 0` 做对照。判据：`step=512` 卡死而 `step=0` 不影响 → 窗口机制成立；两者都卡死 → 只是会话被打断（与 ESP-IDF 目标的结论一致）。记录 `STATUS` 的 `delbac/bassn/baplant` 与手机型号、系统版本 |
 | `[ ]` | （备选）用 Linux 目标复现：MT7601U/RTL8188EU USB 网卡 + VirtualBox 直通，或树莓派/旧笔记本当 AP/客户端 | 实验台 | 与上一条同一判据；mac80211 是标准实现，最适合证明"推窗"这一步 |
+| `[x]` | **NAV 控制帧预算的机制与边界**：32 帧共享队列（RTS/CTS/CF-End 不独立）、错误码 `0x101`、耗尽后 wifi API 全阻塞；`esp_restart` 在 burst 后不可用，需主机 RTS 复位 | `NAVSEQ` / `NAVBURST` / `RESTART` | 实测：`rts_ok=32 first_fail=32`；burst+复位的占空比约 32%（1.06 s 覆盖 / 3.27 s 一轮） |
+| `[x]` | **CTS 的干净对照**（dur=32767 vs dur=1，20 帧/轮，3 轮）：两者吞吐一致（462 vs 440 KiB/s），**无可测效果**；帧归属因背景控制帧太多无法做（ch1/ch12 各 500+/20 s） | `NAVBURST`、`nav_ab.py` | 已记录为"CTS 路径在这对设备上无效"，不再作为可用手段 |
+| `[ ]` | **控制帧的持续高频注入**：应用层杠杆（Kconfig 池大小、`esp_wifi_internal_tx`、API 组合）已证伪或存疑 | 需 blob patch | Frankenstein 类方案；判据是能持续 >30 fps 发 RTS/CTS |
 | `[~]` | **NAV / CF-End 攻击**：管理帧携带 Duration 预约信道、CF-End 解冻 | `src/nav.cpp`、命令 `NAV/NAVSTOP/NAVSTAT/NAVTEST/NAVTX` | 已实现并可跑：`mgmt 32767` 让链路 -80%、停手即恢复；**但对照（Duration=1）也掉 69%**，纯 NAV 效果待在不因第三方帧降速的目标上复核；控制帧受 ESP32 32 帧上限 |
 | `[ ]` | **CSA 跟随**：解析目标 AP 的 CSA/ECSA IE，提前跳信道，注入与抓包不丢帧 | 复用 `deauth.cpp` 的信道调度 | 目标 AP 切信道后 200 ms 内仍能收到它的帧 |
 | `[ ]` | **WPA-Enterprise**：EAP-Identity 明文 + MSCHAPv2 响应哈希 | 命令 `EAP`、导出 hashcat 5500 | 抓到 `EAP_IDENTITY <user>` 与 `MSCHAPV2` 哈希对 |

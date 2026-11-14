@@ -122,7 +122,7 @@ void print_help() {
   Serial.println("INFO NAVTX                         send one CTS/RTS/CF-End and print the driver verdict");
   Serial.println("INFO NAVITX                        probe esp_wifi_internal_tx with 500 CTS frames");
   Serial.println("INFO NAVSEQ                        budget probe: RTS until it fails, then CTS/CF-End");
-  Serial.println("INFO NAVBURST <n> [release]        hard burst of n CTS (33ms cover each), optional CF-End release");
+  Serial.println("INFO NAVBURST <n> [dur] [release] [ch]  hard burst of n CTS on channel ch, optional CF-End release");
   Serial.println("INFO RESTART                       esp_restart() (recovery from an exhausted TX pool)");
   Serial.println("INFO NAVSTOP                       stop the NAV attack");
   Serial.println("INFO NAVTEST                       dump the forged CTS/RTS/CF-End bytes");
@@ -1235,11 +1235,22 @@ void dispatch(char* line) {
     nav_budget_probe();
   } else if (strcmp(command, "NAVBURST") == 0) {
     char* count_token = strtok(nullptr, " 	");
+    char* dur_token = strtok(nullptr, " 	");
     char* release_token = strtok(nullptr, " 	");
+    char* ch_token = strtok(nullptr, " 	");
     const long count = count_token ? strtol(count_token, nullptr, 10) : 32;
+    const long dur = dur_token ? strtol(dur_token, nullptr, 10) : 32767;
     const bool release = release_token != nullptr && strcmp(release_token, "release") == 0;
+    long ch = 1;
+    if (release) {
+      ch = ch_token ? strtol(ch_token, nullptr, 10) : 1;
+    } else if (release_token != nullptr) {
+      ch = strtol(release_token, nullptr, 10);  // 3rd token given as channel
+    }
     attack_stop();
-    nav_burst((int)(count < 1 ? 1 : (count > 64 ? 64 : count)), release);
+    nav_burst((int)(count < 1 ? 1 : (count > 64 ? 64 : count)),
+              (uint16_t)(dur < 1 ? 1 : (dur > 32767 ? 32767 : dur)), release,
+              (uint8_t)(ch < 1 ? 1 : (ch > 196 ? 196 : ch)));
   } else if (strcmp(command, "RESTART") == 0) {
     Serial.println("OK RESTART");
     Serial.flush();
