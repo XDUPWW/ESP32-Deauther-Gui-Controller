@@ -141,6 +141,8 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `BARPUSH <idx> [step]` | 只发 BAR（不发 ADDBA/DELBA）后静默，用来隔离"推窗"与"会话改写" | `OK BARPUSH 0 step=512 ch=1` |
 | `BASTOP` | 停止 BA 攻击 | `OK BASTOP delba=54 addba=1 bar=256` |
 | `BATEST` / `BATX` | 打印伪造 ADDBA/BAR 的字节与解码 / 各发一帧并打印驱动返回值 | `BATEST addba len=33 ...` / `BATX delba(30B)=0 addba(33B)=0 bar(20B)=0` |
+| `NAV <idx> [cts\|rts\|rtsap\|mgmt\|cfend\|hybrid] [dur]` | 虚拟载波侦听攻击：用 Duration 预约信道（`mgmt` 能持续发；控制帧在 ESP32 上只能发 32 帧） | `OK NAV 0 mode=mgmt dur=32767 ch=1` |
+| `NAVSTOP` / `NAVSTAT` / `NAVTEST` / `NAVTX` | 停止 / 计数器 / 帧字节 / 驱动返回值 | `NAVSTAT mode=mgmt active=1 frames=597 errs=415` |
 | `MON <ch> <secs>` | 被动监听（`ch=0` 表示逐信道跳），计数器从 0 开始，便于用第二块板验证注入 | `OK MON ch=6 8s` |
 | `RADIO` | 打印驱动的嗅探状态：`promisc`、类型 mask、**控制帧 subtype mask**、当前信道 | `RADIO promisc=1(0) filter=0x00000007(0) ctrl_filter=0xFF800000(0) ch=1` |
 | `CTRLFILTER [hex\|all\|none]` | 查询/设置二级控制帧过滤器（默认 `all`；设成 `0` 就一帧控制帧都收不到） | `OK CTRLFILTER set=0xFF800000 readback=0xFF800000 err=0` |

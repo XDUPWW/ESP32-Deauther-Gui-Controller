@@ -24,6 +24,7 @@
 | `[x]` | **BA 窗口机制的单独验证**（Bl0ck 的核心那一步）：**Android 客户端上成立**——`BARPUSH 512` 视频卡死（且仍显示已连接、需关开 Wi-Fi 恢复），`BARPUSH 0` 无影响；两次只差 SSN、都在静默期观察 | — | 已由用户现场确认（单设备单次、无抓包） |
 | `[x]` | ↳ 复现步骤（手机客户端自测，已执行） | 手机 + 攻击板，不需要额外设备 | 步骤：① 手机连自家 Wi-Fi 并播放视频/跑测速（要持续有下载流量）；② 攻击板 `SCAN` 找到该 AP 的序号；③ `BARPUSH <idx> 512`，静默后看手机是否卡住、Wi-Fi 图标是否仍显示已连接；④ 手机 Wi-Fi 关开恢复后重复 `BARPUSH <idx> 0` 做对照。判据：`step=512` 卡死而 `step=0` 不影响 → 窗口机制成立；两者都卡死 → 只是会话被打断（与 ESP-IDF 目标的结论一致）。记录 `STATUS` 的 `delbac/bassn/baplant` 与手机型号、系统版本 |
 | `[ ]` | （备选）用 Linux 目标复现：MT7601U/RTL8188EU USB 网卡 + VirtualBox 直通，或树莓派/旧笔记本当 AP/客户端 | 实验台 | 与上一条同一判据；mac80211 是标准实现，最适合证明"推窗"这一步 |
+| `[~]` | **NAV / CF-End 攻击**：管理帧携带 Duration 预约信道、CF-End 解冻 | `src/nav.cpp`、命令 `NAV/NAVSTOP/NAVSTAT/NAVTEST/NAVTX` | 已实现并可跑：`mgmt 32767` 让链路 -80%、停手即恢复；**但对照（Duration=1）也掉 69%**，纯 NAV 效果待在不因第三方帧降速的目标上复核；控制帧受 ESP32 32 帧上限 |
 | `[ ]` | **CSA 跟随**：解析目标 AP 的 CSA/ECSA IE，提前跳信道，注入与抓包不丢帧 | 复用 `deauth.cpp` 的信道调度 | 目标 AP 切信道后 200 ms 内仍能收到它的帧 |
 | `[ ]` | **WPA-Enterprise**：EAP-Identity 明文 + MSCHAPv2 响应哈希 | 命令 `EAP`、导出 hashcat 5500 | 抓到 `EAP_IDENTITY <user>` 与 `MSCHAPV2` 哈希对 |
 
