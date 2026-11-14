@@ -389,6 +389,97 @@ void nav_itx_probe(void) {
     Serial.println((unsigned)ms);
 }
 
+
+// Budget probe: how many control frames does the raw path take before 0x101, and
+// is the budget per subtype? Sends RTS until it fails, then tries CTS once.
+void nav_budget_probe(void) {
+    uint8_t frame[16];
+    uint8_t ra[6];
+    pick_ra(ra);
+    int rts_ok = 0;
+    int rts_fail_at = -1;
+    int rts_err = 0;
+    for (int i = 0; i < 200; i++) {
+        const esp_err_t e = esp_wifi_80211_tx(WIFI_IF_STA,
+                                              frame, (uint16_t)build_rts(frame, ra, s_bssid, 32767), false);
+        if (e == ESP_OK) {
+            rts_ok++;
+        } else {
+            if (rts_fail_at < 0) {
+                rts_fail_at = i;
+                rts_err = (int)e;
+            }
+        }
+    }
+    int cts_ok = 0;
+    int cts_err = 0;
+    for (int i = 0; i < 4; i++) {
+        const esp_err_t e = esp_wifi_80211_tx(WIFI_IF_STA,
+                                              frame, (uint16_t)build_cts(frame, ra, 32767), false);
+        if (e == ESP_OK) {
+            cts_ok++;
+        } else if (cts_err == 0) {
+            cts_err = (int)e;
+        }
+    }
+    int cfend_ok = 0;
+    int cfend_err = 0;
+    for (int i = 0; i < 4; i++) {
+        uint8_t bssid[6];
+        pick_ra(bssid);
+        const esp_err_t e = esp_wifi_80211_tx(WIFI_IF_STA,
+                                              frame, (uint16_t)build_cfend(frame, kBroadcast, bssid), false);
+        if (e == ESP_OK) {
+            cfend_ok++;
+        } else if (cfend_err == 0) {
+            cfend_err = (int)e;
+        }
+    }
+    Serial.print("NAVSEQ rts_ok=");
+    Serial.print(rts_ok);
+    Serial.print(" rts_first_fail=");
+    Serial.print(rts_fail_at);
+    Serial.print(" rts_err=");
+    Serial.print(rts_err);
+    Serial.print(" cts_ok=");
+    Serial.print(cts_ok);
+    Serial.print(" cts_err=");
+    Serial.print(cts_err);
+    Serial.print(" cfend_ok=");
+    Serial.print(cfend_ok);
+    Serial.print(" cfend_err=");
+    Serial.println(cfend_err);
+}
+
+// Hard NAV burst: `count` control frames spaced 30 ms so their durations chain
+// into an unbroken reservation (~count * 32.7 ms). No wifi config API is touched
+// after the first frame, because the pool is gone for good once it is exhausted.
+void nav_burst(int count, bool cfend_release) {
+    uint8_t frame[16];
+    uint8_t ra[6];
+    esp_wifi_set_channel(1, WIFI_SECOND_CHAN_NONE);
+    int ok = 0;
+    for (int i = 0; i < count; i++) {
+        pick_ra(ra);
+        if (esp_wifi_80211_tx(WIFI_IF_STA, frame, (uint16_t)build_cts(frame, ra, 32767), false) == ESP_OK) {
+            ok++;
+        } else {
+            break;  // budget gone; further calls only spin
+        }
+        vTaskDelay(pdMS_TO_TICKS(30));
+    }
+    Serial.print("NAVBURST sent=");
+    Serial.print(ok);
+    Serial.print(" cover_ms=");
+    Serial.println((unsigned)(ok * 33));
+    if (cfend_release && ok > 0) {
+        uint8_t bssid[6];
+        pick_ra(bssid);
+        esp_wifi_80211_tx(WIFI_IF_STA, frame, (uint16_t)build_cfend(frame, kBroadcast, bssid), false);
+        Serial.println("NAVBURST release=1");
+    }
+}
+
 bool nav_active(void) {
     return s_active;
 }

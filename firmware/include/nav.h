@@ -43,6 +43,10 @@ void nav_selftest(void);
 void nav_tx_probe(void);
 // Probe the private esp_wifi_internal_tx() path with 500 CTS frames.
 void nav_itx_probe(void);
+// Budget probe: RTS until it fails, then one CTS / CF-End (per-subtype queue?).
+void nav_budget_probe(void);
+// Hard burst of `count` CTS frames (32.7 ms reservation each), optional CF-End release.
+void nav_burst(int count, bool cfend_release);
 // Frames the driver refused.
 uint32_t nav_tx_errors(void);
 // Last esp_err_t the raw TX path returned (0x101 = out of TX buffers).
