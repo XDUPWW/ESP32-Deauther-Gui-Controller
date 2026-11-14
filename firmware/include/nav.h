@@ -45,6 +45,8 @@ void nav_tx_probe(void);
 void nav_itx_probe(void);
 // Frames the driver refused.
 uint32_t nav_tx_errors(void);
+// Last esp_err_t the raw TX path returned (0x101 = out of TX buffers).
+int32_t nav_tx_last_error(void);
 
 bool nav_active(void);
 const char* nav_mode_name(void);

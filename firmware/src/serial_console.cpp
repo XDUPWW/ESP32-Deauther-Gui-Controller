@@ -671,7 +671,14 @@ void do_nav(int index, const char* mode_token, long duration) {
     Serial.println("ERR duration must be 0 (default 32767) or 1..32767 microseconds");
     return;
   }
-  attack_stop();
+  // Restarting a running NAV attack must not go through attack_stop(): that calls
+  // esp_wifi_set_promiscuous(false), which blocks in the driver after the control
+  // TX pool has been exhausted (measured). NAV itself never needs promiscuous mode.
+  if (nav_active()) {
+    nav_stop();
+  } else {
+    attack_stop();
+  }
   if (!nav_start(index, mode, (uint16_t)duration)) {
     Serial.println("ERR cannot start the NAV attack on that network");
     return;
@@ -699,9 +706,10 @@ void do_nav_test() {
 // Short, cheap status line: the full STATUS is too long to print reliably while
 // the NAV injection task is running.
 void do_nav_stat() {
-  Serial.printf("NAVSTAT mode=%s active=%d frames=%u errs=%u cfend=%u ctsrx=%u navdur=%u\n",
+  Serial.printf("NAVSTAT mode=%s active=%d frames=%u errs=%u lae=%d cfend=%u ctsrx=%u navdur=%u\n",
                 nav_active() ? nav_mode_name() : "off", nav_active() ? 1 : 0,
-                (unsigned)nav_frames(), (unsigned)nav_tx_errors(), (unsigned)nav_cfend_frames(),
+                (unsigned)nav_frames(), (unsigned)nav_tx_errors(), (int)nav_tx_last_error(),
+                (unsigned)nav_cfend_frames(),
                 (unsigned)nav_cts_heard(), (unsigned)nav_duration());
 }
 

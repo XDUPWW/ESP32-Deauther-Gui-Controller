@@ -49,6 +49,7 @@ uint8_t s_channel;
 uint16_t s_duration;
 uint32_t s_frames;
 uint32_t s_tx_errors;
+int32_t s_tx_last_err;
 uint32_t s_cfend_frames;
 uint32_t s_cts_heard;
 uint32_t s_rts_heard;
@@ -154,8 +155,10 @@ size_t build_cfend(uint8_t* frame, const uint8_t ra[6], const uint8_t bssid[6]) 
 }
 
 bool tx(uint8_t* frame, size_t len) {
-    if (esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false) != ESP_OK) {
+    const esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    if (err != ESP_OK) {
         s_tx_errors++;
+        s_tx_last_err = (int32_t)err;
         return false;
     }
     s_frames++;
@@ -245,6 +248,7 @@ bool nav_start(int index, nav_mode_t mode, uint16_t duration_micros) {
     s_duration = duration_micros;
     s_frames = 0;
     s_tx_errors = 0;
+    s_tx_last_err = 0;
     s_cfend_frames = 0;
     s_cts_heard = 0;
     s_rts_heard = 0;
@@ -329,6 +333,10 @@ void nav_selftest(void) {
 
 uint32_t nav_tx_errors(void) {
     return s_tx_errors;
+}
+
+int32_t nav_tx_last_error(void) {
+    return s_tx_last_err;
 }
 
 // Sends one of each frame type and reports what the driver said. Answers
