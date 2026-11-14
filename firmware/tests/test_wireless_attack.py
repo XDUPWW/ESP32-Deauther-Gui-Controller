@@ -181,6 +181,7 @@ class FirmwareFunctionalTests(unittest.TestCase):
         self.client.command("STOP", lambda l: l.startswith("OK"), 3)
         self.client.command("CSASTOP", lambda l: l.startswith("OK CSASTOP"), 3)
         self.client.command("DELBASTOP", lambda l: l.startswith("OK DELBASTOP"), 3)
+        self.client.command("BASTOP", lambda l: l.startswith("OK BASTOP"), 3)
         self.client.drain(0.2)
 
     def test_ping(self):
@@ -367,6 +368,50 @@ class FirmwareFunctionalTests(unittest.TestCase):
         info = protocol.parse_status(
             self.client.command("STATUS", lambda l: l.startswith("STATUS "), 5)[0])
         self.assertEqual(info.get("delba"), "off", "STOP 后应回到 off")
+
+    def test_ba_attack_frames_and_guards(self):
+        """BA 会话劫持：ADDBA Request / BAR 的字节布局 + 参数防呆 + 驱动接受。
+
+        ADDBA Request = 24 + cat + action + dialog + 参数集 + timeout + SSN(<<4) = 33 B；
+        BAR（压缩）= RA/TA + BAR control + BAR info(SSN<<4) = 20 B。
+        `step` 越界要被拒绝；`BATX` 里三种帧都要被驱动接受（返回 0）。
+        """
+        self.client.send("BATEST")
+        line, _ = self.client.command("", lambda l: l.startswith("BATEST addba"), 6)
+        self.assertIsNotNone(line, "BATEST 无输出")
+        self.assertIn("len=33", line)
+        self.assertIn("cat=3", line)
+        self.assertIn("act=0", line)
+        self.assertIn("tid=5", line)
+        self.assertIn("ssn=1175", line)
+        body = line.split("hex=")[1]
+        # SSN<<4 = 1175<<4 = 0x4970，在帧尾两字节（小端 70 49）
+        self.assertTrue(body.endswith("7049"), "SSN 应编码在帧尾（<<4, little endian）")
+
+        self.client.send("BATEST")
+        bar, _ = self.client.command("", lambda l: l.startswith("BATEST bar"), 6)
+        self.assertIsNotNone(bar, "BATEST 缺少 BAR 行")
+        self.assertIn("len=20", bar)
+        self.assertIn("subtype=8", bar)
+        self.assertIn("compressed=1", bar)
+        self.assertIn("tid=5", bar)
+        self.assertTrue(bar.split("hex=")[1].startswith("8400"), "控制帧 subtype 8 的 FC 是 84 00")
+
+        # 驱动必须接受这三种帧，否则整个攻击只是空转
+        tx, _ = self.client.command("BATX", lambda l: l.startswith("BATX"), 5)
+        self.assertIsNotNone(tx)
+        self.assertIn("delba(30B)=0", tx)
+        self.assertIn("addba(33B)=0", tx)
+        self.assertIn("bar(20B)=0", tx)
+
+        # 参数防呆
+        for bad in ("2048", "-1", "99999"):
+            line, _ = self.client.command(f"BAATTACK 0 {bad}", lambda l: l.startswith("ERR "), 3)
+            self.assertIsNotNone(line, f"step={bad} 应被拒绝")
+        line, _ = self.client.command("BAATTACK 99 512", lambda l: l.startswith("ERR "), 3)
+        self.assertIsNotNone(line, "越界序号应报错")
+        line, _ = self.client.command("BAPLANT 99", lambda l: l.startswith("ERR "), 3)
+        self.assertIsNotNone(line, "BAPLANT 越界序号应报错")
 
     def test_ui_screens_switch(self):
         """LVGL：一级菜单新增 DELBA 后，每个屏幕都能构建出来（切屏后不崩、堆不塌）。"""

