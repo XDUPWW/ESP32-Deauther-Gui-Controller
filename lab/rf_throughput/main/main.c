@@ -7,8 +7,20 @@
 //   ap <ssid> [channel]   start a softAP, listen on TCP 4444, stream data
 //   sta <ssid>            join that softAP and read from TCP 4444 as fast as
 //                         possible
+//   ps <0|1|2>            power save: 0 none / 1 min-modem (DTIM) / 2 max-modem.
+//                         Needed by the TIM tests: only a station that sleeps
+//                         honours the TIM element, and only then does a forged
+//                         TIM change what it receives.
+//   btm <0|1>             advertise/accept 802.11v BSS Transition Management
+//                         (needs CONFIG_ESP_WIFI_11KV_SUPPORT=y). The station
+//                         then answers a forged BTM Request with a BTM Response,
+//                         which is what the attack board counts as `wnmresp`.
+//   sniff <ch>            beacon sniffer: print the TIM element of every beacon on
+//                         that channel (the forged clone vs the real AP). Needed to
+//                         check frame bytes when the C5 capture pipe is not running.
+//   sniffstop             end the dump and report how many beacons were seen
 //   rate                  1 kibyte / second lines, printed as RATE tx=/rx=
-//   status                connection state
+//   status                connection state + ps/btm
 //
 // Everything here is test scaffolding; it is deliberately not part of the
 // wireless-attack firmware.
@@ -91,6 +103,11 @@ static void ap_task(void* arg) {
 }
 
 static uint32_t s_gateway;
+static volatile uint32_t s_sniff_frames;
+static bool s_sniffing;
+static wifi_ps_type_t s_ps = WIFI_PS_NONE;
+static bool s_btm;
+static char s_sta_ssid[33] = {0};
 
 static void sta_task(void* arg) {
     (void)arg;
@@ -122,6 +139,72 @@ static void sta_task(void* arg) {
     }
 }
 
+// Beacon dump for TIM verification. Runs in the Wi-Fi task, so keep it small and
+// allocation free: one line per beacon, TIM element body in hex.
+static void sniff_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
+    const wifi_promiscuous_pkt_t* pkt = (const wifi_promiscuous_pkt_t*)buf;
+    if (type != WIFI_PKT_MGMT || pkt == NULL) {
+        return;
+    }
+    const uint8_t* f = pkt->payload;
+    const int len = pkt->rx_ctrl.sig_len;
+    if (len < 38 || (f[0] & 0xF0) != 0x80) {
+        return;  // beacons only
+    }
+    const uint8_t* p = f + 36;
+    const uint8_t* end = f + len;
+    while (p + 2 <= end) {
+        const int id = p[0];
+        const int ie_len = p[1];
+        if (p + 2 + ie_len > end) {
+            return;
+        }
+        if (id == 5) {
+            s_sniff_frames++;
+            printf("BEACON ta=%02X:%02X:%02X:%02X:%02X:%02X seq=%u%u interval=%u tim=",
+                   f[10], f[11], f[12], f[13], f[14], f[15], (unsigned)(f[22] >> 4),
+                   (unsigned)(f[23] & 0x0F), (unsigned)(f[32] | (f[33] << 8)));
+            for (int i = 0; i < ie_len; i++) {
+                printf("%02X", p[2 + i]);
+            }
+            printf("\n");
+            return;
+        }
+        p += 2 + ie_len;
+    }
+}
+
+static void sniff_stop(void) {
+    if (!s_sniffing) {
+        return;
+    }
+    esp_wifi_set_promiscuous(false);
+    esp_wifi_set_promiscuous_rx_cb(NULL);
+    s_sniffing = false;
+    printf("OK sniff end frames=%u\n", (unsigned)s_sniff_frames);
+}
+
+static void start_sniff(int channel) {
+    sniff_stop();
+    esp_wifi_stop();
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    esp_wifi_set_ps(WIFI_PS_NONE);
+    const esp_err_t err = esp_wifi_set_channel((uint8_t)channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        printf("ERR set channel %d: %d\n", channel, (int)err);
+        return;
+    }
+    wifi_promiscuous_filter_t filter = {0};
+    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT;
+    esp_wifi_set_promiscuous_filter(&filter);
+    esp_wifi_set_promiscuous_rx_cb(sniff_cb);
+    esp_wifi_set_promiscuous(true);
+    s_sniff_frames = 0;
+    s_sniffing = true;
+    printf("OK sniff ch=%d (beacon TIM dump, `sniffstop` ends it)\n", channel);
+}
+
 static void on_wifi_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
     (void)arg;
     (void)data;
@@ -130,7 +213,8 @@ static void on_wifi_event(void* arg, esp_event_base_t base, int32_t id, void* da
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         esp_wifi_connect();
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        printf("WIFI sta disconnected, retrying\n");
+        const wifi_event_sta_disconnected_t* disc = (const wifi_event_sta_disconnected_t*)data;
+        printf("WIFI sta disconnected reason=%d, retrying\n", disc != NULL ? disc->reason : -1);
         esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t* got = (const ip_event_got_ip_t*)data;
@@ -159,16 +243,32 @@ static void start_ap(const char* ssid, int channel) {
     xTaskCreate(ap_task, "ap", 4096, NULL, 5, NULL);
 }
 
+// Every STA setting goes through here so `ps` / `btm` can be changed at runtime
+// without losing the SSID: the driver keeps the last configuration, and a
+// disconnect/reconnect is enough to apply a new one.
+static void apply_sta_cfg(void) {
+    wifi_config_t cfg = {0};
+    strncpy((char*)cfg.sta.ssid, s_sta_ssid, sizeof(cfg.sta.ssid) - 1);
+    cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+#if CONFIG_ESP_WIFI_11KV_SUPPORT
+    cfg.sta.rm_enabled = s_btm ? 1 : 0;
+    cfg.sta.btm_enabled = s_btm ? 1 : 0;
+#else
+    if (s_btm) {
+        printf("ERR this build has no 11kv support (CONFIG_ESP_WIFI_11KV_SUPPORT)\n");
+    }
+#endif
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
+    esp_wifi_set_ps(s_ps);
+}
+
 static void start_sta(const char* ssid) {
     esp_netif_create_default_wifi_sta();
-    wifi_config_t cfg = {0};
-    strncpy((char*)cfg.sta.ssid, ssid, sizeof(cfg.sta.ssid) - 1);
-    cfg.sta.threshold.authmode = WIFI_AUTH_OPEN;
+    strncpy(s_sta_ssid, ssid, sizeof(s_sta_ssid) - 1);
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
+    apply_sta_cfg();
     ESP_ERROR_CHECK(esp_wifi_start());
-    esp_wifi_set_ps(WIFI_PS_NONE);
-    printf("WIFI sta joining %s\n", ssid);
+    printf("WIFI sta joining %s ps=%d btm=%d\n", ssid, (int)s_ps, s_btm ? 1 : 0);
 }
 
 static char s_line[96];
@@ -184,6 +284,8 @@ static void config_save(const char* role, const char* ssid, int channel) {
     nvs_set_str(h, "role", role);
     nvs_set_str(h, "ssid", ssid);
     nvs_set_i32(h, "ch", channel);
+    nvs_set_i32(h, "ps", (int32_t)s_ps);
+    nvs_set_i32(h, "btm", s_btm ? 1 : 0);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -211,6 +313,45 @@ static void run_command(char* line) {
         }
         config_save("sta", ssid, 1);
         start_sta(ssid);
+    } else if (strcmp(cmd, "ps") == 0) {
+        char* arg = strtok(nullptr, " ");
+        const int want = arg ? atoi(arg) : -1;
+        if (want < 0 || want > 2) {
+            printf("ERR usage: ps <0|1|2>  (0 none / 1 min-modem / 2 max-modem)\n");
+            return;
+        }
+        s_ps = (wifi_ps_type_t)want;
+        esp_wifi_set_ps(s_ps);
+        config_save(s_sta_ssid[0] ? "sta" : "ap", s_sta_ssid, 1);
+        printf("OK ps=%d\n", (int)s_ps);
+    } else if (strcmp(cmd, "btm") == 0) {
+        char* arg = strtok(nullptr, " ");
+        if (arg == nullptr) {
+            printf("OK btm=%d\n", s_btm ? 1 : 0);
+            return;
+        }
+        s_btm = (strcmp(arg, "1") == 0 || strcmp(arg, "on") == 0);
+        config_save(s_sta_ssid[0] ? "sta" : "ap", s_sta_ssid, 1);
+        printf("OK btm=%d (reconnecting)\n", s_btm ? 1 : 0);
+        if (s_sta_ssid[0]) {
+            apply_sta_cfg();
+            esp_wifi_disconnect();  // the event handler reconnects with the new cfg
+        }
+    } else if (strcmp(cmd, "sniff") == 0) {
+        char* arg = strtok(nullptr, " ");
+        const int ch = arg ? atoi(arg) : 1;
+        if (ch < 1 || ch > 196) {
+            printf("ERR usage: sniff <channel>\n");
+            return;
+        }
+        start_sniff(ch);
+    } else if (strcmp(cmd, "sniffstop") == 0) {
+        sniff_stop();
+    } else if (strcmp(cmd, "reboot") == 0) {
+        printf("OK rebooting\n");
+        fflush(stdout);
+        vTaskDelay(pdMS_TO_TICKS(50));
+        esp_restart();
     } else if (strcmp(cmd, "clear") == 0) {
         nvs_handle_t h;
         if (nvs_open("lab", NVS_READWRITE, &h) == ESP_OK) {
@@ -220,10 +361,11 @@ static void run_command(char* line) {
         }
         printf("OK cleared, reboot to stay idle\n");
     } else if (strcmp(cmd, "status") == 0) {
-        printf("STATUS bytes=%u kib=%u\n", (unsigned)s_bytes, (unsigned)(s_bytes / 1024));
+        printf("STATUS bytes=%u kib=%u ps=%d btm=%d\n", (unsigned)s_bytes,
+               (unsigned)(s_bytes / 1024), (int)s_ps, s_btm ? 1 : 0);
         fflush(stdout);
     } else {
-        printf("ERR unknown '%s' (ap/sta/status)\n", cmd);
+        printf("ERR unknown '%s' (ap/sta/ps/btm/sniff/sniffstop/status/clear/reboot)\n", cmd);
     }
 }
 
@@ -253,6 +395,14 @@ void app_main(void) {
         if (have_role && nvs_get_str(h, "ssid", ssid, &len) == ESP_OK) {
             int32_t ch = 1;
             nvs_get_i32(h, "ch", &ch);
+            int32_t ps = 0;
+            nvs_get_i32(h, "ps", &ps);
+            int32_t btm = 0;
+            nvs_get_i32(h, "btm", &btm);
+            if (ps >= 0 && ps <= 2) {
+                s_ps = (wifi_ps_type_t)ps;
+            }
+            s_btm = btm != 0;
             printf("INFO auto %s ssid=%s ch=%d\n", role, ssid, (int)ch);
             if (strcmp(role, "ap") == 0) {
                 start_ap(ssid, (int)ch);
@@ -262,7 +412,8 @@ void app_main(void) {
         }
         nvs_close(h);
     }
-    printf("INFO lab rf_throughput ready (ap <ssid> [ch] / sta <ssid> / clear / status)\n");
+    printf("INFO lab rf_throughput ready (ap <ssid> [ch] / sta <ssid> / ps <0|1|2> / btm <0|1> / "
+           "sniff <ch> / sniffstop / clear / reboot / status)\n");
 
     while (true) {
         uint8_t c;
