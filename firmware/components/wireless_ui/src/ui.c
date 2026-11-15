@@ -322,6 +322,11 @@ static const char *kModVariants[6] = {"Bare", "Clear", "Plain", "Rand", "NoAuto"
 // Screen names reported by `UISCREEN` / `UI` (lowercase, same spelling as the commands).
 static const char *kModScreenNames[6] = {"wnm",  "tim",  "eapol",
                                          "sae",  "authflood", "pspoll"};
+// PM-bit spoof: the frame shape is the one thing worth cycling from the panel
+// (stacks differ in which frame they honour, all three carry the PM bit).
+static int s_pspoll_shape = 1;  // QoS Null: the shape that measured strongest
+static const char *kPspollShapes[3] = {"null", "qosnull", "action"};
+static const char *kPspollShapeLabels[3] = {"Null", "QoSNull", "Action"};
 
 static void update_mode_label(void) {
     if (s_mode_label == NULL) {
@@ -595,7 +600,9 @@ static void goto_atk(int kind) {
     s_atk_kind = (kind < 0 || kind > 5) ? 0 : kind;
     s_tap_pick = 0;  // every one of them targets a single AP
     if (s_mod_variant_label != NULL) {
-        lv_label_set_text(s_mod_variant_label, kModVariants[s_atk_kind]);
+        lv_label_set_text(s_mod_variant_label,
+                          s_atk_kind == 5 ? kPspollShapeLabels[s_pspoll_shape]
+                                          : kModVariants[s_atk_kind]);
     }
     update_mode_label();
     show_screen(SCR_FRAME);
@@ -683,9 +690,13 @@ static void atk_variant_clicked(lv_event_t *event) {
             snprintf(command, sizeof(command), "AUTHFLOOD %d both noauto", s_selected);
             break;
         case 5:
-            // Undo: one PM=0 Null Data per victim, so the AP releases what it has
-            // been holding.
-            snprintf(command, sizeof(command), "PSPOLLREL");
+            // Cycle the frame shape and restart with it.
+            s_pspoll_shape = (s_pspoll_shape + 1) % 3;
+            snprintf(command, sizeof(command), "PSPOLL %d %s", s_selected,
+                     kPspollShapes[s_pspoll_shape]);
+            if (s_mod_variant_label != NULL) {
+                lv_label_set_text(s_mod_variant_label, kPspollShapeLabels[s_pspoll_shape]);
+            }
             break;
         default:
             snprintf(command, sizeof(command), "WNM %d bare", s_selected);

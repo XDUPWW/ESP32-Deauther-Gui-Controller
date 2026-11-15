@@ -219,6 +219,15 @@ static void sniff_poll_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
                " pm=%d tods=%d qos=%d len=%d\n",
                f[10], f[11], f[12], f[13], f[14], f[15], f[4], f[5], f[6], f[7], f[8], f[9],
                (f[1] >> 4) & 0x01, f[1] & 0x01, subtype == 12 ? 1 : 0, len);
+        return;
+    }
+    // Action frames are the third way to carry the PM bit (management frames have no
+    // ToDS field, so byte 1 is PM only). Category 127 = vendor specific.
+    if (type == WIFI_PKT_MGMT && ftype == 0 && subtype == 13 && len >= 29) {
+        printf("PMACT ta=%02X:%02X:%02X:%02X:%02X:%02X ra=%02X:%02X:%02X:%02X:%02X:%02X"
+               " pm=%d cat=%u len=%d\n",
+               f[10], f[11], f[12], f[13], f[14], f[15], f[4], f[5], f[6], f[7], f[8], f[9],
+               (f[1] >> 4) & 0x01, (unsigned)f[24], len);
     }
 }
 
@@ -301,7 +310,9 @@ static void start_sniff_poll(int channel) {
         }
     }
     wifi_promiscuous_filter_t filter = {0};
-    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_CTRL | WIFI_PROMIS_FILTER_MASK_DATA;
+    // Management too: the Action shape carries the PM bit as well.
+    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_CTRL | WIFI_PROMIS_FILTER_MASK_DATA |
+                         WIFI_PROMIS_FILTER_MASK_MGMT;
     esp_wifi_set_promiscuous_filter(&filter);
     wifi_promiscuous_filter_t ctrl_filter = {0};
     ctrl_filter.filter_mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL;

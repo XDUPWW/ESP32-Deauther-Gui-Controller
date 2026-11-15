@@ -1,37 +1,31 @@
-"""Air check for the PS-Poll / PM-bit spoof (three boards, no capture pipe).
+"""Air check for the PM-bit spoof: which frame shape actually leaves the radio.
 
     python -u lab/pspoll_air.py --attack COM5 --sniff COM6 --channel 6
 
-Why this exists: the two fields that make the attack work live in the 802.11 header
-and nowhere else --
+The attack has three interchangeable carriers for the same Power Management bit, and
+stacks disagree about which one they honour, so all three are verified separately:
 
-  * PS-Poll (control subtype 10) Duration/ID = 0xC000 | AID, i.e. the AID of the
-    station the forged poll claims to be;
-  * Null Data (data subtype 4) Frame Control byte 1 bit 4 = the Power Management
-    bit, i.e. "I am asleep, buffer my downlink".
+  * `null`    Null Data    data subtype 4 , Frame Control byte1 bit4 = PM
+  * `qosnull` QoS Null     data subtype 12, same bit + 2-byte QoS Control
+  * `action`  Action       mgmt subtype 13, same bit, category 127 (vendor specific)
 
-Both are written by us and could be rewritten by the MAC (measured on RTS: 990..1102
-us instead of the 12001 us an earlier module wrote; on management frames: 314 us),
-so neither can be assumed to survive. This script makes the attack board send both
-frames with a distinctive AID (37) and a known victim MAC, while a second board
-sniffs the channel and prints what actually went out.
+Each frame is sent with PM=1, every sixth one with PM=0.
 
 Topology -- one wire only, because the sniffer has to own the channel:
 
   COM6   ESP32     lab/rf_throughput `ap pspollab 6` + `sniffpoll 6`
                    softAP for the attack board to aim at, *and* the sniffer. A
-                   dedicated sniffer (bare STA interface) captured almost nothing
-                   in the runs of 2026-11-15; with a running AP on the same radio it
+                   dedicated sniffer (bare STA interface) captured almost nothing in
+                   the runs of 2026-11-15; with a running AP on the same radio it
                    captured 7-10 of every 10 injected frames.
-  COM5   ESP32-CYD this firmware, `PSPOLL <idx> 37 02AABBCCDDEE both`
+  COM5   ESP32-CYD this firmware, `PSPOLL <idx> 02AABBCCDDEE <shape>`
 
 One trap this script works around: a channel change is refused while the station is
 still finishing a SCAN, and the module would then transmit on whatever channel the
 scan stopped on. The attack board is therefore parked with `MON <ch> 2` first, and
 the module's own `chset=` verdict is printed.
 
-Verdict: `aid=37` and `pm=1` on the air = the header fields survive. Anything else
-means the MAC rewrote them and the affected half of the attack cannot be aimed.
+Verdict: the shape reached the air if its frames were captured with `pm=1`.
 """
 import argparse
 import sys
@@ -40,6 +34,8 @@ import time
 sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 import serial
+
+SHAPES = ("null", "qosnull", "action")
 
 
 class Port:
@@ -135,19 +131,19 @@ def main():
     ap.add_argument("--sniff", default="COM6")
     ap.add_argument("--ssid", default="pspollab")
     ap.add_argument("--channel", type=int, default=6)
-    ap.add_argument("--aid", type=int, default=37)
     ap.add_argument("--victim", default="02AABBCCDDEE")
-    ap.add_argument("--seconds", type=float, default=6.0)
+    ap.add_argument("--seconds", type=float, default=4.0)
     args = ap.parse_args()
 
     board_sniff = reset_board(args.sniff)
     attack = Port(args.attack)
-    polls = []
-    nulls = []
+    results = {}
     try:
         board_sniff.send("ap %s %d" % (args.ssid, args.channel))
         print("ap:", board_sniff.expect("AP listening", 15.0) or "no answer")
 
+        attack.send("STOP")
+        attack.expect("OK STOP", 5.0)
         index = scan_for(attack, args.ssid)
         if index is None:
             print("attack board did not see the softAP '%s'" % args.ssid)
@@ -159,75 +155,62 @@ def main():
         attack.send("MON %d 2" % args.channel)
         time.sleep(2.5)
 
-        attack.send("PSPOLL %d %d %s both" % (index, args.aid, args.victim))
-        print("start:", attack.expect(("OK PSPOLL ", "ERR "), 6.0))
-        chan_warn = attack.expect("WARN ", 1.0)
-        if chan_warn:
-            print("warn: ", chan_warn)
-
-        board_sniff.send("sniffpoll %d" % args.channel)
-        print("sniff:", board_sniff.expect(("OK sniffpoll", "NOTE ", "ERR "), 6.0))
-
-        deadline = time.time() + args.seconds
-        while time.time() < deadline:
-            text = board_sniff.read_line(0.05)
-            if text is None:
+        for shape in SHAPES:
+            attack.send("PSPOLL %d %s %s" % (index, args.victim, shape))
+            started = attack.expect(("OK PSPOLL ", "ERR "), 6.0)
+            print("\n--- %s\n    %s" % (shape, started))
+            if started is None or started.startswith("ERR"):
+                results[shape] = None
                 continue
-            if text.startswith("POLL "):
-                polls.append(parse_fields(text))
-            elif text.startswith("NULL "):
-                nulls.append(parse_fields(text))
+            chan_warn = attack.expect("WARN ", 1.0)
+            if chan_warn:
+                print("    ", chan_warn)
 
-        attack.send("PSPOLLSTOP")
-        print("stop: ", attack.expect(("OK PSPOLLSTOP", "ERR "), 6.0))
-        attack.send("STATUS")
-        status = attack.expect("STATUS ", 5.0)
-        board_sniff.send("sniffstop")
-        end_line = board_sniff.expect("OK sniff end", 8.0)
-        print("sniff:", end_line)
+            board_sniff.send("sniffpoll %d" % args.channel)
+            board_sniff.expect(("OK sniffpoll", "NOTE ", "ERR "), 6.0)
+            nulls = {"0": 0, "1": 0}
+            actions = {"0": 0, "1": 0}
+            sample = []
+            deadline = time.time() + args.seconds
+            while time.time() < deadline:
+                text = board_sniff.read_line(0.05)
+                if text is None:
+                    continue
+                if text.startswith("NULL "):
+                    row = parse_fields(text)
+                    nulls[row.get("pm", "?")] = nulls.get(row.get("pm", "?"), 0) + 1
+                    if len(sample) < 2:
+                        sample.append(text)
+                elif text.startswith("PMACT "):
+                    row = parse_fields(text)
+                    actions[row.get("pm", "?")] = actions.get(row.get("pm", "?"), 0) + 1
+                    if len(sample) < 2:
+                        sample.append(text)
+            attack.send("PSPOLLSTOP")
+            stop_line = attack.expect(("OK PSPOLLSTOP", "ERR "), 6.0)
+            board_sniff.send("sniffstop")
+            board_sniff.expect("OK sniff end", 8.0)
+            results[shape] = (nulls, actions, sample, stop_line)
+            print("    null-data frames: %s   action frames: %s" % (nulls, actions))
+            print("    stop: %s" % stop_line)
+            for line in sample:
+                print("    e.g. %s" % line)
 
-        print("\n--- what went out (%.1f s)" % args.seconds)
-        aids = {}
-        durs = {}
-        tas = {}
-        for row in polls:
-            aids[row.get("aid")] = aids.get(row.get("aid"), 0) + 1
-            durs[row.get("dur")] = durs.get(row.get("dur"), 0) + 1
-            ta = row.get("ta", "?")
-            tas[ta] = tas.get(ta, 0) + 1
-        pms = {}
-        for row in nulls:
-            pms[row.get("pm")] = pms.get(row.get("pm"), 0) + 1
-        print("  PS-Poll  frames=%d  aid histogram=%s  dur histogram=%s"
-              % (len(polls), aids, dict(list(durs.items())[:6])))
-        print("  PS-Poll  ta histogram=%s" % dict(list(tas.items())[:6]))
-        print("  Null Data frames=%d  pm histogram=%s" % (len(nulls), pms))
-        ctrl = {}
-        if end_line and "ctrl=" in end_line:
-            for subtype, value in enumerate(end_line.split("ctrl=")[1].split(",")):
-                try:
-                    if int(value) > 0:
-                        ctrl[subtype] = int(value)
-                except ValueError:
-                    pass
-        print("  control frames heard by subtype: %s" % (ctrl or "none"))
-        if status:
-            keys = ("psp", "pspf", "pspnul", "psppol", "pspfl", "pspc", "pspdl", "pspaid")
-            print("  attack STATUS: " +
-                  " ".join("%s=%s" % (k, status.split("%s=" % k)[1].split()[0])
-                           if (" %s=" % k) in status else "%s=?" % k for k in keys))
-
-        want_aid = str(args.aid)
-        ok_aid = want_aid in aids
-        ok_pm = pms.get("1", 0) > 0
-        print("\nverdict:")
-        print("  AID %s on the air: %s" % (want_aid, "YES" if ok_aid else "NO"))
-        print("  PM=1 on the air:    %s" % ("YES" if ok_pm else "NO"))
-        if not ok_aid:
-            print("  -> Duration/ID did not survive as an AID. See 测试报告 §4.4.9.")
-        if not ok_pm:
-            print("  -> the PM bit did not survive: the Null Data half cannot set it.")
-        return 0 if (ok_aid and ok_pm) else 2
+        print("\nverdict (frames that carried PM=1 on the air):")
+        ok = True
+        for shape in SHAPES:
+            res = results.get(shape)
+            if res is None:
+                print("  %-8s did not start" % shape)
+                ok = False
+                continue
+            nulls, actions, _sample, _stop = res
+            pm1 = (nulls.get("1", 0) if shape != "action" else 0) + actions.get("1", 0)
+            print("  %-8s pm=1 frames captured: %-3d  %s"
+                  % (shape, pm1, "YES" if pm1 else "NO"))
+            if not pm1:
+                ok = False
+        return 0 if ok else 2
     finally:
         for port in (board_sniff, attack):
             port.close()

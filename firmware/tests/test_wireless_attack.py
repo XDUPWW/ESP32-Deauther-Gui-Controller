@@ -893,38 +893,48 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
             self.assertIsNotNone(line, f"{bad} 应被拒绝")
 
     def test_pspoll_frame_format_and_run(self):
-        """PM 位欺骗：ToDS 的 Null Data + 帧控制 PM 位，PM=0 版本只差这一位。"""
+        """PM 位三种帧型：Null Data / QoS Null / 单播 Action，PM=0 版本只差那一位。"""
         self.client.send("PSPOLLTEST")
-        line, lines = self.client.command("", lambda l: l.startswith("PSPOLLTEST sleep hex="), 6)
+        line, lines = self.client.command("", lambda l: l.startswith("PSPOLLTEST awake"), 6)
         self.assertIsNotNone(line, "PSPOLLTEST 无输出")
         text = "\n".join(lines)
-        self.assertIn("pm=1", text, "sleep 版本必须置 PM 位")
-        self.assertIn("tods=1", text, "Null Data 必须是 ToDS（受害 STA → AP）")
-        self.assertIn("fc=0x1148", text, "ToDS + PM=1 的 Null Data 帧控制是 0x1148")
-        self.assertIn("PM=1", text.upper())
+        self.assertIn("fc=0x1148", text, "Null Data: ToDS + PM=1")
+        self.assertIn("pm=1", text)
+        self.assertIn("tods=1", text)
+        self.assertIn("fc=0x11C8", text, "QoS Null: subtype 12 + PM=1")
+        self.assertIn("tid=0", text, "QoS Control 的 TID 应为 0")
+        # 管理帧没有 ToDS/FromDS 位，Action 帧的控制字节只有 PM 这一位
+        self.assertIn("fc=0x10D0", text, "Action: mgmt subtype 13 + PM=1")
+        self.assertIn("cat=127", text, "厂商自定义类别不属于 PMF 的 robust 集合")
+        self.assertIn("pspolltest awake len=24 fc=0x0148 pm=0".replace("pspolltest", "PSPOLLTEST"),
+                      text, "awake 版本必须清掉 PM 位")
 
-        line, _ = self.client.command("", lambda l: l.startswith("PSPOLLTEST awake"), 6)
-        self.assertIsNotNone(line)
-        self.assertIn("pm=0", line, "awake 版本必须清掉 PM 位")
+        # 参数校验要在一个有效索引上做，否则先撞上"index out of range"
+        self._scan_first_ap()
 
-        # 参数防呆：AID 与 mode 已经不存在（PS-Poll 半删除），只接受一个可选 MAC
-        for bad in ("PSPOLL 0 37", "PSPOLL 0 poll", "PSPOLL 0 both"):
+        # poll/both 已删除（单播 PS-Poll 发不出去），要给出明确错误而不是"未知参数"
+        for bad in ("PSPOLL 0 poll", "PSPOLL 0 both"):
             err, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
             self.assertIsNotNone(err, f"{bad} 应被拒绝")
+            self.assertIn("PS-Poll", err, "错误信息要点明 PS-Poll 不可用")
+        err, _ = self.client.command("PSPOLL 0 nonsense",
+                                     lambda l: l.startswith("ERR "), 3)
+        self.assertIsNotNone(err, "未知参数应被拒绝")
 
-        self._scan_first_ap()
-        ok, _ = self.client.command("PSPOLL 0 02AABBCCDDEE",
+        ok, _ = self.client.command("PSPOLL 0 02AABBCCDDEE qosnull",
                                     lambda l: l.startswith("OK PSPOLL "), 5)
-        self.assertIsNotNone(ok, "PM 欺骗启动失败")
+        self.assertIsNotNone(ok, "PM 位欺骗启动失败")
+        self.assertIn("frame=qosnull", ok, "帧型应写进回执")
         self.assertIn("sta=02:AA:BB:CC:DD:EE", ok, "显式 STA 应写进回执")
         self.assertIn("chset=0", ok, "信道设置必须成功（否则帧会从扫描残留的信道出去）")
         time.sleep(1.5)
         info = self._status()
-        print(f"\n  psp={info.get('psp')} pspf={info.get('pspf')} "
-              f"pspnul={info.get('pspnul')} pspfl={info.get('pspfl')} "
-              f"pspdl={info.get('pspdl')}")
+        print(f"\n  psp={info.get('psp')} pspfrm={info.get('pspfrm')} "
+              f"pspf={info.get('pspf')} pspnul={info.get('pspnul')} "
+              f"pspfl={info.get('pspfl')} pspdl={info.get('pspdl')}")
         self.assertEqual(info.get("psp"), "pm")
-        self.assertGreater(int(info.get("pspf", "0")), 0, "Null Data 应已发出")
+        self.assertEqual(info.get("pspfrm"), "qosnull")
+        self.assertGreater(int(info.get("pspf", "0")), 0, "帧应已发出")
         self.assertGreater(int(info.get("pspfl", "0")), 0, "应已发出 PM=0 的释放帧")
 
         rel, _ = self.client.command("PSPOLLREL", lambda l: l.startswith("OK PSPOLLREL"), 5)
