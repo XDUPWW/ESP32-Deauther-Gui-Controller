@@ -62,6 +62,10 @@ static lv_obj_t *s_evil_label;
 static lv_obj_t *s_csa_label;
 static lv_obj_t *s_delba_label;
 static lv_obj_t *s_ba_label;
+static lv_obj_t *s_mod_label;          // the shared frame-module page's target line
+static lv_obj_t *s_mod_variant_label;  // its variant button's text (Bare/Clear/Plain/...)
+// Which frame-level module the shared page is driving: 0 wnm, 1 tim, 2 eapol, 3 sae, 4 auth.
+static int s_atk_kind;
 static void reason_row_clicked(lv_event_t *event);
 // Deauth reason code picker on the mode page. Cycles through the three codes
 // people actually use plus "random"; the firmware keeps the authoritative value.
@@ -292,6 +296,7 @@ typedef enum {
     SCR_DELBA,
     SCR_BA,
     SCR_EVIL,
+    SCR_FRAME,  // shared page for WNM / TIM / EAPOL / SAE / auth flood
     SCR_COUNT
 } ui_screen_t;
 
@@ -309,6 +314,12 @@ static void show_screen(ui_screen_t target) {
     }
     s_screen = target;
 }
+
+// The five frame-level modules share one page; these two tables name it.
+static const char *kModNames[5] = {"WNM", "TIM", "EAPOL", "SAE", "AUTH"};
+static const char *kModVariants[5] = {"Bare", "Clear", "Plain", "Rand", "NoAuto"};
+// Screen names reported by `UISCREEN` / `UI` (lowercase, same spelling as the commands).
+static const char *kModScreenNames[5] = {"wnm", "tim", "eapol", "sae", "authflood"};
 
 static void update_mode_label(void) {
     if (s_mode_label == NULL) {
@@ -405,6 +416,23 @@ static void update_mode_label(void) {
             snprintf(text, sizeof(text), "target: none");
         }
         lv_label_set_text(s_evil_label, text);
+    }
+
+    if (s_mod_label != NULL) {
+        const char *name = kModNames[(s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind];
+        if (s_selected < 0) {
+            snprintf(text, sizeof(text), "%s: pick a target", name);
+        } else {
+            const char *ssid = "";
+            for (int r = 0; r < s_row_count; r++) {
+                if ((int)s_rows[r].index == s_selected) {
+                    ssid = s_rows[r].ssid;
+                    break;
+                }
+            }
+            snprintf(text, sizeof(text), "%s #%d %s", name, s_selected, ssid);
+        }
+        lv_label_set_text(s_mod_label, text);
     }
 }
 
@@ -553,6 +581,127 @@ static void ba_start_clicked(lv_event_t *event) {
 static void ba_stop_clicked(lv_event_t *event) {
     (void)event;
     emit("BASTOP");
+}
+
+// ---- level 2: the five 802.11 management/data-frame modules.
+// The five frame-level modules all have the same page shape (target line,
+// Scan/Targets/Start, then Stop/<variant>/Back), so they share ONE screen: five
+// separate pages cost ~70 LVGL objects and starved the 80 KB pool (the target
+// popup then stopped at 14 rows instead of 30). The kind picks the command and
+// retitles the variant button.
+static void goto_atk(int kind) {
+    s_atk_kind = (kind < 0 || kind > 4) ? 0 : kind;
+    s_tap_pick = 0;  // every one of them targets a single AP
+    if (s_mod_variant_label != NULL) {
+        lv_label_set_text(s_mod_variant_label, kModVariants[s_atk_kind]);
+    }
+    update_mode_label();
+    show_screen(SCR_FRAME);
+}
+
+static void goto_wnm(lv_event_t *event) {
+    (void)event;
+    goto_atk(0);
+}
+static void goto_tim(lv_event_t *event) {
+    (void)event;
+    goto_atk(1);
+}
+static void goto_eapol(lv_event_t *event) {
+    (void)event;
+    goto_atk(2);
+}
+static void goto_sae(lv_event_t *event) {
+    (void)event;
+    goto_atk(3);
+}
+static void goto_authflood(lv_event_t *event) {
+    (void)event;
+    goto_atk(4);
+}
+
+static void atk_start_clicked(lv_event_t *event) {
+    (void)event;
+    if (s_selected < 0) {
+        if (s_log) {
+            lv_label_set_text(s_log, "pick an AP first");
+        }
+        return;
+    }
+    char command[40];
+    switch (s_atk_kind) {
+        case 1:
+            snprintf(command, sizeof(command), "TIM %d", s_selected);
+            break;
+        case 2:
+            snprintf(command, sizeof(command), "EAPOL %d", s_selected);
+            break;
+        case 3:
+            snprintf(command, sizeof(command), "SAE %d", s_selected);
+            break;
+        case 4:
+            snprintf(command, sizeof(command), "AUTHFLOOD %d", s_selected);
+            break;
+        default:
+            snprintf(command, sizeof(command), "WNM %d", s_selected);
+            break;
+    }
+    emit(command);
+}
+
+// The A/B variant of each module: the second column of the button row.
+static void atk_variant_clicked(lv_event_t *event) {
+    (void)event;
+    if (s_selected < 0) {
+        if (s_log) {
+            lv_label_set_text(s_log, "pick an AP first");
+        }
+        return;
+    }
+    char command[40];
+    switch (s_atk_kind) {
+        case 1:
+            snprintf(command, sizeof(command), "TIM %d clear", s_selected);
+            break;
+        case 2:
+            snprintf(command, sizeof(command), "EAPOL %d -1", s_selected);
+            break;
+        case 3:
+            snprintf(command, sizeof(command), "SAE %d rand", s_selected);
+            break;
+        case 4:
+            snprintf(command, sizeof(command), "AUTHFLOOD %d both noauto", s_selected);
+            break;
+        default:
+            snprintf(command, sizeof(command), "WNM %d bare", s_selected);
+            break;
+    }
+    emit(command);
+}
+
+static void atk_stop_clicked(lv_event_t *event) {
+    (void)event;
+    static const char *kStops[5] = {"WNMSTOP", "TIMSTOP", "EAPOLSTOP", "SAESTOP",
+                                    "AUTHFLOODSTOP"};
+    const int kind = (s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind;
+    emit(kStops[kind]);
+}
+
+static lv_obj_t *build_frame_screen(lv_obj_t *parent) {
+    lv_obj_t *screen = make_screen(parent);
+    s_mod_label = lv_label_create(screen);
+    lv_obj_set_width(s_mod_label, 312);
+    lv_label_set_text(s_mod_label, "pick a target");
+    lv_obj_t *r1 = make_row(screen);
+    make_button_h(r1, "Scan", scan_clicked, 34);
+    make_button_h(r1, "Targets", targets_clicked, 34);
+    make_button_h(r1, "Start", atk_start_clicked, 34);
+    lv_obj_t *r2 = make_row(screen);
+    make_button_h(r2, "Stop", atk_stop_clicked, 34);
+    lv_obj_t *variant = make_button_h(r2, kModVariants[0], atk_variant_clicked, 34);
+    s_mod_variant_label = lv_obj_get_child(variant, 0);
+    make_button_h(r2, "Back", goto_menu, 34);
+    return screen;
 }
 
 static void goto_evil(lv_event_t *event) {
@@ -833,16 +982,23 @@ static bool build_main_ui(void) {
 
     // ---- level 1: function menu
     s_screens[SCR_MENU] = make_screen(root);
+    // Three buttons per row: eleven entries at 36 px still fit the 240 px panel
+    // above the status/log lines.
     lv_obj_t *m1 = make_row(s_screens[SCR_MENU]);
     make_button(m1, "Deauth", goto_deauth);
     make_button(m1, "Probe", goto_probe);
+    make_button(m1, "CSA", goto_csa);
     lv_obj_t *m2 = make_row(s_screens[SCR_MENU]);
-    make_button(m2, "CSA", goto_csa);
     make_button(m2, "DELBA", goto_delba);
+    make_button(m2, "BA", goto_ba);
+    make_button(m2, "Evil", goto_evil);
     lv_obj_t *m3 = make_row(s_screens[SCR_MENU]);
-    make_button(m3, "BA", goto_ba);
+    make_button(m3, "WNM", goto_wnm);
+    make_button(m3, "TIM", goto_tim);
+    make_button(m3, "EAPOL", goto_eapol);
     lv_obj_t *m4 = make_row(s_screens[SCR_MENU]);
-    make_button(m4, "Evil", goto_evil);
+    make_button(m4, "SAE", goto_sae);
+    make_button(m4, "Auth", goto_authflood);
 
     // ---- level 2: deauth mode menu
     s_screens[SCR_DEAUTH] = make_screen(root);
@@ -929,8 +1085,10 @@ static bool build_main_ui(void) {
     make_button_h(b2, "Stop", ba_stop_clicked, 34);
     make_button_h(b2, "Back", goto_menu, 34);
 
-    // ---- level 2: probe
-    s_screens[SCR_PROBE] = make_screen(root);
+    // ---- level 2: WNM / TIM / EAPOL / SAE / auth flood, one shared page
+    s_screens[SCR_FRAME] = build_frame_screen(root);
+
+    // ---- level 2: probe    s_screens[SCR_PROBE] = make_screen(root);
     lv_obj_t *p_hint = lv_label_create(s_screens[SCR_PROBE]);
     lv_label_set_text(p_hint, "flood fake APs:\nbeacon + probe response");
     lv_obj_set_width(p_hint, 312);
@@ -1365,6 +1523,15 @@ bool wireless_ui_show_by_name(const char *name) {
     } else if (strcmp(name, "evil") == 0) {
         s_tap_pick = 0;
         show_screen(SCR_EVIL);
+    } else if (strcmp(name, "wnm") == 0 || strcmp(name, "tim") == 0 ||
+               strcmp(name, "eapol") == 0 || strcmp(name, "sae") == 0 ||
+               strcmp(name, "authflood") == 0) {
+        const int kind = (name[0] == 'w')   ? 0
+                         : (name[0] == 't') ? 1
+                         : (name[0] == 'e') ? 2
+                         : (name[0] == 's') ? 3
+                                            : 4;
+        goto_atk(kind);
     } else {
         ok = false;
     }
@@ -1388,6 +1555,8 @@ const char *wireless_ui_screen_name(void) {
             return "delba";
         case SCR_BA:
             return "ba";
+        case SCR_FRAME:
+            return kModScreenNames[(s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind];
         case SCR_MENU:
         default:
             return "menu";

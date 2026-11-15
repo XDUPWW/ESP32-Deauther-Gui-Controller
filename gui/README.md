@@ -29,7 +29,9 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 
 ```
 一级  [Deauth 攻击] [Probe 攻击] [CSA 欺骗]
-      [DELBA 欺骗]  [BA 会话攻击] [Evil Twin] [设备状态] [日志]
+      [DELBA 欺骗] [BA 会话攻击] [Evil Twin]
+      [WNM 劝退] [TIM 投毒] [EAPOL 洪泛] [SAE 洪泛] [Auth 洪泛]
+      [设备状态] [日志]
 
 二级  Deauth 攻击 -> [单个 AP] [全部 AP] [只打勾选] [排除勾选]
 
@@ -125,7 +127,23 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 - 实验室结论：只发 2 帧伪造 ADDBA 就能让该 TID 冻结且不自愈（需重新关联）；
   "窗口被推走"这一步未单独证明（见 [测试报告](../firmware/测试报告.md)）
 
-### 2.6 Probe 攻击
+### 2.6 五个帧级模块（WNM / TIM / EAPOL / SAE / Auth 洪泛）
+
+五页版式相同：`扫描 AP` → `选择目标…`（单选）→ 调参数 → `开始` / `停止`，都只对**一个 AP** 生效。
+
+| 页面 | 参数 | 发出的命令（停止命令） |
+| --- | --- | --- |
+| `WNM 劝退`（802.11v BTM Request） | 模式 `cand/bare`、disassoc timer（1..65535 TBTT）、候选信道（0 = 自动） | `WNM <idx> <mode> <timer> [ch]`（`WNMSTOP`） |
+| `TIM 投毒`（克隆 beacon 改 TIM） | 模式 `tim/clear`、受害 AID（0 = 学到的全部，1..255 指定） | `TIM <idx> <mode> <aid>`（`TIMSTOP`） |
+| `EAPOL 洪泛` | QoS TID（`6`/`-1`/`0`/`5`/`7`）、受害 STA MAC（可空 = 嗅探学习，12 位十六进制） | `EAPOL <idx> <tid> [mac]`（`EAPOLSTOP`） |
+| `SAE 洪泛` | Commit 元素 `point/rand`、帧间隔 ms（<50 会被固件抬到 50） | `SAE <idx> <elem> <gap>`（`SAESTOP`） |
+| `Auth 洪泛` | 模式 `both/auth/assoc`、勾选"嗅到 WPA3 自动升级 SAE" | `AUTHFLOOD <idx> <mode> [noauto]`（`AUTHFLOODSTOP`） |
+
+界面上只做参数校验（范围、MAC 格式），**不判断对端支不支持**：BTM 需要 11v 客户端、
+SAE 需要 WPA3 AP、EAPOL 需要 802.1X——这些看底栏的计数器判断，说明见
+[攻击原理](../attack-principles.md) 与 [`../firmware/README.md`](../firmware/README.md#5-各攻击的行为与限制)。
+
+### 2.7 Probe 攻击
 
 只有一种：`开始泛洪` → `PROBE_BROADCAST`（**不需要扫描**，广播泛洪与环境无关）。
 固件持续广播 Beacon（子类型 8）+ Probe Response（5），SSID/BSSID 全随机，每 120 ms 跳信道。
@@ -134,9 +152,11 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 - 设备状态：`STATUS` 的逐字段展示（模式、帧数、网络数、堆、`caps`、信道、`rx/rxm`）
 - 日志：带时间戳的分色输出（`>>` 是本机发出的命令，红色是 `ERR`/捕获到的凭据）
 
-### 2.5 底栏
+### 2.8 底栏
 
-`模式 / Deauth 帧 / Probe 帧 / reason / 网络数 / 堆 / 双频(5G)`，攻击中每 2 秒自动拉一次 `STATS`。
+两行。第一行：`模式 / Deauth 帧 / Probe 帧 / reason / CSA / DELBA / BA`；
+第二行：`WNM / TIM / EAPOL / SAE / Auth` 五个模块的状态与帧数 + `网络 / 堆 / 双频(5G)`。
+攻击中每 2 秒自动拉一次 `STATS`。
 
 ---
 
