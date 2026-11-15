@@ -135,7 +135,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ├── README.md                     ← 你正在看的这个文件
 ├── LICENSE                       ← GPLv3（继承上游 ESP32-Deauther）
 ├── .gitignore
-├── TODO.md                       ← 路线图：PMKID / 企业网络 / BTM-SAE-TIM 的效果验证 / Android / BLE
+├── TODO.md                       ← 路线图：PMKID / 企业网络 / BTM-SAE-TIM 的效果验证 / Android / BLE / wbus 总线重构
 ├── attack-principles.md          ← 攻击原理全量梳理（逐模块：协议层 / 帧格式 / 有效与失效 / 实测）
 ├── learning-roadmap.md           ← 学习路线（零嵌入式经验 → 读懂本工程，含架构与 API 盘点）
 ├── firmware/                     ← 固件（ESP-IDF 工程）
@@ -262,7 +262,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 
 上述 1、2 与 UART 丢行已记入[待修清单](firmware/测试报告.md#71-待修清单已记录尚未动手)，暂未动手。
 
-细节见 [测试报告](firmware/测试报告.md)。后续要做的能力（PMKID 抓取与导出、企业网络凭据、DELBA 的多客户端实测、Android 上位机、BLE 广播泛洪）见 [TODO.md](TODO.md)。
+细节见 [测试报告](firmware/测试报告.md)。后续要做的能力（PMKID 抓取与导出、企业网络凭据、DELBA 的多客户端实测、Android 上位机、BLE 广播泛洪）与架构重构（wbus 总线，`TODO.md` 第 5 节）见 [TODO.md](TODO.md)。
 
 ---
 

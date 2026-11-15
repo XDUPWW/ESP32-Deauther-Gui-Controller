@@ -92,7 +92,97 @@
 | `[ ]` | **BLE 广播泛洪**：NimBLE 非连接广播，随机 MAC/名称，限速与计数可观测 | `src/ble_flood.c`、命令 `BLE_FLOOD [on/off]` | `STATUS` 有 `ble=` 计数；另一台手机扫描时列表被刷满 |
 | `[ ]` | **共存评估**：Wi-Fi 与 BLE 共用射频，洪泛时 Wi-Fi 扫描/攻击的掉帧率 | 测试报告一节 | 给出"BLE 洪泛开着时 Wi-Fi 攻击帧率下降 X%"的实测数字 |
 
-## 5. 已完成的修复
+## 5. 架构重构：wbus 总线（提案，待批）
+
+**问题**：攻击模块本身是自包含的，耦合全在"注册表"这一层，而且硬编码在模块**之外**，一共六处：
+
+| 注册表 | 位置 | 加一个攻击要改 |
+| --- | --- | --- |
+| 命令分发 | `firmware/src/serial_console.cpp:1488` 起 63 处 `strcmp` + 52 处 `strtok` | 加分支、加 include |
+| 计数器聚合 | `do_status()`（`serial_console.cpp:311`）手工 print 每个模块 | 加 8 个 `Serial.print` |
+| 能力串 | `capabilities()`（`serial_console.cpp:75`）硬编码字符串 | 手改字符串 |
+| LVGL 屏表 | `components/wireless_ui/src/ui.c` 的 kind 表 | 加一页 |
+| GUI 菜单 | `gui/main.py` 18 个手写 `_build_*` 页面 | 加一页 |
+| 混杂回调 | `firmware/src/deauth.cpp:475-482` 八个 `X_on_rx()` | 加一行 |
+
+PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3 个 hook、`CMakeLists`、
+`ui.c`、`gui/main.py`、`tests/`。
+
+**目标**：把这几张表变成数据。运输层（串口 / LVGL / GUI）只认 `<obj>.<method> k=v` 与
+`EVT <topic> k=v` 两种句子，不知道攻击的存在；新增攻击 = 一个 `.cpp`（描述表 + handler）
++ 注册表一行。
+
+**四条兼容铁律**（每一步都要守）：
+
+1. 回执文案字节级保持——`firmware/tests/` 51 项与 `lab/*.py` 全靠它解析，所以参数策略表带
+   `err` 字段，把错误文案也数据化（例：`ERR reason must be 1..65535, or 'random'`）。
+2. 策略校验不得比旧 handler 更严，否则"旧代码能跑的命令"开始报错：`CSA 3 auto 99` 旧代码静默
+   把 count 强制成 5、`CSA 3 -5` 旧代码当 auto、`DEAUTH 3x` 前缀解析得 3。`INT` 沿用前缀数字
+   语义，范围检查留给 handler。
+3. 换行不能混：`Serial.println` 出 `\r\n`，`Serial.printf("...\n")` 只出 `\n`，回复层必须区分
+   line / raw 两种写法。
+4. 未迁移的命令原样落回旧 `strcmp` 链：`dispatch()` 只把行复制到本地 `work[128]` 再 `strtok`，
+   不要动调用方传进来的 `line`。
+
+### P1 总线核心 + deauth/csa 试点（估 3–4 天）
+
+- [ ] `components/wbus/`：对象注册表、`wb_arg_spec_t` 参数策略（`INT / REASON / MAC / ENUM / STR`）、
+      `wb_reply_t` 注入式 sink（**不依赖 Arduino 与 esp_\***）、`wbus_register/call/call_named/list/describe`、事件订阅
+- [ ] `include/console_commands.h`：暴露 `console_scan_count()`、`console_apply_reason()`、`ui_log()`，
+      让对象层能回调控制台而不反向依赖
+- [ ] `src/bus_objects.cpp`：`deauth`（`start` / `stop`）与 `csa`（`start` / `stop` / `test`）两张对象表，
+      handler 从 `do_deauth()` / `do_csa()` 原样搬入（含 `CSA_AUTO_HOLD_MS` 常量下沉到 `csa.h`）
+- [ ] `dispatch()` 加别名表：`DEAUTH`→`deauth.start`、`CSASTOP`→`csa.stop`、`CSATEST`→`csa.test`，
+      未命中就原样落回旧链
+- [ ] 新命令 `WBUS`（列对象）/ `DESCRIBE <obj>`（GUI 建菜单用）/ `CALL <obj>.<method> k=v`（关键字调用）/
+      `EVTSUB [pattern]`（默认不订阅 → 老输出零变化）
+- [ ] 验收：`idf.py build` 0 警告；51 项 unittest 全绿；`DEAUTH` / `CSA` 回执与 `84f891e` 逐字节一致；
+      `CALL deauth.start idx=3 reason=7` 与 `DEAUTH 3 7` 等效；双板空口复测一次
+
+### P2 radio 对象：信道仲裁 + TX 收口（估 2–3 天）
+
+- [ ] `radio.channel.request/release`：owner 标记 + 冲突打 `WARN`，**不做抢占调度**（会改多攻击并发时序）
+- [ ] `radio.tx.send`：把限速做成参数化策略 `tx_policy{min_gap_ms, allow_burst, on_nomem}`，
+      三个实例——deauth 逐站 30 fps、delba 的 BAR 连发、其余 45 ms 单播间隔
+- [ ] 0x101 处置单点化：现在只有 `tx_guard.cpp:52` 会 `esp_restart()`，
+      `deauth.cpp` 的 `tx_raw()` 与 `delba.cpp` 遇 `ESP_ERR_NO_MEM` 只计数 + 回退 5 ms 继续打
+- [ ] 两套 TX 账本（`attack_tx_ok` vs `tx_guard_ok`）合并，`STATUS` 单一口径
+- [ ] 混杂回调扇出（`deauth.cpp:475-482`）改成订阅数组
+- [ ] 验收：`RXMIX` / `RADIO` 双板回归；60 s 长跑无 `FATAL tx 0x101`；`STATUS` 字段名不变
+
+### P3 界面数据驱动（估 3–4 天）
+
+- [ ] `DESCRIBE` 补齐 `label / enums / default`，`gui/main.py` 从 18 个手写页面退化成页面工厂
+- [ ] `ui.c` 消费同一份元数据生成页面；保留 `ui_commands_drain()` 的"手势只回投主循环"模型
+- [ ] 验收：GUI 全功能回归 + 触屏回归；中文页仍由 `tools/gen_cjk_font.py` 子集生成
+
+### P4 余下 8 个模块（估 3–5 天）
+
+- [ ] `delba` / `ba` / `wnm` / `tim` / `eapol` / `pspoll` / `sae` / `authflood` 逐个搬进对象表，
+      补齐 `scan` / `targets` / `system` 三个基础对象
+- [ ] `serial_console.cpp` 降到 ~400 行，`print_help()` 由描述表生成
+- [ ] 验收：每搬一个跑全量测试；`HELP` / `STATUS` 行不变；两个 target（`esp32` / `esp32-c5`）都编过
+
+### 明确不做
+
+- **链接器 section 自动注册**：ESP-IDF 链接脚本没有该 section，要 `KEEP()` 才不被 `--gc-sections`
+  吃掉，失败方式是运行期"对象静默消失"。用显式指针数组，编译期就能查重名。
+- **JSON + TCP 传输**：CYD 无 PSRAM、空闲堆实测 ~107 KB，lwIP + cJSON 会吃掉一半余量；
+  要做得先论证 PSRAM 板型并做成 Kconfig 开关。
+- **`attack_step()` 迁到 `wb_tick()`**：它持有跳信道 / 探针 / STA 发现的共享射频状态，
+  必须等 P2 的仲裁落地，否则双板时序回归成本远超收益。
+- **严格化参数校验**：见铁律 2。
+
+### 风险
+
+- 51 项测试走真串口（`DEAUTHER_PORT=COM5`），**回归必须占用物理板子**，这是主要成本，且空口复测还要一台 AP。
+- 别名表必须覆盖动词变体（`DEAUTH_ONLY` / `DEAUTH_EXCEPT` / `BAATTACK` / `BAPLANT` / `BARPUSH` 一族），
+  漏一个测试立刻抓出来——这是好事，也是必须每个阶段都跑全量的原因。
+- 事件与回复缓冲一律静态分配，不能进 LVGL 任务里 `malloc`。
+
+---
+
+## 6. 已完成的修复
 
 | 状态 | 条目 | 说明 |
 | --- | --- | --- |
@@ -100,13 +190,16 @@
 | `[x]` | 目标选择弹窗（LVGL + Windows GUI） | 模态卡片/窗口，过滤、全选/反选、快照撤销 |
 | `[x]` | UART RX 缓冲 256 B → 4 KB | 300 条 PING 洪泛从 233–255 提升到 300/300 |
 
-## 6. 建议顺序
+## 7. 建议顺序
 
 1. **PMKID 抓 + 导出**（第 1 节前两条）——唯一能离线闭环验证的一条，先把它跑通：
    抓到的 `.22000` 用已知密码喂 hashcat，命中即证明"帧解析 → 去重 → 导出格式"全对。
 2. **CSA 注入 + 跟随**——需要实机对端才能验证，依赖第 1 步的信道调度代码。
 3. **Android 上位机**——协议层无风险，可以并行。
 4. **BLE 广播泛洪**——最后做，它会影响 Wi-Fi 侧帧率，要在共存评估之后调参数。
+
+> 第 5 节的架构重构与上面四条互不阻塞，但 **P1 应先于任何新增攻击模块**：
+> 否则新模块又要按老办法接七处线，重构的收益被抵消一次。
 
 ---
 
