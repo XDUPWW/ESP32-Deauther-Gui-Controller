@@ -12,6 +12,7 @@ set(SRCS
     "../src/wnm.cpp"
     "../src/tim.cpp"
     "../src/eapol.cpp"
+    "../src/pspoll.cpp"
     "../src/sae.cpp"
     "../src/authflood.cpp"
 )

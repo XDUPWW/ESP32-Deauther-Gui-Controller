@@ -296,7 +296,7 @@ typedef enum {
     SCR_DELBA,
     SCR_BA,
     SCR_EVIL,
-    SCR_FRAME,  // shared page for WNM / TIM / EAPOL / SAE / auth flood
+    SCR_FRAME,  // shared page for WNM / TIM / EAPOL / SAE / auth / PS-Poll
     SCR_COUNT
 } ui_screen_t;
 
@@ -315,11 +315,13 @@ static void show_screen(ui_screen_t target) {
     s_screen = target;
 }
 
-// The five frame-level modules share one page; these two tables name it.
-static const char *kModNames[5] = {"WNM", "TIM", "EAPOL", "SAE", "AUTH"};
-static const char *kModVariants[5] = {"Bare", "Clear", "Plain", "Rand", "NoAuto"};
+// The six frame-level modules share one page; these two tables name it.
+static const char *kModNames[6] = {"WNM", "TIM", "EAPOL", "SAE", "AUTH", "PSPOLL"};
+static const char *kModVariants[6] = {"Bare", "Clear", "Plain", "Rand", "NoAuto",
+                                     "Release"};
 // Screen names reported by `UISCREEN` / `UI` (lowercase, same spelling as the commands).
-static const char *kModScreenNames[5] = {"wnm", "tim", "eapol", "sae", "authflood"};
+static const char *kModScreenNames[6] = {"wnm",  "tim",  "eapol",
+                                         "sae",  "authflood", "pspoll"};
 
 static void update_mode_label(void) {
     if (s_mode_label == NULL) {
@@ -419,7 +421,7 @@ static void update_mode_label(void) {
     }
 
     if (s_mod_label != NULL) {
-        const char *name = kModNames[(s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind];
+        const char *name = kModNames[(s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind];
         if (s_selected < 0) {
             snprintf(text, sizeof(text), "%s: pick a target", name);
         } else {
@@ -590,7 +592,7 @@ static void ba_stop_clicked(lv_event_t *event) {
 // popup then stopped at 14 rows instead of 30). The kind picks the command and
 // retitles the variant button.
 static void goto_atk(int kind) {
-    s_atk_kind = (kind < 0 || kind > 4) ? 0 : kind;
+    s_atk_kind = (kind < 0 || kind > 5) ? 0 : kind;
     s_tap_pick = 0;  // every one of them targets a single AP
     if (s_mod_variant_label != NULL) {
         lv_label_set_text(s_mod_variant_label, kModVariants[s_atk_kind]);
@@ -619,6 +621,10 @@ static void goto_authflood(lv_event_t *event) {
     (void)event;
     goto_atk(4);
 }
+static void goto_pspoll(lv_event_t *event) {
+    (void)event;
+    goto_atk(5);
+}
 
 static void atk_start_clicked(lv_event_t *event) {
     (void)event;
@@ -641,6 +647,10 @@ static void atk_start_clicked(lv_event_t *event) {
             break;
         case 4:
             snprintf(command, sizeof(command), "AUTHFLOOD %d", s_selected);
+            break;
+        case 5:
+            // Both halves: PM=1 Null Data + PS-Poll (mode both is the default).
+            snprintf(command, sizeof(command), "PSPOLL %d", s_selected);
             break;
         default:
             snprintf(command, sizeof(command), "WNM %d", s_selected);
@@ -672,6 +682,11 @@ static void atk_variant_clicked(lv_event_t *event) {
         case 4:
             snprintf(command, sizeof(command), "AUTHFLOOD %d both noauto", s_selected);
             break;
+        case 5:
+            // Undo: one PM=0 Null Data per victim, so the AP releases what it has
+            // been holding.
+            snprintf(command, sizeof(command), "PSPOLLREL");
+            break;
         default:
             snprintf(command, sizeof(command), "WNM %d bare", s_selected);
             break;
@@ -681,9 +696,9 @@ static void atk_variant_clicked(lv_event_t *event) {
 
 static void atk_stop_clicked(lv_event_t *event) {
     (void)event;
-    static const char *kStops[5] = {"WNMSTOP", "TIMSTOP", "EAPOLSTOP", "SAESTOP",
-                                    "AUTHFLOODSTOP"};
-    const int kind = (s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind;
+    static const char *kStops[6] = {"WNMSTOP",   "TIMSTOP", "EAPOLSTOP",
+                                    "SAESTOP",   "AUTHFLOODSTOP", "PSPOLLSTOP"};
+    const int kind = (s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind;
     emit(kStops[kind]);
 }
 
@@ -999,6 +1014,7 @@ static bool build_main_ui(void) {
     lv_obj_t *m4 = make_row(s_screens[SCR_MENU]);
     make_button(m4, "SAE", goto_sae);
     make_button(m4, "Auth", goto_authflood);
+    make_button(m4, "PS-Poll", goto_pspoll);
 
     // ---- level 2: deauth mode menu
     s_screens[SCR_DEAUTH] = make_screen(root);
@@ -1525,12 +1541,15 @@ bool wireless_ui_show_by_name(const char *name) {
         show_screen(SCR_EVIL);
     } else if (strcmp(name, "wnm") == 0 || strcmp(name, "tim") == 0 ||
                strcmp(name, "eapol") == 0 || strcmp(name, "sae") == 0 ||
-               strcmp(name, "authflood") == 0) {
-        const int kind = (name[0] == 'w')   ? 0
-                         : (name[0] == 't') ? 1
-                         : (name[0] == 'e') ? 2
-                         : (name[0] == 's') ? 3
-                                            : 4;
+               strcmp(name, "authflood") == 0 || strcmp(name, "pspoll") == 0) {
+        // "pspoll" shares its first letter with "probe", so the names are compared
+        // explicitly instead of keying on name[0].
+        const int kind = (strcmp(name, "wnm") == 0)        ? 0
+                         : (strcmp(name, "tim") == 0)      ? 1
+                         : (strcmp(name, "eapol") == 0)    ? 2
+                         : (strcmp(name, "sae") == 0)      ? 3
+                         : (strcmp(name, "authflood") == 0) ? 4
+                                                            : 5;
         goto_atk(kind);
     } else {
         ok = false;
@@ -1556,7 +1575,7 @@ const char *wireless_ui_screen_name(void) {
         case SCR_BA:
             return "ba";
         case SCR_FRAME:
-            return kModScreenNames[(s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind];
+            return kModScreenNames[(s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind];
         case SCR_MENU:
         default:
             return "menu";

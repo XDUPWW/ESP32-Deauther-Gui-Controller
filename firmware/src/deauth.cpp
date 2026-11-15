@@ -9,6 +9,7 @@
 #include "definitions.h"
 #include "delba.h"
 #include "eapol.h"
+#include "pspoll.h"
 #include "sae.h"
 #include "tim.h"
 #include "types.h"
@@ -476,6 +477,7 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     wnm_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
     tim_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
     eapol_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+    pspoll_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
     sae_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
     authflood_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
 
@@ -851,6 +853,7 @@ void attack_stop() {
     wnm_stop();
     tim_stop();
     eapol_stop();
+    pspoll_stop();
     sae_stop();
     authflood_stop();
     esp_wifi_set_promiscuous(false);
@@ -865,6 +868,7 @@ void attack_step() {
     wnm_step();
     tim_step();
     eapol_step();
+    pspoll_step();
     sae_step();
     authflood_step();
 

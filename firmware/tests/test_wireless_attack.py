@@ -798,14 +798,16 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
     def test_help_lists_new_commands(self):
         _, lines = self.client.command("HELP", lambda l: "AUTHFLOODTEST" in l, 5)
         text = "\n".join(lines)
-        for cmd in ("WNM ", "TIM ", "EAPOL ", "SAE ", "AUTHFLOOD ", "WNMTEST"):
+        for cmd in ("WNM ", "TIM ", "EAPOL ", "SAE ", "AUTHFLOOD ", "WNMTEST",
+                    "PSPOLL ", "PSPOLLREL ", "PSPOLLTEST"):
             self.assertIn(cmd, text, f"HELP 应列出 {cmd}")
 
     def test_status_has_new_fields(self):
         info = self._status()
         for key in ("wnm", "wnmf", "wnmskip", "wnmresp", "tim", "timf", "timaid", "timreal",
                     "eap", "eapf", "eaprxreq", "sae", "saesec", "saef", "saecode", "saetok",
-                    "af", "aff", "afa", "afs", "afids", "afst", "afup"):
+                    "af", "aff", "afa", "afs", "afids", "afst", "afup",
+                    "psp", "pspf", "pspnul", "pspfl", "pspc", "pspdl", "psprxp"):
             self.assertIn(key, info, f"STATUS 缺少 {key}")
         self.assertIn("authflood", protocol.parse_caps(info))
 
@@ -889,6 +891,46 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
         for bad in ("EAPOL 0 9", "EAPOL 0 6 notamac"):
             line, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
             self.assertIsNotNone(line, f"{bad} 应被拒绝")
+
+    def test_pspoll_frame_format_and_run(self):
+        """PM 位欺骗：ToDS 的 Null Data + 帧控制 PM 位，PM=0 版本只差这一位。"""
+        self.client.send("PSPOLLTEST")
+        line, lines = self.client.command("", lambda l: l.startswith("PSPOLLTEST sleep hex="), 6)
+        self.assertIsNotNone(line, "PSPOLLTEST 无输出")
+        text = "\n".join(lines)
+        self.assertIn("pm=1", text, "sleep 版本必须置 PM 位")
+        self.assertIn("tods=1", text, "Null Data 必须是 ToDS（受害 STA → AP）")
+        self.assertIn("fc=0x1148", text, "ToDS + PM=1 的 Null Data 帧控制是 0x1148")
+        self.assertIn("PM=1", text.upper())
+
+        line, _ = self.client.command("", lambda l: l.startswith("PSPOLLTEST awake"), 6)
+        self.assertIsNotNone(line)
+        self.assertIn("pm=0", line, "awake 版本必须清掉 PM 位")
+
+        # 参数防呆：AID 与 mode 已经不存在（PS-Poll 半删除），只接受一个可选 MAC
+        for bad in ("PSPOLL 0 37", "PSPOLL 0 poll", "PSPOLL 0 both"):
+            err, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
+            self.assertIsNotNone(err, f"{bad} 应被拒绝")
+
+        self._scan_first_ap()
+        ok, _ = self.client.command("PSPOLL 0 02AABBCCDDEE",
+                                    lambda l: l.startswith("OK PSPOLL "), 5)
+        self.assertIsNotNone(ok, "PM 欺骗启动失败")
+        self.assertIn("sta=02:AA:BB:CC:DD:EE", ok, "显式 STA 应写进回执")
+        self.assertIn("chset=0", ok, "信道设置必须成功（否则帧会从扫描残留的信道出去）")
+        time.sleep(1.5)
+        info = self._status()
+        print(f"\n  psp={info.get('psp')} pspf={info.get('pspf')} "
+              f"pspnul={info.get('pspnul')} pspfl={info.get('pspfl')} "
+              f"pspdl={info.get('pspdl')}")
+        self.assertEqual(info.get("psp"), "pm")
+        self.assertGreater(int(info.get("pspf", "0")), 0, "Null Data 应已发出")
+        self.assertGreater(int(info.get("pspfl", "0")), 0, "应已发出 PM=0 的释放帧")
+
+        rel, _ = self.client.command("PSPOLLREL", lambda l: l.startswith("OK PSPOLLREL"), 5)
+        self.assertIsNotNone(rel, "PSPOLLREL 无响应")
+        self.assertIn("flushed=", rel)
+        self.assertEqual(self._status().get("psp"), "off", "释放后应停止")
 
     def test_sae_frame_format_and_run(self):
         """SAE Commit：algorithm 3 / seq 1 / group 19 / P-256 生成元 + token 容器回显。"""

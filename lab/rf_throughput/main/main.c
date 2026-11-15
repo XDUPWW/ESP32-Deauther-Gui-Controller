@@ -18,6 +18,10 @@
 //   sniff <ch>            beacon sniffer: print the TIM element of every beacon on
 //                         that channel (the forged clone vs the real AP). Needed to
 //                         check frame bytes when the C5 capture pipe is not running.
+//   sniffpoll <ch>        PS-Poll / Null Data sniffer: prints the AID carried in
+//                         the PS-Poll Duration/ID field and the PM bit of Null
+//                         Data frames. This is how the PS-Poll attack is checked
+//                         on the air (the C5 capture pipe may not be running).
 //   sniffstop             end the dump and report how many beacons were seen
 //   rate                  1 kibyte / second lines, printed as RATE tx=/rx=
 //   status                connection state + ps/btm
@@ -104,6 +108,8 @@ static void ap_task(void* arg) {
 
 static uint32_t s_gateway;
 static volatile uint32_t s_sniff_frames;
+static volatile uint32_t s_sniff_polls;
+static volatile uint32_t s_ctrl_sub[16];  // control frames by subtype, per run
 static bool s_sniffing;
 static wifi_ps_type_t s_ps = WIFI_PS_NONE;
 static bool s_btm;
@@ -174,6 +180,48 @@ static void sniff_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
     }
 }
 
+// PS-Poll (control 10) / Null Data (data 4, QoS Null 12) dump. Both are 802.11
+// header only, so a few bytes decode them completely:
+//   * PS-Poll Duration/ID = 0xC000 | AID (802.11-2020 §9.2.4.2)
+//   * Null Data Frame Control byte 1 bit 4 = Power Management
+// The driver rewrites Duration for some frame types (measured on RTS: 990..1102 us
+// instead of the value we wrote), so whether the AID survives is exactly what this
+// mode is for.
+static void sniff_poll_cb(void* buf, wifi_promiscuous_pkt_type_t type) {
+    const wifi_promiscuous_pkt_t* pkt = (const wifi_promiscuous_pkt_t*)buf;
+    if (pkt == NULL) {
+        return;
+    }
+    const uint8_t* f = pkt->payload;
+    const int len = pkt->rx_ctrl.sig_len;
+    if (len < 20) {
+        return;
+    }
+    const int ftype = (f[0] >> 2) & 0x03;
+    const int subtype = (f[0] >> 4) & 0x0F;
+
+    if (type == WIFI_PKT_CTRL) {
+        if (subtype >= 0 && subtype < 16) {
+            s_ctrl_sub[subtype]++;
+        }
+        if (ftype == 1 && subtype == 10) {
+            const unsigned dur = (unsigned)(f[2] | (f[3] << 8));
+            s_sniff_polls++;
+            printf("POLL ra=%02X:%02X:%02X:%02X:%02X:%02X ta=%02X:%02X:%02X:%02X:%02X:%02X"
+                   " dur=0x%04X aid=%u len=%d\n",
+                   f[4], f[5], f[6], f[7], f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15],
+                   dur, (unsigned)(dur & 0x3FFF), len);
+        }
+        return;
+    }
+    if (type == WIFI_PKT_DATA && ftype == 2 && (subtype == 4 || subtype == 12)) {
+        printf("NULL ta=%02X:%02X:%02X:%02X:%02X:%02X ra=%02X:%02X:%02X:%02X:%02X:%02X"
+               " pm=%d tods=%d qos=%d len=%d\n",
+               f[10], f[11], f[12], f[13], f[14], f[15], f[4], f[5], f[6], f[7], f[8], f[9],
+               (f[1] >> 4) & 0x01, f[1] & 0x01, subtype == 12 ? 1 : 0, len);
+    }
+}
+
 static void sniff_stop(void) {
     if (!s_sniffing) {
         return;
@@ -181,7 +229,19 @@ static void sniff_stop(void) {
     esp_wifi_set_promiscuous(false);
     esp_wifi_set_promiscuous_rx_cb(NULL);
     s_sniffing = false;
-    printf("OK sniff end frames=%u\n", (unsigned)s_sniff_frames);
+    printf("OK sniff end frames=%u polls=%u ctrl=", (unsigned)s_sniff_frames,
+           (unsigned)s_sniff_polls);
+    // Subtype histogram: 11 should be RTS (a CTRLTEST run) and 10 PS-Poll. A zero
+    // everywhere means the control filter is not letting anything through, which is
+    // a property of the *sniffer*, not of the injection under test.
+    for (int i = 0; i < 16; i++) {
+        printf("%u", (unsigned)s_ctrl_sub[i]);
+        if (i != 15) {
+            printf(",");
+        }
+        s_ctrl_sub[i] = 0;
+    }
+    printf("\n");
 }
 
 static void start_sniff(int channel) {
@@ -190,6 +250,10 @@ static void start_sniff(int channel) {
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_start());
     esp_wifi_set_ps(WIFI_PS_NONE);
+    // A station that still thinks it is connecting refuses a channel change; a
+    // fresh boot tries to join whenever a role is stored in NVS.
+    esp_wifi_disconnect();
+    vTaskDelay(pdMS_TO_TICKS(100));
     const esp_err_t err = esp_wifi_set_channel((uint8_t)channel, WIFI_SECOND_CHAN_NONE);
     if (err != ESP_OK) {
         printf("ERR set channel %d: %d\n", channel, (int)err);
@@ -201,8 +265,57 @@ static void start_sniff(int channel) {
     esp_wifi_set_promiscuous_rx_cb(sniff_cb);
     esp_wifi_set_promiscuous(true);
     s_sniff_frames = 0;
+    s_sniff_polls = 0;
     s_sniffing = true;
     printf("OK sniff ch=%d (beacon TIM dump, `sniffstop` ends it)\n", channel);
+}
+
+// PS-Poll / PM-bit sniffer: management noise is filtered out, control and data are
+// both needed (PS-Poll is control, Null Data is data), and the second-stage control
+// filter has to be widened explicitly -- its default drops every control frame.
+static void start_sniff_poll(int channel) {
+    sniff_stop();
+    // Works on top of a running role: an AP already owns its channel, and tearing
+    // the interface down just to sniff would remove the very AP that produces the
+    // traffic under test. A board with no role gets a bare STA interface instead.
+    wifi_mode_t mode = WIFI_MODE_NULL;
+    esp_wifi_get_mode(&mode);
+    if (mode == WIFI_MODE_NULL) {
+        ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+        ESP_ERROR_CHECK(esp_wifi_start());
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    const esp_err_t err = esp_wifi_set_channel((uint8_t)channel, WIFI_SECOND_CHAN_NONE);
+    if (err != ESP_OK) {
+        // An AP owns its channel and refuses the change; sniffing on that AP then
+        // happens on the channel it was started with, which is the useful case
+        // (the traffic under test is its own).
+        if (mode == WIFI_MODE_AP || mode == WIFI_MODE_APSTA) {
+            printf("NOTE sniff on the AP's own channel (set_channel %d refused: %d)\n",
+                   channel, (int)err);
+        } else {
+            printf("ERR set channel %d: %d\n", channel, (int)err);
+            return;
+        }
+    }
+    wifi_promiscuous_filter_t filter = {0};
+    filter.filter_mask = WIFI_PROMIS_FILTER_MASK_CTRL | WIFI_PROMIS_FILTER_MASK_DATA;
+    esp_wifi_set_promiscuous_filter(&filter);
+    wifi_promiscuous_filter_t ctrl_filter = {0};
+    ctrl_filter.filter_mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL;
+    esp_wifi_set_promiscuous_ctrl_filter(&ctrl_filter);
+    esp_wifi_set_promiscuous_rx_cb(sniff_poll_cb);
+    esp_wifi_set_promiscuous(true);
+    s_sniff_frames = 0;
+    s_sniff_polls = 0;
+    for (int i = 0; i < 16; i++) {
+        s_ctrl_sub[i] = 0;
+    }
+    s_sniffing = true;
+    printf("OK sniffpoll ch=%d (PS-Poll AID / Null Data PM dump, `sniffstop` ends it)\n",
+           channel);
 }
 
 static void on_wifi_event(void* arg, esp_event_base_t base, int32_t id, void* data) {
@@ -211,7 +324,12 @@ static void on_wifi_event(void* arg, esp_event_base_t base, int32_t id, void* da
     if (base == WIFI_EVENT && id == WIFI_EVENT_AP_START) {
         printf("WIFI ap started\n");
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        // Only join when a role is actually configured. An unconditional connect()
+        // leaves the interface "connecting", and a connecting station refuses
+        // esp_wifi_set_channel() -- which killed the sniffer modes on the C5.
+        if (s_sta_ssid[0] != 0) {
+            esp_wifi_connect();
+        }
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t* disc = (const wifi_event_sta_disconnected_t*)data;
         printf("WIFI sta disconnected reason=%d, retrying\n", disc != NULL ? disc->reason : -1);
@@ -345,6 +463,14 @@ static void run_command(char* line) {
             return;
         }
         start_sniff(ch);
+    } else if (strcmp(cmd, "sniffpoll") == 0) {
+        char* arg = strtok(nullptr, " ");
+        const int ch = arg ? atoi(arg) : 1;
+        if (ch < 1 || ch > 196) {
+            printf("ERR usage: sniffpoll <channel>\n");
+            return;
+        }
+        start_sniff_poll(ch);
     } else if (strcmp(cmd, "sniffstop") == 0) {
         sniff_stop();
     } else if (strcmp(cmd, "reboot") == 0) {
@@ -361,11 +487,17 @@ static void run_command(char* line) {
         }
         printf("OK cleared, reboot to stay idle\n");
     } else if (strcmp(cmd, "status") == 0) {
-        printf("STATUS bytes=%u kib=%u ps=%d btm=%d\n", (unsigned)s_bytes,
-               (unsigned)(s_bytes / 1024), (int)s_ps, s_btm ? 1 : 0);
+        // The station MAC is part of the status because the PS-Poll / PM-bit attack
+        // has to name its victim: a bench run hands this MAC to the attack board
+        // instead of waiting for the sniffer to learn it.
+        uint8_t mac[6] = {0};
+        esp_wifi_get_mac(WIFI_IF_STA, mac);
+        printf("STATUS bytes=%u kib=%u ps=%d btm=%d mac=%02X:%02X:%02X:%02X:%02X:%02X\n",
+               (unsigned)s_bytes, (unsigned)(s_bytes / 1024), (int)s_ps, s_btm ? 1 : 0, mac[0],
+               mac[1], mac[2], mac[3], mac[4], mac[5]);
         fflush(stdout);
     } else {
-        printf("ERR unknown '%s' (ap/sta/ps/btm/sniff/sniffstop/status/clear/reboot)\n", cmd);
+        printf("ERR unknown '%s' (ap/sta/ps/btm/sniff/sniffpoll/sniffstop/status/clear/reboot)\n", cmd);
     }
 }
 
@@ -413,7 +545,7 @@ void app_main(void) {
         nvs_close(h);
     }
     printf("INFO lab rf_throughput ready (ap <ssid> [ch] / sta <ssid> / ps <0|1|2> / btm <0|1> / "
-           "sniff <ch> / sniffstop / clear / reboot / status)\n");
+           "sniff <ch> / sniffpoll <ch> / sniffstop / clear / reboot / status)\n");
 
     while (true) {
         uint8_t c;
