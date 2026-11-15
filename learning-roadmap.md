@@ -414,6 +414,7 @@ MAC 头 24 字节（本工程所有帧都从这几个偏移开始）：
 | 3 | EAPOL | `eapol.cpp`（`build_eapol` → `eapol_step` → `eapol_on_rx`） | 伪造成 STA 发 Start/Logoff，搅 802.1X 端口状态机 | `eaprxreq>0` 才算真踢动（本工程对 PSK AP 实测为 0） |
 | 3 | WNM（BTM） | `wnm.cpp`（`build_btm_request` → `learn_capabilities` → `wnm_step`） | 伪造 AP 劝客户端漫游/离网 | `wnmc`（支持 11v 的 STA 数）、`wnmresp`（有应答才算端到端） |
 | 4 | TIM | `tim.cpp`（`build_tim` → `learn_beacon` → `note_aid` → `tim_step`） | 克隆 beacon 改 TIM 位图 | `timf`、`timreal>0`（学到真 beacon）、`timaid` |
+| 4 | PM 位欺骗 | `pspoll.cpp`（`build_null_data` → `pspoll_step` → `pspoll_on_rx` → `pspoll_release`） | 伪造 STA 的"我睡了"（PM=1），让 AP 把下行缓存起来 | `pspf`、`pspnul/pspfl`（PM=1/PM=0）、`pspdl`（发向受害者的下行帧） |
 | 4 | CSA | `csa.cpp`（`build_csa_action` → `build_beacon` → `send_csa_round` → `csa_step`） | 通告换信道，然后在新信道顶克隆 beacon | `csaf`、`csa=announce/hold`、`csaauth/csarej` |
 | 5 | DELBA / BA | `delba.cpp`（`build_delba` → `send_from_ap/sta/group` → 然后 `build_addba_req` → `build_bar` → `ba_tx`） | 拆聚合 / 种重排窗口 | `delbaf`、`delbat`、`babar`、`bassn` |
 | 5 | Deauth | `deauth.cpp`（`build_deauth_ex` → `queue_deauth` → `drain_tx_queue` → `attack_step`） | 老本行 + 注入队列 + 盲目兜底 | `txok/txerr/rev/blind/eliminated` |
@@ -475,7 +476,7 @@ lv_screen_active()
 ├── s_screens[SCR_DEAUTH]  ← 二级：One/All/Only/Except
 ├── s_screens[SCR_MODE]    ← 三级：Scan/Targets/Start/Stop/Reason
 ├── s_screens[SCR_CSA] / [SCR_DELBA] / [SCR_BA] / [SCR_PROBE] / [SCR_EVIL]
-├── s_screens[SCR_FRAME]   ← 五个帧级模块共用的那一页（WNM/TIM/EAPOL/SAE/AUTH）
+├── s_screens[SCR_FRAME]   ← 六个帧级模块共用的那一页（WNM/TIM/EAPOL/SAE/AUTH/PS-Poll）
 ├── s_popup（lv_layer_top 上的模态目标选择弹窗）
 ├── s_log label
 └── s_reason_popup（reason 选择弹窗）
@@ -735,7 +736,9 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
 | CTS 发 32 帧后永久卡死，静置也不恢复 | CTS 的缓存**不回收** | ✅ 仍成立（本工程不再用 CTS） | `测试报告 §4.3.3` |
 | 写进帧里的 Duration 上不了空口 | 驱动/MAC 按"当前速率 + 预期应答"重算（单播恒 314 µs，广播 CF-End 0，RTS 990–1102 浮动） | ✅ 仍成立 → 所以 **NAV 模块已删除** | `测试报告 §4.3.1`、《攻击原理》附录 A |
 | beacon 的 timestamp 写多少都变 0 | MAC 用接口自己的 TSF 覆盖（未关联时为 0） | ✅ 仍成立 → 所以 **TSF 投毒已删除** | `测试报告 §4.4.3` |
-| 单播只能跑到 ~20 帧/s | 池子排水 ≈32 帧/s，20 帧/s 留余量 | ✅ 仍成立 | `tests` + `lab/pool_limit.py` |
+| 单播只能跑到 ~20 帧/s | 池子排水 ≈32 帧/s，20 帧/s 留余量 | ✅ 仍成立（**但 PM=1 的 Null Data 例外：20 帧/s 几百帧就 `0x101`**） | `tests` + `lab/pool_limit.py`、`pspoll.cpp` |
+| `PSPOLL ... poll/both` 一帧都上不了空口 | **单播的 PS-Poll（控制子类型 10）本 MAC 不发送**：广播 RA 10/10、RA=BSSID 0/10 | ✅ 仍成立 → 所以 **PS-Poll 那一半已删除** | `测试报告 §4.4.9`、《攻击原理》附录 A |
+| 攻击计数器在涨，空口一帧没有 | `SCAN` 收尾时 `esp_wifi_set_channel()` 被拒，模块没检查返回值 | ⚠️ `PSPOLL` 已在回执里打 `chset=`/`WARN`，其它模块仍不报 | `pspoll.cpp`、`测试报告 §4.4.9` |
 | 连发 300 条命令只回 233 条 | UART RX 环形缓冲默认 256 B，整行丢失 | ❌ 已修（`SERIAL_RX_BUFFER_SIZE=4096`） | 缺陷 #23 |
 | `RXMIX ctrl=0 rts=0`，控制帧一帧都收不到 | 混杂模式**两级**过滤，第二级默认丢弃控制帧 | ❌ 已修（`MASK_ALL`） | 缺陷 #34 |
 | 只看到 HE 客户端却抓不到它的上行帧 | ESP32 的 11n 射频解不出 Wi-Fi 6 PPDU | ✅ 仍成立（靠 `blind=` 兜底） | `AGENTS §11` |

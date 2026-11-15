@@ -145,7 +145,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 │   ├── CMakeLists.txt / sdkconfig.defaults / sdkconfig.c5 / partitions.csv
 │   ├── include/  src/            ← 攻击逻辑 + 串口协议
 │   ├── components/wireless_ui/   ← 可选 LVGL 界面（宏控，与主固件解耦）
-│   ├── tests/                    ← 自动化用例（50 项）
+│   ├── tests/                    ← 自动化用例（51 项）
 │   └── tools/gen_cjk_font.py     ← 生成界面用 CJK 子集字库
 ├── lab/                          ← 实验脚本（需人明确执行，不在自动化里）
 │   ├── cap_pipe.py               ← 读 C5 的抓包管道并解 pcap/radiotap
@@ -153,9 +153,11 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 │   ├── air_check.py              ← 逐模块"起-抓-停"的空口验证
 │   ├── tim_air.py                ← 用 lab 板的 beacon 嗅探复核 TIM 位图（不依赖 C5 管道）
 │   ├── tim_ps.py                 ← TIM 打真实省电 STA 的吞吐对比（AP/STA/攻击三块板）
+│   ├── pspoll_air.py             ← PM 位/PS-Poll 的空口字段核对（一块板同时当 AP 与嗅探器）
+│   ├── pspoll_ps.py              ← PM 位欺骗对下行吞吐的影响（含 PSPOLLREL 撤销阶段）
 │   ├── btm_sta.py                ← BTM Request 打真实 11v STA 的端到端（看 wnmresp）
 │   ├── pool_limit.py             ← 单播注入的缓冲池速率上限（0x101 边界）
-│   ├── soak.py                   ← 五个模块长跑稳定性（判据：txgerr 恒 0、无 FATAL）
+│   ├── soak.py                   ← 帧级模块长跑稳定性（判据：txgerr 恒 0、无 FATAL）
 │   └── rf_throughput/            ← 吞吐实验用的迷你 AP/STA 工程
 └── gui/                          ← Windows 上位机
     ├── README.md
@@ -249,7 +251,12 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
    （2026-11-15，三块板，见 `§4.4.8`）：**TIM 对真实省电 STA 的吞吐无可测影响**（deauth 阳性对照
    成立，说明不是帧没到）、**BTM 在 ESP-IDF STA 上拿不到 BTM Response**（`wnmc=1` 但 `wnmresp=0`）。
    仍缺环境的：SAE 需要真的 WPA3 AP、EAPOL 需要 802.1X 环境、Auth 洪泛没压到 station 表满。
-6. **TSF 投毒做不了，模块已删**：beacon 的时间戳字段被 MAC 覆盖（未关联 STA 接口值为 0），
+6. **PS 位欺骗（PM 位）已实现并量化**（2026-11-15，见 `测试报告 §4.4.9`）：伪造 PM=1 的 Null Data
+   让 AP 把下行缓存起来，实测下行吞吐 **−24…−46%**、零掉线，`PSPOLLREL`（发 PM=0）立刻恢复。
+   边界是受害者自己的上行帧（PM=0）会把 AP 的状态翻回来，所以是降级不是断网；
+   同一模块里"伪造 PS-Poll"那一半**已删除**：单播的控制子类型 10 在本 MAC 上发不出去
+   （广播 RA 10/10、RA=BSSID 0/10）。
+7. **TSF 投毒做不了，模块已删**：beacon 的时间戳字段被 MAC 覆盖（未关联 STA 接口值为 0），
    与 Duration 同源，所以 `tsf`/`both` 模式与 `ttsf=` 状态字段都删了；`TIM` 只做 TIM 位图。
 
 上述 1、2 与 UART 丢行已记入[待修清单](firmware/测试报告.md#71-待修清单已记录尚未动手)，暂未动手。

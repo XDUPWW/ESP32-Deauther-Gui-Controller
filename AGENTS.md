@@ -21,10 +21,12 @@ ESP32 / ESP32-C5 的 **802.11 无线安全测试工具**，由三块代码组成
 
 已实现的攻击：deauth（单/全/白/黑名单）、Probe/Beacon 泛洪、CSA 欺骗、DELBA 欺骗、BA 会话劫持、Evil Twin、
 802.11v BTM Request 欺骗（WNM）、TIM 投毒（克隆 beacon）、EAPOL-Start/Logoff 洪泛、SAE Commit 洪泛、
-Auth/Assoc 洪泛（WPA3 时自动升级成 SAE）。
-**NAV（虚拟载波侦听）已删除**：注入帧的 Duration 字段由驱动/MAC 重算，应用层改不了，详见 §11 第 1 条。
+Auth/Assoc 洪泛（WPA3 时自动升级成 SAE）、电源管理（PM 位）欺骗（`pspoll.cpp`）。
+**NAV（虚拟载波侦听）已删除**：注入帧的 Duration 字段由驱动/MAC 重算，应用层改不了，详见 `attack-principles.md` 附录 A。
+**PS-Poll 欺骗（控制子类型 10）也已删除**：单播的 PS-Poll 在本 MAC 上发不出去（广播 RA 10/10 上空气、
+RA=BSSID 0/10），只留下 PM 位那一半，实测见 `attack-principles.md` §13 与附录 A。
 **TSF 投毒也已删除**：beacon 的时间戳字段同样被 MAC 覆盖成接口自己的 TSF（未关联时为 0），
-见 §11 第 8 条；留下的是 `TIM`（只做 TIM 位图）。
+见 §11 第 11 条；留下的是 `TIM`（只做 TIM 位图）。
 攻击原理的完整梳理见根目录 `attack-principles.md`（逐模块四层：协议层定位 / 帧格式 / 有效与失效 /
 实现与实测），改模块时同步它。新人上手看 `learning-roadmap.md`（分阶段路线 + 架构分层 + API 盘点），
 加模块时把新文件/新命令补进它的第 2/3 章。
@@ -107,7 +109,8 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
 - **新模块统一走 `tx_guard_send()`**（`src/tx_guard.cpp`）：第一次 `0x101` 立即 `esp_restart()`，
   重启前打 `FATAL tx 0x101 ... -> restart`。老模块（deauth/csa/delba）仍用自己的 `esp_wifi_80211_tx`
   封装，`BARSEQ` 这类"故意要把池打空"的诊断探针**必须**留在守卫之外，否则测不到它要测的东西。
-  单播注入的节拍上限约 20 帧/s（§11 第 7 条），新模块的 step 里都按这个定过间隔。
+  单播注入的节拍上限约 20 帧/s（§11 第 10 条），新模块的 step 里都按这个定过间隔——
+  唯一例外是 `pspoll.cpp`：PM=1 的 Null Data 在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s（§11 第 8 条）。
 - 界面与固件解耦：`components/wireless_ui/` 只暴露纯 C 的 `wireless_ui.h`，按钮通过 `wireless_ui_set_command_cb()`
   注入的回调发协议行；固件 → UI 方向只调 `wireless_ui_scan_begin/add_network/scan_end/status/log` 置标志，
   UI 更新由 `wireless_ui_tick()` 在主循环里加锁应用（不要跨任务直接调 LVGL）。
@@ -131,6 +134,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
 | `eapol.cpp` | EAPOL-Start/Logoff 洪泛：ToDS 数据帧 + LLC/SNAP 0x888E，收侧统计 EAP 包 |
 | `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
 | `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
+| `pspoll.cpp` | 电源管理（PM 位）欺骗：伪造 PM=1 的 Null Data 让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；`pspoll_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
 | `tx_guard.cpp` | 统一注入入口：首个 `0x101` 立即 `esp_restart()`，并集中记录 ok/err |
 | `ie_util.cpp` | IE 遍历、RSN AKM（SAE/PSK）、MFPR、Extended Capabilities bit19 判定 |
 | `evil_twin.cpp` | 克隆热点、DNSServer 劫持、Captive Portal（8080）、凭据表（RAM） |
@@ -190,7 +194,7 @@ python -m unittest discover -s tests -v
 
 - 端口打不开或固件无响应时，硬件相关测试类会 `SkipTest`（所以不接板子也能跑通，只是大部分跳过）。
 - 纯 Python 的协议解析用例（10 个）不需要硬件，任何时候都应通过。
-- 用例默认不发攻击帧，例外是 `PROBE_BROADCAST` 的 3 秒计数用例，以及 CSA/DELBA/BA 与五个新模块的
+- 用例默认不发攻击帧，例外是 `PROBE_BROADCAST` 的 3 秒计数用例，以及 CSA/DELBA/BA 与六个帧级模块的
   "起来 → 看计数器 → 停"用例（打扫描到的第一个 AP，1–2 秒内 `STOP`）。不要写长期洪泛或对多个 AP
   的自动化用例——那是 `lab/` 脚本（需要人明确执行）该干的事。
 - 硬件类用例在 `setUp` 里先发 `STOP/CSASTOP/DELBASTOP/BASTOP` 清残留状态（CSA 自动模式会停在 5G 信道，残留会让后续扫描偶发失败），
@@ -268,7 +272,7 @@ python main.py --self-test
    `0x101`、40 帧/s → 117 帧、30/20 帧/s → 45 s 各 1350/900 帧零拒收；广播克隆 beacon 50 帧/s
    → 3000 帧零拒收（无需 ACK，缓存立刻回收）。精确占用时长不可观测（`tx_cb` 对注入帧不回调）。
    `tx_guard.cpp` 现在强制单播 45 ms 间隔、`SAE` 的 `gap_ms` 低于 50 会被抬高并打 `INFO`，
-   `STATUS` 的 `txg=` 是被守卫挡下的帧数（不算错误）。守卫覆盖五个新模块 + `CSA`；
+   `STATUS` 的 `txg=` 是被守卫挡下的帧数（不算错误）。守卫覆盖六个帧级模块 + `CSA`；
    `DELBA`/BA/deauth 仍用自己的封装（长跑 19–25 帧/s，在排水速率以下，且 BA 的 40 ms 节拍是已记录
    -99% 吞吐实验的前提），它们遇到 `0x101` 是"计一次错、下轮重试"，不重启。`BARSEQ` 探针永在守卫外。
 8. **beacon 的 TSF 上不了空口（TSF 投毒因此删除）**：MAC 用接口自己的 TSF 覆盖 beacon 的
