@@ -3,11 +3,16 @@
 #include <sdkconfig.h>
 #include <string.h>
 
+#include "authflood.h"
 #include "csa.h"
 #include "deauth.h"
 #include "definitions.h"
 #include "delba.h"
+#include "eapol.h"
+#include "sae.h"
+#include "tim.h"
 #include "types.h"
+#include "wnm.h"
 
 int eliminated_stations;
 bool deauth_active = false;
@@ -468,6 +473,11 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     }
     csa_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
     delba_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+    wnm_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+    tim_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+    eapol_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+    sae_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+    authflood_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
 
     // CSA recognition: action frames (cat 4 / act 4) and beacons with IE 37.
     uint8_t cat = 0;
@@ -838,6 +848,11 @@ void attack_sniffer_enable() {
 void attack_stop() {
     csa_stop();
     delba_stop();
+    wnm_stop();
+    tim_stop();
+    eapol_stop();
+    sae_stop();
+    authflood_stop();
     esp_wifi_set_promiscuous(false);
     deauth_active = false;
     s_mode = ATTACK_IDLE;
@@ -847,6 +862,11 @@ void attack_step() {
     const uint32_t now = millis();
     csa_step();
     delba_step();
+    wnm_step();
+    tim_step();
+    eapol_step();
+    sae_step();
+    authflood_step();
 
     if (s_mon_active) {
         if (s_mon_channel == 0 && now - s_mon_last_hop > 150) {

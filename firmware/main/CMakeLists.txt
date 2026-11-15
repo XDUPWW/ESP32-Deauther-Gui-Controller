@@ -7,6 +7,13 @@ set(SRCS
     "../src/csa.cpp"
     "../src/delba.cpp"
     "../src/storage.cpp"
+    "../src/tx_guard.cpp"
+    "../src/ie_util.cpp"
+    "../src/wnm.cpp"
+    "../src/tim.cpp"
+    "../src/eapol.cpp"
+    "../src/sae.cpp"
+    "../src/authflood.cpp"
 )
 
 # wireless_ui is always a dependency: with CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT

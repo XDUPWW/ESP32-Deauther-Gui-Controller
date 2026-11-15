@@ -12,8 +12,11 @@ extern "C" {
 // The AP tells clients "move to channel N in `count` beacons" through:
 //   * a CSA IE (element 37) inside Beacon / Probe Response, or
 //   * an Action frame (category 4 = spectrum management, action 4).
-// Neither is a robust management frame, so 802.11w (PMF) does not protect them:
-// this still works against WPA3 / PMF clients, unlike deauth.
+// Protection status differs: the Spectrum Management action frame is a robust
+// management frame and a PMF-enabled client drops an unprotected one, while the
+// CSA IE inside a beacon is unprotected (beacons are not robust frames). That
+// second path is what still works against PMF clients, unlike deauth -- as long
+// as the client honours beacon CSA at all.
 //
 // The spoofer mimics a real AP: it announces count N..1 on consecutive
 // beacon-sized ticks (100 TU ~= 102 ms), mixes broadcast and unicast frames so

