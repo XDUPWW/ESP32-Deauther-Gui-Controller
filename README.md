@@ -28,6 +28,12 @@
 | DELBA 欺骗（拆 Block Ack 会话） | `DELBA <idx> [reason]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板收到 `delba=82`、ADDBA 精确补刀 `delbtr=5`、实验室链路吞吐量 **-99%**（480→5 KiB/s，链路不掉线） |
 | BA 会话劫持（DELBA→伪造 ADDBA→BAR） | `BAATTACK <idx> [step]` / `BAPLANT` / `BARPUSH` | ✅ | ✅ | ✅ | 帧格式逐字节校验；伪造 ADDBA 可让 4 Mbit/s 的流冻结且不自愈（需重连）；**Android 客户端 A/B 判定：step=512 卡死、step=0 无影响 → 推窗机制成立** |
 | Probe 泛洪（Beacon + Probe Response） | `PROBE_BROADCAST` | ✅ | ✅ | ✅ | **双板实测**（另一块板扫到 37 个伪造 SSID） |
+| 802.11v BTM Request 欺骗 | `WNM <idx> [cand\|bare] [timer] [ch] [sta-mac]` | ✅ | ✅ | ✅ | 空口抓包 `cat=10 act=7 req_mode=0x05 timer=10` + 候选 Neighbor Report（C5 抓包管道）；**缺 11v 客户端做端到端** |
+| TIM 投毒（克隆 beacon） | `TIM <idx> [tim\|clear] [aid]` | ✅ | ✅ | ✅ | 空口抓包 TIM 元素逐字节正确、克隆 50 帧/s（真 AP 10 帧/s）；**对省电客户端的效果未量化** |
+| ~~TSF 投毒~~ | —（已删除） | ❌ | ❌ | ❌ | **本硬件不可实现**：MAC 用接口自己的 TSF 覆盖 beacon 时间戳（未关联时报 0），与 Duration 同源；`tsf`/`both` 模式与 `ttsf=` 字段一并删除 |
+| EAPOL-Start/Logoff 洪泛 | `EAPOL <idx> [tid\|-1] [sta-mac]` | ✅ | ✅ | ✅ | 空口抓包 `ver=2 type=1/2`；**WPA2-PSK 的 AP 忽略**，需 802.1X 环境验证效果 |
+| SAE Commit 洪泛（WPA3） | `SAE <idx> [point\|rand] [gap_ms]` | ✅ | ✅ | ✅ | 空口抓包 1076 帧 `alg=3 seq=1 group=19`、AP 回 `status=13`；**token 回显缺 WPA3 AP 实测** |
+| Auth/Assoc 洪泛（WPA3 自动升级） | `AUTHFLOOD <idx> [both\|auth\|assoc] [noauto]` | ✅ | ✅ | ✅ | 空口 817 帧、AP 回 `status=0`（接受伪造身份）；**未压到表满** |
 | STA 嗅探 | `STATIONS [sec]` | ✅ | ✅ | ✅ | 实测（能给出 STA 及其所属 AP） |
 | 逐 AP 计数 | `STATS` | ✅ | ✅ | ✅ | 实测 |
 | Evil Twin 钓鱼 | `EVILTWIN <idx>` / `EVILTWIN_STOP` / `CREDS` | ✅ | ✅ | 未知 | **只验证到命令接线**，热点/凭据回传未实测 |
@@ -129,16 +135,28 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ├── README.md                     ← 你正在看的这个文件
 ├── LICENSE                       ← GPLv3（继承上游 ESP32-Deauther）
 ├── .gitignore
-├── TODO.md                       ← 路线图：PMKID / CSA / 企业网络 / Android / BLE
+├── TODO.md                       ← 路线图：PMKID / 企业网络 / BTM-SAE-TIM 的效果验证 / Android / BLE
+├── attack-principles.md          ← 攻击原理全量梳理（逐模块：协议层 / 帧格式 / 有效与失效 / 实测）
+├── learning-roadmap.md           ← 学习路线（零嵌入式经验 → 读懂本工程，含架构与 API 盘点）
 ├── firmware/                     ← 固件（ESP-IDF 工程）
 │   ├── README.md                 ← 构建 / 协议 / 界面 / 故障排查
-│   ├── 代码框架与攻击原理.md        ← 802.11 背景 + 攻击原理 + 代码框架
+│   ├── 代码框架与攻击原理.md        ← 802.11 背景 + 代码框架（攻击原理已被根目录那份取代）
 │   ├── 测试报告.md                 ← 用例矩阵、性能、已修缺陷、已知限制
 │   ├── CMakeLists.txt / sdkconfig.defaults / sdkconfig.c5 / partitions.csv
 │   ├── include/  src/            ← 攻击逻辑 + 串口协议
 │   ├── components/wireless_ui/   ← 可选 LVGL 界面（宏控，与主固件解耦）
-│   ├── tests/                    ← 自动化用例（44 项）
+│   ├── tests/                    ← 自动化用例（50 项）
 │   └── tools/gen_cjk_font.py     ← 生成界面用 CJK 子集字库
+├── lab/                          ← 实验脚本（需人明确执行，不在自动化里）
+│   ├── cap_pipe.py               ← 读 C5 的抓包管道并解 pcap/radiotap
+│   ├── cap_frames.py             ← 抓包并按模块解码（WNM/TIM/SAE/EAPOL/Auth）
+│   ├── air_check.py              ← 逐模块"起-抓-停"的空口验证
+│   ├── tim_air.py                ← 用 lab 板的 beacon 嗅探复核 TIM 位图（不依赖 C5 管道）
+│   ├── tim_ps.py                 ← TIM 打真实省电 STA 的吞吐对比（AP/STA/攻击三块板）
+│   ├── btm_sta.py                ← BTM Request 打真实 11v STA 的端到端（看 wnmresp）
+│   ├── pool_limit.py             ← 单播注入的缓冲池速率上限（0x101 边界）
+│   ├── soak.py                   ← 五个模块长跑稳定性（判据：txgerr 恒 0、无 FATAL）
+│   └── rf_throughput/            ← 吞吐实验用的迷你 AP/STA 工程
 └── gui/                          ← Windows 上位机
     ├── README.md
     ├── main.py                   ← tkinter 界面（三级菜单 + 目标弹窗）
@@ -165,6 +183,15 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 | `STATS` | 每 AP 已发 deauth 帧数 |
 | `STOP` | 停止一切攻击 |
 | `EVILTWIN <idx>` / `EVILTWIN_STOP` / `CREDS` | 克隆热点 / 关闭 / 导出凭据 |
+| `CSA <idx> [ch\|auto] [cnt] [secs]` / `CSASTOP` / `CSATEST` | CSA 欺骗 / 停止 / 帧字节自检 |
+| `DELBA <idx> [reason]` / `DELBASTOP` / `DELBATEST` | DELBA 拆聚合 / 停止 / 帧字节自检 |
+| `BAATTACK` / `BAPLANT` / `BARPUSH` / `BASTOP` | BA 会话劫持三步 / 只种窗口 / 只推 BAR / 停止 |
+| `WNM <idx> [cand\|bare] [timer] [ch] [sta-mac]` / `WNMSTOP` / `WNMTEST` | 802.11v BTM Request / 停止 / 帧自检 |
+| `TIM <idx> [tim\|clear] [aid]` / `TIMSTOP` / `TIMTEST` | 克隆 beacon 篡改 TIM / 停止 / 自检 |
+| `EAPOL <idx> [tid\|-1] [sta-mac]` / `EAPOLSTOP` / `EAPOLTEST` | EAPOL-Start/Logoff 洪泛 / 停止 / 帧自检 |
+| `SAE <idx> [point\|rand] [gap_ms]` / `SAESTOP` / `SAETEST` | SAE Commit 洪泛 / 停止 / 帧自检 |
+| `AUTHFLOOD <idx> [both\|auth\|assoc] [noauto]` / `AUTHFLOODSTOP` / `AUTHFLOODTEST` | Auth/Assoc 洪泛（WPA3 自动升级）/ 停止 / 帧自检 |
+| `MON` / `RADIO` / `RXMIX` / `RXLOG` / `CTRLFILTER` | 被动监听 / 嗅探器状态 / 收帧分类计数 / 收帧明细 / 控制帧过滤 |
 | `TOUCH` / `CALIBRATE` | 触摸原始值 / 重新校准 |
 | `UITARGETS` / `UI` | 屏上目标弹窗：打开 / 回报状态（诊断用） |
 | `RXLOG` | 打印监听到的 802.11 帧（诊断命中率） |
@@ -202,7 +229,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 
 **已验证**
 
-- 自动化：44/44 通过（`python -m unittest discover -s tests`，需接板子）
+- 自动化：50/50 通过（`python -m unittest discover -s tests`，需接板子）
 - 双板交叉：ESP32 泛洪期间，ESP32-C5 扫到 37 个伪造 SSID → 泛洪真的上了空口
 - 触摸屏：四角校准 → 解算 → 存 NVS → 掉电保持；三级菜单 + 弹窗；`UITARGETS`/`UI` 可无手指复现
 - 上位机：无头结构测试（页面组织、弹窗勾选、命令拼接）+ 人工点击
@@ -218,6 +245,12 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
    克隆热点在 5G 上能否开、凭据回传全链路，都**没实测**。
 3. ~~屏上弹窗的观感~~：已人工确认（描边/圆角/字号/行高/滑动/点击都正常）。
 4. **C5 无触摸屏界面**：Kconfig 宏 `depends on IDF_TARGET_ESP32`，属设计选择。
+5. **五个新模块的"效果"层**：帧上空气与字段都逐字节验证过（`测试报告 §4.4`）。端到端补了两项
+   （2026-11-15，三块板，见 `§4.4.8`）：**TIM 对真实省电 STA 的吞吐无可测影响**（deauth 阳性对照
+   成立，说明不是帧没到）、**BTM 在 ESP-IDF STA 上拿不到 BTM Response**（`wnmc=1` 但 `wnmresp=0`）。
+   仍缺环境的：SAE 需要真的 WPA3 AP、EAPOL 需要 802.1X 环境、Auth 洪泛没压到 station 表满。
+6. **TSF 投毒做不了，模块已删**：beacon 的时间戳字段被 MAC 覆盖（未关联 STA 接口值为 0），
+   与 Duration 同源，所以 `tsf`/`both` 模式与 `ttsf=` 状态字段都删了；`TIM` 只做 TIM 位图。
 
 上述 1、2 与 UART 丢行已记入[待修清单](firmware/测试报告.md#71-待修清单已记录尚未动手)，暂未动手。
 

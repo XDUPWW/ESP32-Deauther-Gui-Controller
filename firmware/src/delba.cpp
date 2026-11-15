@@ -1,9 +1,11 @@
 // DELBA (Block Ack session teardown) spoofing.
 //
 // Design notes (why it is shaped this way):
-//   * DELBA is category 3 (Block Ack), not one of the robust management frames,
-//     so 802.11w/PMF does not verify it. That is why it still works where deauth
-//     is dropped.
+//   * DELBA is category 3 (Block Ack), which *is* a robust management frame: a
+//     client that negotiated PMF drops an unprotected addba/delba before the Block
+//     Ack code sees it (Linux: _ieee80211_is_robust_mgmt_frame() + rx.c), so this
+//     path is as dead as deauth on a WPA3/MFPR BSS. The -99% throughput measured
+//     below belongs to links without PMF.
 //   * A peer only acts on a DELBA for a TID it currently has a session on;
 //     mac80211 (and every other driver) silently drops the rest. So sending
 //     DELBA blind to every TID is mostly a no-op -- the useful trigger is the

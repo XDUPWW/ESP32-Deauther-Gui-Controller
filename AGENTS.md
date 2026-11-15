@@ -19,8 +19,15 @@ ESP32 / ESP32-C5 的 **802.11 无线安全测试工具**，由三块代码组成
 核心设计：**串口行协议是唯一控制面**。触摸屏按钮、GUI、脚本都只发协议行；攻击实现只有一份（`firmware/src/`）。
 改功能时不要为某个界面单独写一条执行路径。
 
-已实现的攻击：deauth（单/全/白/黑名单）、Probe/Beacon 泛洪、CSA 欺骗、DELBA 欺骗、BA 会话劫持、Evil Twin。
+已实现的攻击：deauth（单/全/白/黑名单）、Probe/Beacon 泛洪、CSA 欺骗、DELBA 欺骗、BA 会话劫持、Evil Twin、
+802.11v BTM Request 欺骗（WNM）、TIM 投毒（克隆 beacon）、EAPOL-Start/Logoff 洪泛、SAE Commit 洪泛、
+Auth/Assoc 洪泛（WPA3 时自动升级成 SAE）。
 **NAV（虚拟载波侦听）已删除**：注入帧的 Duration 字段由驱动/MAC 重算，应用层改不了，详见 §11 第 1 条。
+**TSF 投毒也已删除**：beacon 的时间戳字段同样被 MAC 覆盖成接口自己的 TSF（未关联时为 0），
+见 §11 第 8 条；留下的是 `TIM`（只做 TIM 位图）。
+攻击原理的完整梳理见根目录 `attack-principles.md`（逐模块四层：协议层定位 / 帧格式 / 有效与失效 /
+实现与实测），改模块时同步它。新人上手看 `learning-roadmap.md`（分阶段路线 + 架构分层 + API 盘点），
+加模块时把新文件/新命令补进它的第 2/3 章。
 `TODO.md` 里是未做的能力（PMKID、WPA-Enterprise、Android 上位机、BLE 泛洪）。
 
 **合规边界**：README §8 声明仅限自有/授权网络。所有改动都要保留该声明，不要为了"方便"去掉确认框、目标校验或免责提示。
@@ -97,6 +104,10 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
   LVGL 任务（`esp_lvgl_port`，prio 4）、Wi-Fi 任务的混杂回调 `sniffer()`（`IRAM_ATTR`，只判断 + 入队，不打印、不发包）。
 - **注入不在混杂回调里做**：回调只把"该打谁"塞进队列，主循环 `attack_step()` → `drain_tx_queue()` 按 1 ms 节奏出队，
   驱动拒收（`ESP_ERR_NO_MEM`）时退避 5 ms 重试。这条约束修掉过"计数在涨但帧没出去"的缺陷，别改回去。
+- **新模块统一走 `tx_guard_send()`**（`src/tx_guard.cpp`）：第一次 `0x101` 立即 `esp_restart()`，
+  重启前打 `FATAL tx 0x101 ... -> restart`。老模块（deauth/csa/delba）仍用自己的 `esp_wifi_80211_tx`
+  封装，`BARSEQ` 这类"故意要把池打空"的诊断探针**必须**留在守卫之外，否则测不到它要测的东西。
+  单播注入的节拍上限约 20 帧/s（§11 第 7 条），新模块的 step 里都按这个定过间隔。
 - 界面与固件解耦：`components/wireless_ui/` 只暴露纯 C 的 `wireless_ui.h`，按钮通过 `wireless_ui_set_command_cb()`
   注入的回调发协议行；固件 → UI 方向只调 `wireless_ui_scan_begin/add_network/scan_end/status/log` 置标志，
   UI 更新由 `wireless_ui_tick()` 在主循环里加锁应用（不要跨任务直接调 LVGL）。
@@ -115,6 +126,13 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
 | `deauth.cpp` | deauth 攻击、混杂回调 `sniffer()`、AP/STA 表、注入队列、逐 AP 计数、`attack_step()`、reason code 池、raw 帧构造 |
 | `csa.cpp` | CSA 欺骗（倒计时播报、单播/广播混合、新信道克隆 beacon、Auth 成功 / Assoc status 17） |
 | `delba.cpp` | DELBA 欺骗 + BA 会话劫持（DELBA → 伪造 ADDBA → BAR）、TID 学习 |
+| `wnm.cpp` | 802.11v BTM Request 欺骗：11v 能力学习、候选 Neighbor Report、Response 计数 |
+| `tim.cpp` | 克隆 beacon 篡改 TIM（AID bitmap/DTIM）、AID 学习（TSF 那半已删除） |
+| `eapol.cpp` | EAPOL-Start/Logoff 洪泛：ToDS 数据帧 + LLC/SNAP 0x888E，收侧统计 EAP 包 |
+| `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
+| `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
+| `tx_guard.cpp` | 统一注入入口：首个 `0x101` 立即 `esp_restart()`，并集中记录 ok/err |
+| `ie_util.cpp` | IE 遍历、RSN AKM（SAE/PSK）、MFPR、Extended Capabilities bit19 判定 |
 | `evil_twin.cpp` | 克隆热点、DNSServer 劫持、Captive Portal（8080）、凭据表（RAM） |
 | `general.cpp` | LED 闪烁等公共工具 |
 | `storage.cpp` | NVS blob 封装，供 UI 校准数据使用 |
@@ -123,7 +141,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
 
 上位机：`gui/protocol.py` 是纯函数解析层（`classify/parse_net/parse_status/parse_cred/parse_caps/band_of_channel`，
 无 Tk 无 IO），`gui/main.py` 是串口线程 + 页面 + 目标弹窗（`SerialLink`、`TargetDialog`、`DeautherApp`）。
-页面键：`home / deauth / one / all / only / except / probe / csa / delba / ba / evil / status / log`。
+页面键：`home / deauth / one / all / only / except / probe / csa / delba / ba / evil / wnm / tim / eapol / sae / authflood / status / log`。
 
 **新增源文件必须同时加进 `firmware/main/CMakeLists.txt` 的 `SRCS`**，否则不会参与编译。
 **新增功能的两端顺序**：先在 `gui/protocol.py` 加解析（可单测）→ 再在 `main.py` 加控件；固件侧先加头文件 + 计数器，再在 `dispatch()` 接线。
@@ -162,7 +180,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
 
 ## 8. 测试
 
-固件测试套件 `firmware/tests/test_wireless_attack.py`（44 个用例，unittest）：
+固件测试套件 `firmware/tests/test_wireless_attack.py`（50 个用例，unittest）：
 
 ```powershell
 cd firmware
@@ -172,12 +190,22 @@ python -m unittest discover -s tests -v
 
 - 端口打不开或固件无响应时，硬件相关测试类会 `SkipTest`（所以不接板子也能跑通，只是大部分跳过）。
 - 纯 Python 的协议解析用例（10 个）不需要硬件，任何时候都应通过。
-- 用例**不发攻击帧**（唯一例外是 `PROBE_BROADCAST` 的 3 秒计数用例）。新增用例请保持这个边界，
-  不要写"对真实 AP deauth"的自动化测试。
+- 用例默认不发攻击帧，例外是 `PROBE_BROADCAST` 的 3 秒计数用例，以及 CSA/DELBA/BA 与五个新模块的
+  "起来 → 看计数器 → 停"用例（打扫描到的第一个 AP，1–2 秒内 `STOP`）。不要写长期洪泛或对多个 AP
+  的自动化用例——那是 `lab/` 脚本（需要人明确执行）该干的事。
 - 硬件类用例在 `setUp` 里先发 `STOP/CSASTOP/DELBASTOP/BASTOP` 清残留状态（CSA 自动模式会停在 5G 信道，残留会让后续扫描偶发失败），
   新用例也要遵守这个清理约定。
-- 自动化覆盖：协议解析、PING/HELP/STATUS/SCAN、参数校验、`DELBATEST`/`BATEST` 帧字节、`UISCREEN` 逐屏切换、
-  堆稳定性、命令洪泛、垃圾字节、PING/STATUS/扫描耗时、LVGL 就绪与弹窗行数/堆余量。
+- 自动化覆盖：协议解析、PING/HELP/STATUS/SCAN、参数校验、`DELBATEST`/`BATEST`/`WNMTEST`/`TIMTEST`/
+  `EAPOLTEST`/`SAETEST`/`AUTHFLOODTEST` 帧字节、`UISCREEN` 逐屏切换、堆稳定性、命令洪泛、垃圾字节、
+  PING/STATUS/扫描耗时、LVGL 就绪与弹窗行数/堆余量。
+- 空口层面的验证不在 unittest 里：用 C5 的抓包管道 + `lab/cap_frames.py`（帧字段）与
+  `lab/air_check.py`（逐模块"起-抓-停"）、`lab/pool_limit.py`（缓冲池速率上限）、
+  `lab/soak.py`（逐模块长跑，判据是 `STATUS` 的 `txgerr` 恒为 0 且无 `FATAL tx 0x101`）。
+  实测数据见 `测试报告.md §4.4`。
+- 管道没起时的兜底：`lab/tim_air.py` 用 `lab/rf_throughput` 的 `sniff <ch>`（COM6 当 beacon
+  嗅探器）核对 TIM 元素字节。端到端脚本 `lab/tim_ps.py`（TIM vs 真实省电 STA）与
+  `lab/btm_sta.py`（BTM vs 真实 11v STA，判据 `wnmresp>0`）需要两块 lab 板 + 攻击板同时在位，
+  `lab/rf_throughput` 的 STA 角色要 `ps 1` / `btm 1`（后者需要 `CONFIG_ESP_WIFI_11KV_SUPPORT=y`）。
 - 上位机冒烟（不建窗口，可用于验证导入/布局没有崩）：
 
 ```powershell
@@ -233,10 +261,27 @@ python main.py --self-test
 6. **阻塞扫描会饿死 idle 任务**，所以 `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_*` 关闭；否则 WDT backtrace 会打进协议流。
 7. **UART RX 环形缓冲**默认 256 B 会丢整行，必须保持 `SERIAL_RX_BUFFER_SIZE=4096` 且在 `Serial.begin()` 之前设置。
 
+7. **单播注入的可持续速率约 20 帧/s（固件已强制）**：`0x101` 是**我们自己**的驱动拒发（缓存池空），
+   不是 AP 的动作。伪造 TA 的单播帧拿不到属于本机的 ACK（AP 回的 ACK 目标是伪造 MAC），硬件重传到
+   重试上限才释放缓存；我们也不 ACK AP 的回复，AP 同样反复重发（实测每条 commit 对应 12.7 个回复）。
+   实测：20 帧/s 注入 ≈ 空口 ~220 帧/s 负载。漏水桶拟合（排水 ≈32 帧/s、容量 ≈22）：50 帧/s → 63 帧
+   `0x101`、40 帧/s → 117 帧、30/20 帧/s → 45 s 各 1350/900 帧零拒收；广播克隆 beacon 50 帧/s
+   → 3000 帧零拒收（无需 ACK，缓存立刻回收）。精确占用时长不可观测（`tx_cb` 对注入帧不回调）。
+   `tx_guard.cpp` 现在强制单播 45 ms 间隔、`SAE` 的 `gap_ms` 低于 50 会被抬高并打 `INFO`，
+   `STATUS` 的 `txg=` 是被守卫挡下的帧数（不算错误）。守卫覆盖五个新模块 + `CSA`；
+   `DELBA`/BA/deauth 仍用自己的封装（长跑 19–25 帧/s，在排水速率以下，且 BA 的 40 ms 节拍是已记录
+   -99% 吞吐实验的前提），它们遇到 `0x101` 是"计一次错、下轮重试"，不重启。`BARSEQ` 探针永在守卫外。
+8. **beacon 的 TSF 上不了空口（TSF 投毒因此删除）**：MAC 用接口自己的 TSF 覆盖 beacon 的
+   24..31 字节（未关联 STA 时为 0）。实测交给驱动的 `last_tsf=654632723879` vs 空口 `tsf=0`，
+   同一帧的 TIM/SSID/interval/capability 逐字节保留。与第 1 条（Duration）同源的驱动字段重写；
+   `TIM` 现在只做 TIM 位图。
+9. **`STATUS` 一行约 1.1 KB**：机器读到完整一行 ~80 ms（115200）。`tests` 里 STATUS 往返阈值
+   因此从 60 ms 放宽到 120 ms——这是串口带宽，不是固件变慢。
+
 文档与代码不一致处（以代码为准，改动时顺手修正）：
 
-- 根 `README.md` 与 `firmware/README.md` 写"36 项"测试，`firmware/测试报告.md` 与测试文件实际是 **43** 个用例。
 - `firmware/README.md §7.4` 写 LVGL 堆 64 KB，`sdkconfig.defaults` 实际是 **80 KB**（注释解释了 64 KB 不够）。
-- `firmware/README.md §2` 的 `src/` 清单缺少 `csa.cpp`、`delba.cpp`。
 - `firmware/代码框架与攻击原理.md §3.3` 仍写"每命中 +16 帧"，实际是 `1 单播 + 1 反向 + 1 广播 = 3 帧/命中`（见 `definitions.h` 与 `drain_tx_queue()`）。
 - `tests/test_wireless_attack.py` 里 `ESPTOOL_PY` 常量目前未被使用。
+- `firmware/代码框架与攻击原理.md §2.8` 仍把 NAV 当作可用模块描述（模块已删除），该节开头已加说明；
+  攻击原理以根目录 `attack-principles.md` 为准。

@@ -11,9 +11,11 @@ extern "C" {
 //
 // A Block Ack session is negotiated per TID with ADDBA Request/Response and torn
 // down with a DELBA action frame (category 3 = Block Ack, action 2). DELBA is not
-// a robust management frame, so 802.11w (PMF) does not authenticate it: a forged
-// frame whose transmitter address is the AP's BSSID is accepted by any peer that
-// still has a session for that TID.
+// a robust management frame (category 3 is inside the set), so 802.11w (PMF)
+// requires it to be protected: with PMF negotiated the peer drops the unprotected
+// frame in its driver (net/mac80211/rx.c). On PMF-less links a forged frame whose
+// transmitter address is the AP's BSSID is accepted by any peer that still has a
+// session for that TID.
 //
 // Losing the session removes A-MPDU aggregation, so the link falls back to
 // per-frame acknowledgement: throughput collapses while the client stays

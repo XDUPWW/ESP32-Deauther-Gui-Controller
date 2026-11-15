@@ -59,7 +59,22 @@
 
 ---
 
-## 2. 界面
+## 2. 管理/控制帧攻击（2026-11 完成）
+
+| 状态 | 条目 | 交付物 | 怎么算完成 |
+| --- | --- | --- | --- |
+| `[x]` | **802.11v BTM Request 欺骗**（PMF 不保护，等同 deauth 但"合法"）：`cand` 带幻影候选 BSS、`bare` 不带；11v 能力从客户端的 Extended Capabilities bit19 学习，不支持的跳过；`sta-mac` 可指定目标 | `src/wnm.cpp`、`WNM <idx> [cand\|bare] [timer] [ch] [sta-mac]` / `WNMSTOP` / `WNMTEST` | 空口抓包 `cat=10 act=7 req_mode=0x05 timer=10` + Neighbor Report 候选（`测试报告 §4.4.1`）；端到端已试（§4.4.8）：真实 11v STA 会声明能力（`wnmc=1`）但**不回 BTM Response**（`wnmresp=0`），ESP-IDF 没有公开 BTM 事件，换客户端才能继续 |
+| `[x]` | **TIM 投毒**（克隆 beacon 按 AID 置位/清空 bitmap、DTIM count 归 0） | `src/tim.cpp`、`TIM <idx> [tim\|clear] [aid]` / `TIMSTOP` / `TIMTEST` | 空口抓包 TIM 元素逐字节正确、克隆频率 5×真 AP（§4.4.1）；AID 位编码已修正并在空口复测（`bitmap=08`，§4.4.7）；端到端已做（§4.4.8）：**对真实省电 STA 的吞吐无影响**（变化在噪声内：+10%/+3%，样本 12–18 个；deauth 阳性对照成立） |
+| `[x]` | ~~**TSF 投毒**~~ —— 结论：**本硬件不可实现，已删除**。MAC 用接口自己的 TSF 覆盖 beacon 的 timestamp（未关联时报 0），与 Duration 同源的字段重写 | —（`tsf`/`both` 模式与 `ttsf=` 字段已移除） | `last_tsf=654632723879` vs 空口 `tsf=0`（§4.4.3） |
+| `[x]` | **EAPOL-Start/Logoff 洪泛**：ToDS 数据帧 + LLC/SNAP 0x888E，伪造受害 STA，Start/Logoff 交替，QoS(TID6)/非 QoS 两种形态 | `src/eapol.cpp`、`EAPOL <idx> [tid\|-1] [sta-mac]` / `EAPOLSTOP` / `EAPOLTEST` | 空口抓包 `ver=2 type=1/2` 双向交替（§4.4.1）；**WPA2-PSK 的华为 AP 完全忽略，`eaprxreq` 为 0**，需要 802.1X/WPA-Enterprise 环境才能验证效果 |
+| `[x]` | **SAE Commit 洪泛**（WPA3 DoS）：group 19 + 合法 P-256 生成元（`rand` 为对照组）、身份每 4 帧轮换、**反 clogging token 回显**（Element 255 / Ext 93 容器与裸 token 两种形态） | `src/sae.cpp`、`SAE <idx> [point\|rand] [gap_ms]` / `SAESTOP` / `SAETEST` | 空口抓包 `alg=3 seq=1 group=19`、AP 回 `status=13`（该 AP 不吃 SAE，见 §4.4.2）；**token 回显只到"代码 + 自检字节"层，缺 WPA3 AP 实测** |
+| `[x]` | **Auth/Assoc 洪泛 + WPA3 自动升级**：随机身份轮换、Assoc Request 带目标 SSID/RSN IE、嗅到 AKM 含 SAE 自动转 SAE 洪泛 | `src/authflood.cpp` + `sae.cpp` 的 `sae_classify()`，`AUTHFLOOD <idx> [both\|auth\|assoc] [noauto]` / `AUTHFLOODSTOP` / `AUTHFLOODTEST` | 空口 817 帧、AP 回 `status=0`（接受了伪造身份，§4.4.2）；**未压到表满（status 17）** |
+| `[x]` | **单播注入的速率上限与"永不 NOMEM"**：50 帧/s → 63 帧 `0x101`、40 帧/s → 117 帧、30/20 帧/s → 45 s 各 1350/900 帧零拒收、广播 50 帧/s → 3000 帧零拒收；固件改成由整流器强制单播 45 ms 间隔，`SAE` 的 `gap_ms` 低于 50 自动抬高，CSA 也接入 | `tx_guard.h`/`tx_guard.cpp` + `lab/pool_limit.py` + `lab/soak.py` | 数据见 §4.4.4/§4.4.5；判据 = 长跑 `STATUS` 的 `txgerr` 恒 0 且无 `FATAL tx 0x101` |
+| `[ ]` | **WPA3 AP 上的 SAE 量化**：需要真 WPA3-SAE AP，看 `status 76 → token 回显 → saetok/saeecho`，并用合法 STA 的往返时延劣化做效果判据 | 实验台 | `saetok>0`、`saeecho>0`，且合法 STA 的 ping RTT 明显上升 |
+| `[~]` | **BTM 的端到端验证** —— 已做（§4.4.8）：ESP32-C5 STA 开 11v 后 `wnmc=1`（能力对）但 `wnmresp=0`（不回 BTM Response），ESP-IDF 无 BTM 事件可观察 | `lab/btm_sta.py` | **结论：需要 wpa_supplicant/Android 类客户端才能判「是否处理」** |
+| `[~]` | **TIM 投毒的效果量化** —— 已做（§4.4.8）：PS STA（−16% 基线差）+ 三阶段吞吐对比，**无可测影响**；deauth 阳性对照成立（6 次掉线 / −90% 速率） | `lab/tim_ps.py` | 结论：克隆 beacon 缺 TSF 时间基准，睡眠 STA 大概率不按它调度 |
+
+## 3. 界面
 
 | 状态 | 条目 | 交付物 | 怎么算完成 |
 | --- | --- | --- | --- |
@@ -68,14 +83,14 @@
 > 协议层先行：行协议不变，Android 只做"串口 + 解析 + 界面"，固件侧零改动。
 > 如果 OTG 兼容性出问题，再考虑 BLE 串口桥（需要固件加 GATT 服务，属于另一条路）。
 
-## 3. BLE
+## 4. BLE
 
 | 状态 | 条目 | 交付物 | 怎么算完成 |
 | --- | --- | --- | --- |
 | `[ ]` | **BLE 广播泛洪**：NimBLE 非连接广播，随机 MAC/名称，限速与计数可观测 | `src/ble_flood.c`、命令 `BLE_FLOOD [on/off]` | `STATUS` 有 `ble=` 计数；另一台手机扫描时列表被刷满 |
 | `[ ]` | **共存评估**：Wi-Fi 与 BLE 共用射频，洪泛时 Wi-Fi 扫描/攻击的掉帧率 | 测试报告一节 | 给出"BLE 洪泛开着时 Wi-Fi 攻击帧率下降 X%"的实测数字 |
 
-## 4. 已完成的修复
+## 5. 已完成的修复
 
 | 状态 | 条目 | 说明 |
 | --- | --- | --- |
@@ -83,7 +98,7 @@
 | `[x]` | 目标选择弹窗（LVGL + Windows GUI） | 模态卡片/窗口，过滤、全选/反选、快照撤销 |
 | `[x]` | UART RX 缓冲 256 B → 4 KB | 300 条 PING 洪泛从 233–255 提升到 300/300 |
 
-## 5. 建议顺序
+## 6. 建议顺序
 
 1. **PMKID 抓 + 导出**（第 1 节前两条）——唯一能离线闭环验证的一条，先把它跑通：
    抓到的 `.22000` 用已知密码喂 hashcat，命中即证明"帧解析 → 去重 → 导出格式"全对。
