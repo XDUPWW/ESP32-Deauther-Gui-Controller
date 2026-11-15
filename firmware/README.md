@@ -165,10 +165,10 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `EAPOL <idx> [tid\|-1] [sta-mac]` | EAPOL-Start/Logoff 洪泛，伪造受害 STA 的 MAC。`tid` 是 QoS TID（默认 6），`-1` 只发非 QoS 数据帧 | `OK EAPOL 0 tid=6 ch=12 ssid=..` |
 | `EAPOLSTOP` | 停止 EAPOL 洪泛 | `OK EAPOLSTOP frames=110 rx_ap=0 rx_sta=0 eap=0` |
 | `EAPOLTEST` | 打印两种 EAPOL 数据帧（非 QoS + QoS）的字节与解码 | `EAPOLTEST start plain ... etype=888E ver=2 type=1` |
-| `PSPOLL <idx> [sta-mac]` | 电源管理（PM 位）欺骗：用受害 STA 的 MAC 发 PM=1 的 Null Data，AP 以为它睡了，把下行缓存起来。给了 `sta-mac` 就直接打那个 MAC | `OK PSPOLL 0 mode=pm sta=02:AA:.. ch=6 chset=0 ssid=..` |
+| `PSPOLL <idx> [sta-mac] [null\|qosnull\|action]` | 电源管理（PM 位）欺骗：用受害 STA 的 MAC 发 PM=1 的帧，AP 以为它睡了，把下行缓存起来。`null`=Null Data、`qosnull`=QoS Null（默认，实测最强）、`action`=单播 Action(127，不受 PMF 保护)；给了 `sta-mac` 就直接打那个 MAC | `OK PSPOLL 0 mode=pm frame=qosnull sta=02:AA:.. ch=6 chset=0 ssid=..` |
 | `PSPOLLREL` | 撤销：给每个受害者补一帧 PM=0 后停止（AP 于是把攒下的帧放出来） | `OK PSPOLLREL clients=1 flushed=1` |
 | `PSPOLLSTOP` | 停止 PM 位欺骗（不发帧，直接停） | `OK PSPOLLSTOP frames=101 null=101 flush=17 dl=844` |
-| `PSPOLLTEST` | 打印 PM=1 与 PM=0 两版 Null Data 的字段与十六进制（只差 `frame[1]` 的 0x10 位） | `PSPOLLTEST sleep len=24 fc=0x1148 pm=1 tods=1 ...` |
+| `PSPOLLTEST` | 打印三种帧型（Null Data / QoS Null / 单播 Action）与 PM=0 版本的字段与十六进制 （PM=1 与 PM=0 只差 `frame[1]` 的 0x10 位） | `PSPOLLTEST qosnull len=26 fc=0x11C8 pm=1 tods=1 tid=0 ...` |
 | `SAE <idx> [point\|rand] [gap_ms]` | SAE Commit 洪泛（WPA3）。`point`=发合法 P-256 生成元（默认），`rand`=随机字节对照组；`gap_ms` 是帧间隔，默认 50 ms | `OK SAE 0 elem=point gap_ms=50 ch=12` |
 | `SAESTOP` | 停止 SAE 洪泛 | `OK SAESTOP frames=.. identities=.. responses=.. tokens=.. echoed=..` |
 | `SAETEST` | 打印 Commit 字节（alg/seq/group/元素）+ 带 token 的容器形状 | `SAETEST commit len=128 alg=3 seq=1 ... group=19` |
@@ -321,12 +321,11 @@ while True:
   **17 = 表满**（"AP 无法再接客户端"）才是目标，13 = 该 AP 不吃开放式认证，0 = 竟然接受了。
   嗅到目标 AKM 含 SAE 时自动停自己、转 `sae_start()`（`afup=1`，串口打一行 `INFO AUTHFLOOD ...`），
   因为 SAE AP 对开放式 Auth 只回 status 13，洪泛对它是免费的。
-- **电源管理（PM 位）欺骗**（`PSPOLL`）：用受害 STA 的 MAC 发 **Null Data（data 子类型 4）**，
-  帧控制高字节 `0x11` = ToDS + **PM=1**——AP 收到就把这个 STA 当成"睡了"，下行不再直接发，
+- **电源管理（PM 位）欺骗**（`PSPOLL`）：用受害 STA 的 MAC 发带 **PM=1** 的帧——AP 收到就把这个 STA 当成"睡了"，下行不再直接发，
   而是缓存进 TIM；真站醒着、永远不来取，于是收不到。每第 6 帧改发 **PM=0**：让 AP 把攒下的帧
   "放"给一个并不在听的站（把"延迟"变成"丢失"），同时也是撤销（`PSPOLLREL` 给每个受害者补一帧）。
-  PM 位在数据帧的帧控制里，**不属于 PMF 的 robust 集合**——这是它相对 deauth/DELBA/BTM 的差异
-  （那三条在强制 PMF 的 WPA3 网络上会被客户端驱动丢弃）。
+  同一个 PM 位有三种承载帧，各家协议栈认的不一样，所以可切：`null`=Null Data（data 4，24 B，帧控制 `0x1148`）、`qosnull`=QoS Null（data 12，26 B，`0x11C8`，多 2 字节 QoS Control）、`action`=单播 Action（mgmt 13，29 B，`0x10D0`，类别 127）。**默认 `qosnull`**（实测 −38%，另两种 −30% / −21%）。
+  这三条都**不属于 PMF 的 robust 集合**（数据帧的 PM 位本就不受保护，厂商自定义 Action 也不在集合里）——这是它相对 deauth/DELBA/BTM 的差异（那三条在强制 PMF 的 WPA3 网络上会被客户端驱动丢弃）。
   节拍是 **10 帧/s**（不是 20）：实测 20 帧/s 时这个帧型会在几百帧后打满短缓存池并触发
   `0x101` 重启。效果边界与实测见 `attack-principles.md §13`：下行吞吐 −24…−46%、零掉线，
   因为受害者自己的上行帧（PM=0）会把 AP 的状态翻回来。
@@ -357,7 +356,7 @@ python lab/air_check.py --port COM5 --bssid <AP-BSSID>      # 逐模块起-抓-�
 | TIM | `TIM <idx> tim <aid>` / `clear` | 克隆 beacon 的 TIM 元素：`dtim_count=0`、bitmap 按 AID 置位（AID 3 → `08`）；`clear` 模式的 bitmap 应为 `00`。**管道没起时**用 `lab/tim_air.py`（COM6 的 `sniff <ch>`）核对 | `timf>0`、`timreal>0`（说明学到了真 beacon；没学到就一帧都不发）、`timaid` 位图 | 会进 PS 模式且有下行缓存的客户端（手机锁屏 / IoT 设备）。对照 `clear` 与 `tim` 两种模式的唤醒次数/丢包 |
 | EAPOL | `EAPOL <idx> 6 <STA-MAC>` | `AAAA03…888E ver=2 type=1/2`，非 QoS 与 QoS(TID6) 交替 | `eapf>0`；**`eaprxreq>0` 才说明 AP 的 802.1X 状态机真的重启**（AP 回 EAP-Request/Identity），`eaprxsta>0` 说明真实 STA 收到了 Logoff | WPA2/WPA-Enterprise 或 802.1X 的 AP。**WPA2-PSK 下这条 AP 完全忽略**，`eaprxreq`/`eaprxsta` 都是 0，属于已知边界 |
 | SAE | `SAE <idx> point 50` | `alg=3 seq=1 group=19`，128 字节；AP 的回复是 `alg=3 seq=2 status=…` | `saef>0`、`saeresp>0`、`saecode`（13 = 该 AP 不吃 SAE；76 = 要反 clogging token；`saetok>0` 说明 token 到了、`saeecho>0` 说明回显了） | WPA3-SAE 的 AP。效果判据：拿到 token 回显后，**合法 STA 的 ping RTT 明显上升**。对照组 `SAE <idx> rand 50`（随机元素，AP 在点校验就退），两者 RTT 差异即"贵在哪一步" |
-| PM 位欺骗 | `PSPOLL <idx> <STA-MAC>` | `Null Data subtype=4`、帧控制高字节 `0x1148`（ToDS+PM=1）、`ra=<BSSID> ta=<STA>`。**管道没起时**用 `lab/pspoll_air.py`（另一块板跑 lab 固件的 `ap` + `sniffpoll <ch>`，一块板同时当 AP 与嗅探器） | `pspf>0`、`pspnul/pspfl`（PM=1/PM=0 各多少）、`pspdl`（发向受害者的下行帧，攻击生效时不再增长）；`psprxp` 恒 0 属正常（ESP-IDF 站点按 DTIM 收帧，从不发 PS-Poll） | 一台 AP + 一个真实客户端：`lab/pspoll_ps.py` 量 AP 侧 RATE（实测 −24…−46%），撤销后立刻恢复 |
+| PM 位欺骗 | `PSPOLL <idx> <STA-MAC> [qosnull\|null\|action]` | 三种帧型各自的帧控制高字节：`0x1148`(Null)/`0x11C8`(QoS Null)/`0x10D0`(Action)，都带 PM=1，`ra=<BSSID> ta=<STA>`。**管道没起时**用 `lab/pspoll_air.py`（另一块板跑 lab 固件的 `ap` + `sniffpoll <ch>`，一块板同时当 AP 与嗅探器，逐帧型统计 PM=1 帧数） | `pspf>0`、`pspfrm`（当前帧型）、`pspnul/pspfl`（PM=1/PM=0 各多少）、`pspdl`（发向受害者的下行帧）；`psprxp` 恒 0 属正常（ESP-IDF 站点按 DTIM 收帧，从不发 PS-Poll） | 一台 AP + 一个真实客户端：`lab/pspoll_ps.py` 量 AP 侧 RATE，三种帧型分别为 −30%/−38%/−21%，撤销后立刻恢复 |
 | Auth/Assoc 洪泛 | `AUTHFLOOD <idx> both` | `alg=0 seq=1` 的 Auth + 带目标 SSID/RSN 的 Assoc Request，TA 每帧换随机 MAC | `aff/afa/afs>0`、`afids` 持续增长；**`afst=17` 才是目标（表满）**，13 = 该 AP 不吃开放认证，0 = 竟然接受了；目标是 WPA3 时应看到 `afup=1` 与 `INFO AUTHFLOOD ... -> SAE commit flood` | 一台能看客户端列表/拒绝接入的 AP。合法 STA 对照：它开始连不上即达标 |
 
 **稳定性**：`python lab/soak.py --port COM5 --bssid <AP> --minutes 4` 逐模块长跑，判据是
@@ -423,7 +422,7 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
   一行目标（`WNM #0 TP-LINK`）、`[Scan] [Targets] [Start]`、`[Stop] <变体> [Back]`。
   `Start` 发不带参数的缺省命令（`WNM 0` / `TIM 0` / `EAPOL 0` / `SAE 0` / `AUTHFLOOD 0` / `PSPOLL 0`），
   中间那个变体键发对照形态：`Bare`=`WNM 0 bare`、`Clear`=`TIM 0 clear`、`Plain`=`EAPOL 0 -1`、
-  `Rand`=`SAE 0 rand`、`NoAuto`=`AUTHFLOOD 0 both noauto`、`Release`=`PSPOLLREL`（撤销）。参数细分仍走串口/GUI。
+  `Rand`=`SAE 0 rand`、`NoAuto`=`AUTHFLOOD 0 both noauto`。PS-Poll 那一页的变体键是**帧型循环**（`QoSNull`→`Null`→`Action`），点一下换一种帧型并重启攻击；撤销 `PSPOLLREL` 与受害 MAC 走串口/GUI。参数细分仍走串口/GUI。
 - 重扫会清空勾选与单选；弹窗开着也会就地重建列表。
 - 诊断：`UITARGETS`（开弹窗）+ `UI`（回报 `screen/popup/items/nets`），不需要用手指点。
 
@@ -547,7 +546,7 @@ Wi-Fi 任务                         promiscuous 回调 sniffer()（只做判断
    （`CTRLTEST 10 bssid 0xC025` 两轮各 0/10），而同样 16 字节、改成广播 RA 时 10/10 上空气且
    `Duration/ID = 0xC025`（AID 37）原样保留——说明不是字段被改写，而是这条发送路径不通。
    PS-Poll 只有单播才有意义，所以模块里只剩 PM 位那一半。探针留在 `CTRLTEST`。
-8. **PM 位帧的节拍是 10 帧/s，不是 20**：`PM=1` 的 Null Data 在 20 帧/s 下约 170–400 帧
+8. **PM 位帧的节拍是 10 帧/s，不是 20**：三种承载帧（Null/QoS Null/Action）在 20 帧/s 下约 170–400 帧
    （9–20 s）就把短缓存池打满并触发 `FATAL tx 0x101 ... -> restart`；10 帧/s 时 60 s / 600 帧
    零拒收。`pspoll.cpp` 自己把 `kSendMs` 压到 100 ms（`tx_guard` 的 45 ms 间隔挡不住这个）。
 9. **`SCAN` 之后立刻开打会打到"错误信道"**：扫描收尾时 STA 会拒绝 `esp_wifi_set_channel()`，

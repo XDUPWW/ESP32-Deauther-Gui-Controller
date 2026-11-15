@@ -110,7 +110,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
   重启前打 `FATAL tx 0x101 ... -> restart`。老模块（deauth/csa/delba）仍用自己的 `esp_wifi_80211_tx`
   封装，`BARSEQ` 这类"故意要把池打空"的诊断探针**必须**留在守卫之外，否则测不到它要测的东西。
   单播注入的节拍上限约 20 帧/s（§11 第 10 条），新模块的 step 里都按这个定过间隔——
-  唯一例外是 `pspoll.cpp`：PM=1 的 Null Data 在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s（§11 第 8 条）。
+  唯一例外是 `pspoll.cpp`：PM 位帧在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s（§11 第 8 条）。
 - 界面与固件解耦：`components/wireless_ui/` 只暴露纯 C 的 `wireless_ui.h`，按钮通过 `wireless_ui_set_command_cb()`
   注入的回调发协议行；固件 → UI 方向只调 `wireless_ui_scan_begin/add_network/scan_end/status/log` 置标志，
   UI 更新由 `wireless_ui_tick()` 在主循环里加锁应用（不要跨任务直接调 LVGL）。
@@ -134,7 +134,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
 | `eapol.cpp` | EAPOL-Start/Logoff 洪泛：ToDS 数据帧 + LLC/SNAP 0x888E，收侧统计 EAP 包 |
 | `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
 | `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
-| `pspoll.cpp` | 电源管理（PM 位）欺骗：伪造 PM=1 的 Null Data 让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；`pspoll_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
+| `pspoll.cpp` | 电源管理（PM 位）欺骗：伪造 PM=1 的帧让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；三种承载帧 `null`/`qosnull`（默认）/`action`；`pspoll_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
 | `tx_guard.cpp` | 统一注入入口：首个 `0x101` 立即 `esp_restart()`，并集中记录 ok/err |
 | `ie_util.cpp` | IE 遍历、RSN AKM（SAE/PSK）、MFPR、Extended Capabilities bit19 判定 |
 | `evil_twin.cpp` | 克隆热点、DNSServer 劫持、Captive Portal（8080）、凭据表（RAM） |

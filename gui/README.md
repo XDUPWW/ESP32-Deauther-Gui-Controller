@@ -138,11 +138,12 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 | `EAPOL 洪泛` | QoS TID（`6`/`-1`/`0`/`5`/`7`）、受害 STA MAC（可空 = 嗅探学习，12 位十六进制） | `EAPOL <idx> <tid> [mac]`（`EAPOLSTOP`） |
 | `SAE 洪泛` | Commit 元素 `point/rand`、帧间隔 ms（<50 会被固件抬到 50） | `SAE <idx> <elem> <gap>`（`SAESTOP`） |
 | `Auth 洪泛` | 模式 `both/auth/assoc`、勾选"嗅到 WPA3 自动升级 SAE" | `AUTHFLOOD <idx> <mode> [noauto]`（`AUTHFLOODSTOP`） |
-| `PM 位欺骗`（电源管理） | 受害 STA MAC（可空 = 嗅探学习） | `PSPOLL <idx> [mac]`（`PSPOLLSTOP`），另有 `解除（发 PM=0）` = `PSPOLLREL` |
+| `PM 位欺骗`（电源管理） | 帧型 `qosnull`（默认）/`null`/`action`、受害 STA MAC（可空 = 嗅探学习） | `PSPOLL <idx> [mac] <shape>`（`PSPOLLSTOP`），另有 `解除（发 PM=0）` = `PSPOLLREL` |
 
 界面上只做参数校验（范围、MAC 格式），**不判断对端支不支持**：BTM 需要 11v 客户端、
 SAE 需要 WPA3 AP、EAPOL 需要 802.1X；PM 位欺骗则相反——它对所有 AP 都成立（PM 位不在 PMF 的
-保护集里），但效果是下行吞吐下降而不是断连。这些看底栏的计数器判断，说明见
+保护集里），三种承载帧实测都能压吞吐（−30%/−38%/−21%，QoS Null 最强所以做默认），但效果是
+下行吞吐下降而不是断连。这些看底栏的计数器判断，说明见
 [攻击原理](../attack-principles.md) 与 [`../firmware/README.md`](../firmware/README.md#5-各攻击的行为与限制)。
 
 ### 2.7 Probe 攻击
