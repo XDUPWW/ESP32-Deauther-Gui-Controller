@@ -92,12 +92,18 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 ## 4. 运行时架构
 
 ```
-串口字节 → 行缓冲 → dispatch()  →  do_scan / do_deauth / do_probe … → deauth/csa/delba/evil_twin
-                          ▲                        │
-LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 状态（不打印）
-                                                        │
-                                              console 层统一打印协议行
+串口字节 → 行缓冲 → dispatch() ─┬→ 别名表（DEAUTH/CSA…）→ wbus_call() → 对象 handler
+                                └→ 旧 strcmp 链 → do_scan / do_probe / …
+                                        │                 │
+LVGL 按钮 → 命令队列 → wireless_console_execute()          └→ 计数器 + 状态（不打印）
+                                                              │
+                                             wb_reply_t sink（serial_console.cpp 注入）统一打印
 ```
+
+- wbus（`components/wbus/`）是对象注册表 + 参数策略 + 事件的最小总线，**一个命令搬到对象表后，
+  回执文本必须与旧 `strcmp` 分支逐字节一致**（测试与 `lab/*.py` 都靠它解析）。当前已迁移：
+  `DEAUTH`、`CSA`、`CSASTOP`、`CSATEST`。新增/迁移命令时，回执一律走 `wb_reply_*()`，
+  不要在新对象里直接 `Serial.print`。
 
 - `src/main.cpp` 的 `setup()`：初始化串口 → STA 静默 → `init_evil_twin()` → 可选 LVGL 初始化（失败则打印 `WARN` 并回到纯串口形态）。
 - `loop()` 每轮：`handle_serial_console()` → `ui_commands_drain()` → `wireless_ui_tick()` → `attack_step()` → `delay(2)` → Evil Twin 捕获期轮询。
@@ -136,6 +142,9 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
 | `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
 | `pspoll.cpp` | 电源管理（PM 位）欺骗：伪造 PM=1 的帧让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；三种承载帧 `null`/`qosnull`（默认）/`action`；`pspoll_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
 | `tx_guard.cpp` | 统一注入入口：首个 `0x101` 立即 `esp_restart()`，并集中记录 ok/err |
+| `bus_objects.cpp` | wbus 对象表：`deauth` / `csa` 的参数策略、handler、事件（handler 从 `serial_console.cpp` 原样搬来，回执字节不变） |
+| `include/console_commands.h` | 总线与控制台的桥：`console_scan_count()`、`console_apply_reason()`、`console_ui_log()`、`wbus_register_all()` |
+| `components/wbus/` | 迷你 ubus：对象注册表、`wb_arg_spec_t` 参数策略、`wb_reply_t` 注入式输出、`EVT` 事件订阅。纯 C++，不依赖 Arduino/esp_* |
 | `ie_util.cpp` | IE 遍历、RSN AKM（SAE/PSK）、MFPR、Extended Capabilities bit19 判定 |
 | `evil_twin.cpp` | 克隆热点、DNSServer 劫持、Captive Portal（8080）、凭据表（RAM） |
 | `general.cpp` | LED 闪烁等公共工具 |
@@ -153,8 +162,13 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
 ## 6. 串口协议（改动必须遵守）
 
 - 115200 8N1，一行一条命令，`\r\n` 结尾；行缓冲 112 字节，超长回 `ERR line too long`。
-- 命令在 `dispatch(char* line)` 里先整体 `toupper()` 再 `strcmp()`，参数用 `strtok`（因此命令大小写不敏感、参数区分大小写）。
-  **同一语句里不要写两次 `strtok()`**（求值顺序未定义），`DEAUTH` 里已有注释说明。
+- 命令在 `dispatch(char* line)` 里先整体 `toupper()` 再匹配（因此命令大小写不敏感、参数区分大小写）。
+  它先把整行复制到本地 `work[128]` 再 `strtok`：已迁移到 wbus 的命令由别名表一次取完参数，
+  其余命令继续走旧的 `strcmp` 链、沿用 `strtok(nullptr, ...)`。**同一语句里不要写两次 `strtok()`**
+  （求值顺序未定义）；新代码走 `CALL` / 对象 handler，天然没有这个问题。
+- wbus 命令：`WBUS`（列对象）、`DESCRIBE [obj]`（UI 元数据：标题/方法/参数类型/默认值/枚举）、
+  `CALL <obj>.<method> k=v …`（关键字调用）、`EVTSUB [topic|pattern]`（事件流，默认关闭所以老输出不变）。
+  加一个攻击对象时同时补 `label` / `enums` / `default`，界面将来直接吃这份元数据。
 - 输出是行式纯文本，前缀固定：`OK …` / `ERR …` / `INFO …` / `SCAN_BEGIN` / `NET <idx> <rssi> <ch> <enc> <bssid> <ssid>` /
   `SCAN_END <n>` / `STATUS key=value …` / `STATS_BEGIN|AP|STATS_END` / `STA_BEGIN|STA|STA_END` /
   `CREDS_BEGIN|CRED|CREDS_END` / `RX …` / `RXMIX …` / `UI …`。SSID 含空格且放在 `NET` 行最后。
@@ -172,7 +186,8 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()  └→ 计数器 + 
   **按文件现状写，不要整文件重排格式。** Python 4 空格。
 - 命名：固件函数/变量 `snake_case`，静态变量 `s_` 前缀（`serial_console.cpp` 里文件级全局用 `g_`），常量 `kCamelCase`，宏 `UPPER_SNAKE`，
   结构体 `xxx_t`。头文件用 `#pragma once`（早期文件是 include guard，保持原样）。
-- 攻击模块只更新计数器和状态，**不直接 `Serial.print`**；协议输出集中在 `serial_console.cpp`，避免污染机器可读流。
+- 攻击模块只更新计数器和状态，**不直接 `Serial.print`**；协议输出走 `wb_reply_t`（sink 由 `serial_console.cpp`
+  注入 `Serial`），既避免污染机器可读流，也让同一份对象表将来能喂给 socket / LVGL。
 - 每个可观测行为都要有计数器，并能从 `STATUS` 读出来（如 `txok/txerr/txec/blind/rev/delbtr/bassn`）。调参靠数据，不靠感觉。
 - 运行参数放 `include/definitions.h`（帧数、周期、缓冲）；改帧数时注意 TX 缓冲会被 ACK 超时占满（单播帧尤其）。
 - 不要复活 Web 控制台/SoftAP（上游有、本工程有意移除）。

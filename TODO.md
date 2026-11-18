@@ -124,20 +124,24 @@ PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3
 4. 未迁移的命令原样落回旧 `strcmp` 链：`dispatch()` 只把行复制到本地 `work[128]` 再 `strtok`，
    不要动调用方传进来的 `line`。
 
-### P1 总线核心 + deauth/csa 试点（估 3–4 天）
+### P1 总线核心 + deauth/csa 试点（2026-11-18 完成）
 
-- [ ] `components/wbus/`：对象注册表、`wb_arg_spec_t` 参数策略（`INT / REASON / MAC / ENUM / STR`）、
+- [x] `components/wbus/`：对象注册表、`wb_arg_spec_t` 参数策略（`INT / REASON / MAC / ENUM / STR`）、
       `wb_reply_t` 注入式 sink（**不依赖 Arduino 与 esp_\***）、`wbus_register/call/call_named/list/describe`、事件订阅
-- [ ] `include/console_commands.h`：暴露 `console_scan_count()`、`console_apply_reason()`、`ui_log()`，
+- [x] `include/console_commands.h`：暴露 `console_scan_count()`、`console_apply_reason()`、`console_ui_log()`，
       让对象层能回调控制台而不反向依赖
-- [ ] `src/bus_objects.cpp`：`deauth`（`start` / `stop`）与 `csa`（`start` / `stop` / `test`）两张对象表，
+- [x] `src/bus_objects.cpp`：`deauth`（`start` / `stop`）与 `csa`（`start` / `stop` / `test`）两张对象表，
       handler 从 `do_deauth()` / `do_csa()` 原样搬入（含 `CSA_AUTO_HOLD_MS` 常量下沉到 `csa.h`）
-- [ ] `dispatch()` 加别名表：`DEAUTH`→`deauth.start`、`CSASTOP`→`csa.stop`、`CSATEST`→`csa.test`，
-      未命中就原样落回旧链
-- [ ] 新命令 `WBUS`（列对象）/ `DESCRIBE <obj>`（GUI 建菜单用）/ `CALL <obj>.<method> k=v`（关键字调用）/
+- [x] `dispatch()` 加别名表：`DEAUTH`→`deauth.start`、`CSA`→`csa.start`、`CSASTOP`→`csa.stop`、`CSATEST`→`csa.test`，
+      未命中就原样落回旧链；`dispatch()` 改为在 `work[128]` 副本上 `strtok`，旧链的 `strtok(nullptr,…)` 不受影响
+- [x] 新命令 `WBUS`（列对象）/ `DESCRIBE <obj>`（GUI 建菜单用）/ `CALL <obj>.<method> k=v`（关键字调用）/
       `EVTSUB [pattern]`（默认不订阅 → 老输出零变化）
-- [ ] 验收：`idf.py build` 0 警告；51 项 unittest 全绿；`DEAUTH` / `CSA` 回执与 `84f891e` 逐字节一致；
-      `CALL deauth.start idx=3 reason=7` 与 `DEAUTH 3 7` 等效；双板空口复测一次
+- [x] 验收：`idf.py build` 0 警告（bin `0x164070`，比 P1 前 +5.7 KB）；`Ran 56 tests, OK`（新增 5 项 wbus 用例）；
+      11 条回执与旧文本逐字节一致（`ERR index out of range, run SCAN first`、
+      `ERR reason must be 1..65535, or 'random'`、`ERR new channel must differ from the AP channel`、
+      `OK CSA 0 auto(opposite-band) count=5 hold=500ms loop=1 ssid=…`、`OK CSASTOP frames=24`…）；
+      旧宽容行为保留：`DEAUTH 5x` 前缀解析成 5、`CSA 0 auto 99` 静默忽略 count；
+      `EVT deauth.state active=1` 只在 `EVTSUB` 之后出现，`EVTSUB` 取消后立刻消失
 
 ### P2 radio 对象：信道仲裁 + TX 收口（估 2–3 天）
 

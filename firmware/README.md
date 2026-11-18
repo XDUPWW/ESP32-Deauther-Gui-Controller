@@ -142,6 +142,10 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
 | `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. txg=.. txgok=.. txgerr=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. wnm=.. wnmf=.. wnmc=.. wnmskip=.. wnmresp=.. wnms=.. tim=.. timf=.. timaid=.. timreal=.. eap=.. eapf=.. eaprx=.. eaprxreq=.. eaprxsta=.. sae=.. saesec=.. saef=.. saec=.. saeresp=.. saecode=.. saetok=.. saeecho=.. af=.. aff=.. afa=.. afs=.. afids=.. afst=.. afup=.. delba=.. delbaf=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `WBUS` | wbus 对象表：列出已迁移到总线的对象、方法、事件 | `WBUS objects=2` / `WBUS deauth "Deauth / disassoc flood" methods=start,stop events=state` |
+| `DESCRIBE [obj]` | 对象的 UI 元数据（标题 / 方法 / 参数名·类型·默认值·枚举），供 GUI 与触屏生成页面；不带参数=全部对象 | `OBJ csa "CSA spoof"` / `METHOD csa.start ".."` / `ARG csa.start ch type=enum default=-1 values=auto` / `EVT csa state` |
+| `CALL <obj>.<method> [k=v ...]` | wbus 关键字调用，与同名旧命令等价（`CALL deauth.start idx=3 reason=7` ≡ `DEAUTH 3 7`）；未知对象/方法/参数各有独立 `ERR` | `OK DEAUTH 3 ssid` / `ERR unknown arg nope (try DESCRIBE deauth)` |
+| `EVTSUB [topic\|pattern]` | 订阅总线事件（默认关闭，所以老输出一个字节都不变）；`*` 结尾做前缀匹配，不带参数=取消全部 | `OK EVTSUB deauth.*` / `EVT deauth.state active=1` / `OK EVTSUB none` |
 | `DEAUTH <idx> [reason\|random]` | 单目标 deauth | `OK DEAUTH <idx> <ssid>` / `ERR ...` |
 | `DEAUTH_ALL [reason]` | 扫描到的全部 AP 轮流打 | `OK DEAUTH_ALL ...` |
 | `DEAUTH_ONLY <i,j,..> [reason]` | 白名单 | `OK DEAUTH_ONLY <n> aps` |
@@ -207,6 +211,11 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
   不再像以前那样静默退化成 1。
 
 `<idx>` 只在最近一次 `SCAN` 内有效（重扫后旧索引无意义）。
+
+`DEAUTH` / `CSA` / `CSASTOP` / `CSATEST` 已迁移到 wbus 总线（`TODO.md` 第 5 节 P1）：
+命令名与回执文本**一个字节都没变**，内部改由 `wbus_call()` 分发，所以加参数校验、
+`DESCRIBE` 元数据、`EVT` 事件都不会再各自写一遍。新代码优先用 `CALL <obj>.<method> k=v`。
+迁移是按命令逐个做的，其余命令仍走原来的 `strcmp` 链，两种路径的对外行为一致。
 
 ### 4.2 输出行
 
