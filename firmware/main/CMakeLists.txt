@@ -1,6 +1,7 @@
 set(SRCS
     "../src/main.cpp"
     "../src/deauth.cpp"
+    "../src/bus_objects.cpp"
     "../src/general.cpp"
     "../src/evil_twin.cpp"
     "../src/serial_console.cpp"
@@ -23,5 +24,5 @@ set(SRCS
 idf_component_register(
     SRCS ${SRCS}
     INCLUDE_DIRS "../include"
-    REQUIRES arduino-esp32 wireless_ui nvs_flash
+    REQUIRES arduino-esp32 wireless_ui nvs_flash wbus
 )

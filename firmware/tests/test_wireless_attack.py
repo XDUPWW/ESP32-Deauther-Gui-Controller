@@ -525,6 +525,66 @@ class FirmwareFunctionalTests(unittest.TestCase):
         line, _ = self.client.command("PING", lambda l: l.startswith("OK PONG"), 3)
         self.assertIsNotNone(line, "空行之后固件失联")
 
+    # ---- wbus：已迁移到总线的命令（TODO.md 第 5 节 P1）----------------------
+
+    def test_wbus_lists_migrated_objects(self):
+        line, lines = self.client.command("WBUS", lambda l: l.startswith("WBUS csa"), 3)
+        self.assertIsNotNone(line, "WBUS 未列出 csa")
+        text = "\n".join(lines)
+        self.assertIn("WBUS objects=2", text)
+        self.assertIn("WBUS deauth", text)
+        self.assertIn("methods=start,stop", text)
+        self.assertIn("events=state", text)
+
+    def test_describe_reports_arguments(self):
+        line, lines = self.client.command("DESCRIBE csa", lambda l: l.startswith("EVT "), 3)
+        self.assertIsNotNone(line, "DESCRIBE csa 没有输出 EVT 行")
+        text = "\n".join(lines)
+        self.assertIn('OBJ csa "CSA spoof"', text)
+        self.assertIn("METHOD csa.start", text)
+        self.assertIn("ARG csa.start ch type=enum default=-1 values=auto", text)
+        self.assertIn("ARG csa.start secs type=int default=15", text)
+        self.assertIn("METHOD csa.test", text)
+
+    def test_call_matches_legacy_aliases(self):
+        self.client.command("SCAN", lambda l: l.startswith("SCAN_END"), 25)
+        line, _ = self.client.command("CALL deauth.start idx=9999", lambda l: l.startswith("ERR "), 3)
+        self.assertEqual(line, "ERR index out of range, run SCAN first")
+        line, _ = self.client.command("CALL deauth.start idx=0 reason=0",
+                                      lambda l: l.startswith("ERR "), 3)
+        self.assertEqual(line, "ERR reason must be 1..65535, or 'random'")
+        line, _ = self.client.command("CALL deauth.start nope=1", lambda l: l.startswith("ERR "), 3)
+        self.assertIn("unknown arg nope", line)
+        line, _ = self.client.command("CALL nosuch.start idx=0", lambda l: l.startswith("ERR "), 3)
+        self.assertIn("unknown object nosuch", line)
+        line, _ = self.client.command("CALL csa.start idx=0 ch=999", lambda l: l.startswith("ERR "), 3)
+        self.assertEqual(line, "ERR new channel must be 1..14 or 36..196")
+
+    def test_legacy_leniency_survives_the_migration(self):
+        # 迁移前就接受（且不报错）的写法，迁移后必须继续接受，否则脚本会断。
+        self.client.command("SCAN", lambda l: l.startswith("SCAN_END"), 25)
+        line, _ = self.client.command("CSA 0 auto 99", lambda l: l.startswith("OK CSA"), 3)
+        self.assertIsNotNone(line, "auto 模式仍应忽略 count 参数")
+        self.assertIn("count=5", line)
+        self.client.command("CSASTOP", lambda l: l.startswith("OK CSASTOP"), 3)
+        line, _ = self.client.command("DEAUTH 9999x", lambda l: l.startswith("ERR "), 3)
+        self.assertEqual(line, "ERR index out of range, run SCAN first")
+
+    def test_events_are_opt_in(self):
+        self.client.command("SCAN", lambda l: l.startswith("SCAN_END"), 25)
+        line, _ = self.client.command("EVTSUB deauth.*", lambda l: l.startswith("OK EVTSUB"), 3)
+        self.assertIsNotNone(line, "EVTSUB 未确认")
+        self.client.send("DEAUTH 0")
+        line, _ = self.client.read_until(lambda l: l.startswith("EVT "), 4)
+        self.assertEqual(line, "EVT deauth.state active=1")
+        self.client.command("STOP", lambda l: l.startswith("OK STOP"), 3)
+        line, _ = self.client.command("EVTSUB", lambda l: l.startswith("OK EVTSUB none"), 3)
+        self.assertIsNotNone(line, "EVTSUB 关闭未确认")
+        self.client.send("DEAUTH 0")
+        _, lines = self.client.read_until(lambda l: l.startswith("OK DEAUTH"), 4)
+        self.client.command("STOP", lambda l: l.startswith("OK STOP"), 3)
+        self.assertFalse([l for l in lines if l.startswith("EVT ")], "取消订阅后仍在发事件")
+
 
 class FirmwareStabilityTests(unittest.TestCase):
     @classmethod

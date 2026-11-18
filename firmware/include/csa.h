@@ -24,6 +24,10 @@ extern "C" {
 // hops to the new channel and keeps a cloned beacon alive there, so the client
 // finds "its" AP instead of falling back to the old channel immediately.
 
+// The per-round impersonation window used in auto mode. It lives here (not in
+// serial_console.cpp) because the wbus CSA object is now the caller that needs it.
+#define CSA_AUTO_HOLD_MS 500
+
 // Starts spoofing for the AP at `index` (index from the last SCAN).
 // new_channel: where clients should go (validated by the caller: 1..196).
 // start_count: first CSA count value (2..8 recommended, mimics a real AP).

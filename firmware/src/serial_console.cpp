@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "authflood.h"
+#include "console_commands.h"
 #include "csa.h"
 #include "deauth.h"
 #include "delba.h"
@@ -18,10 +19,9 @@
 #include "sae.h"
 #include "tim.h"
 #include "tx_guard.h"
+#include "wbus.h"
 #include "wnm.h"
 
-// Auto CSA: per-round impersonation window on the announced channel.
-#define CSA_AUTO_HOLD_MS 500
 #include "definitions.h"
 #include "evil_twin.h"
 
@@ -31,6 +31,10 @@
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
 #include "wireless_ui.h"
 #endif
+
+// File-scope on purpose: everything inside the anonymous namespace below has
+// internal linkage, and this sink is handed to the wbus registry.
+void wbus_serial_sink(const char* bytes);
 
 namespace {
 
@@ -143,6 +147,9 @@ void print_help() {
   Serial.println("INFO AUTHFLOODSTOP                 stop the auth/assoc flood");
   Serial.println("INFO AUTHFLOODTEST                 dump the forged auth/assoc bytes");
   Serial.println("INFO RESTART                       esp_restart() (recovery from an exhausted TX pool)");
+  Serial.println("INFO WBUS / DESCRIBE [obj]         wbus: list objects / dump their methods and arguments");
+  Serial.println("INFO CALL <obj>.<method> [k=v ..]  wbus keyword call, e.g. CALL deauth.start idx=3 reason=7");
+  Serial.println("INFO EVTSUB [topic|pattern]        wbus event stream, default off; '*' suffix matches");
   Serial.println("INFO MON <ch> <secs>               passive capture on one channel (ch=0 hops 1..13)");
   Serial.println("INFO RADIO                         dump the driver's sniffer state (promisc + both filters + channel)");
   Serial.println("INFO CTRLTEST [subtype] [broadcast|bssid] [dur]  10 control frames of that subtype (default RTS=11)");
@@ -233,6 +240,10 @@ bool apply_reason_arg(const reason_arg_t& arg) {
   }
   return true;
 }
+
+// console_scan_count() and console_apply_reason() are defined at file scope after
+// the anonymous namespace closes -- bus_objects.cpp links against them, so they
+// cannot be internal-linkage helpers.
 
 int parse_index_list(char* text, int* out, int max) {
   if (text == nullptr) return 0;
@@ -538,65 +549,6 @@ void do_stats() {
   Serial.println("STATS_END");
 }
 
-void do_deauth(int index, uint16_t reason) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  if (!attack_deauth_single(index, reason)) {
-    Serial.println("ERR cannot start deauth on that network");
-    return;
-  }
-  Serial.printf("OK DEAUTH %d %s\n", index, WiFi.SSID(index).c_str());
-  ui_log("deauth started");
-}
-
-// CSA <idx> [new-channel|auto] [count] [hold-seconds]
-// Without a channel (or with "auto") the firmware announces a channel from the
-// opposite band -- 2.4 GHz AP -> random 5 GHz channel, 5 GHz AP -> random 2.4 GHz
-// -- and repeats the announce+hold cycle until CSASTOP. A channel given
-// explicitly keeps the old one-shot behaviour.
-void do_csa(int index, long channel, long count, long hold_seconds) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  const bool auto_channel = (channel < 0);
-  if (!auto_channel) {
-    const bool is_2g = channel >= 1 && channel <= 14;
-    const bool is_5g = channel >= 36 && channel <= 196;
-    if (!is_2g && !is_5g) {
-      Serial.println("ERR new channel must be 1..14 or 36..196");
-      return;
-    }
-    if ((long)WiFi.channel(index) == channel) {
-      Serial.println("ERR new channel must differ from the AP channel");
-      return;
-    }
-  }
-  if (count < 2 || count > 8) {
-    Serial.println("ERR count must be 2..8 (a real AP counts down)");
-    return;
-  }
-  if (!auto_channel && (hold_seconds < 1 || hold_seconds > 600)) {
-    Serial.println("ERR hold seconds must be 1..600");
-    return;
-  }
-  const bool loop = auto_channel;
-  // Auto: 500 ms per round on the announced channel (beacons + auth ok + assoc
-  // refused). A fixed channel keeps the seconds-based one-shot window.
-  const uint16_t hold_ms =
-      auto_channel ? (uint16_t)CSA_AUTO_HOLD_MS : (uint16_t)(hold_seconds * 1000);
-  if (!csa_start(index, auto_channel ? 0 : (uint8_t)channel, (uint8_t)count, hold_ms, loop)) {
-    Serial.println("ERR cannot start CSA on that network");
-    return;
-  }
-  Serial.printf("OK CSA %d %s count=%ld hold=%ums loop=%d ssid=%s\n", index,
-                auto_channel ? "auto(opposite-band)" : "fixed", count, (unsigned)hold_ms, loop ? 1 : 0,
-                WiFi.SSID(index).c_str());
-  ui_log("csa started");
-}
-
 // MON <channel> <seconds>: passive capture on one channel (0 = hop 1..13).
 // Counters are reset on entry, so a following RXMIX describes exactly this window.
 void do_monitor(char* ch_token, char* sec_token) {
@@ -716,17 +668,6 @@ void do_radio() {
   Serial.printf("RADIO promisc=%u(%d) filter=0x%08X(%d) ctrl_filter=0x%08X(%d) ch=%u\n",
                 (unsigned)(promisc ? 1 : 0), (int)e1, (unsigned)type_filter.filter_mask, (int)e2,
                 (unsigned)ctrl_filter.filter_mask, (int)e3, (unsigned)prim);
-}
-
-void do_csa_test() {
-  csa_selftest();
-}
-
-void do_csa_stop() {
-  const uint32_t frames = csa_frames();
-  csa_stop();
-  Serial.printf("OK CSASTOP frames=%u\n", (unsigned)frames);
-  ui_log("csa stopped");
 }
 
 // DELBA <idx> [reason]: tear down the Block Ack sessions of that BSS. Needs the
@@ -1485,12 +1426,110 @@ void do_ui_screen(char* token) {
 
 // ------------------------------------------------------------------ dispatch
 
+// ---- wbus aliases ----------------------------------------------------------
+
+// A migrated command keeps its old name and its old reply text; the table only
+// says which object answers it. Anything not listed here falls through to the
+// legacy chain below, which is what lets the migration move one command at a time.
+struct bus_alias_t {
+  const char* command;
+  const char* object;
+  const char* method;
+};
+
+const bus_alias_t kBusAliases[] = {
+    {"DEAUTH", "deauth", "start"},
+    {"CSA", "csa", "start"},
+    {"CSASTOP", "csa", "stop"},
+    {"CSATEST", "csa", "test"},
+};
+
+const bus_alias_t* find_bus_alias(const char* command) {
+  for (size_t i = 0; i < sizeof(kBusAliases) / sizeof(kBusAliases[0]); i++) {
+    if (strcmp(command, kBusAliases[i].command) == 0) return &kBusAliases[i];
+  }
+  return nullptr;
+}
+
+// The reply sink is a file-scope function (it is injected into the bus, which lives
+// in another translation unit); see the declaration above the namespace.
+
+// Materialises the remaining tokens in one strtok pass and hands them over. This
+// is also what kills the "never call strtok twice in one statement" trap for the
+// migrated commands: every argument exists before any handler runs.
+wb_err_t call_bus_alias(const bus_alias_t* alias) {
+  char* argv[WB_MAX_ARGS];
+  int argc = 0;
+  while (argc < WB_MAX_ARGS) {
+    char* token = strtok(nullptr, " \t");
+    if (token == nullptr) break;
+    argv[argc++] = token;
+  }
+  wb_reply_t reply;
+  reply.sink = wbus_serial_sink;
+  return wbus_call(alias->object, alias->method, argc, argv, &reply);
+}
+
 void dispatch(char* line) {
-  char* command = strtok(line, " \t");
+  if (line == nullptr) return;
+  // Work on a copy: the legacy chain below keeps calling strtok(nullptr, ...), and
+  // those calls must still see this line's tokens even though dispatch() itself
+  // now also tokenizes. 112 bytes is the line buffer, so 128 is always enough.
+  char work[128];
+  const size_t raw_len = strlen(line);
+  const size_t copy_len = (raw_len < sizeof(work)) ? raw_len : sizeof(work) - 1;
+  memcpy(work, line, copy_len);
+  work[copy_len] = 0;
+
+  char* command = strtok(work, " \t");
   if (command == nullptr) return;
   for (char* p = command; *p != 0; p++) *p = (char)toupper((unsigned char)*p);
 
-  if (strcmp(command, "HELP") == 0) {
+  if (const bus_alias_t* alias = find_bus_alias(command)) {
+    call_bus_alias(alias);
+    return;
+  }
+
+  if (strcmp(command, "WBUS") == 0) {
+    wb_reply_t reply;
+    reply.sink = wbus_serial_sink;
+    wbus_list(&reply);
+  } else if (strcmp(command, "DESCRIBE") == 0) {
+    wb_reply_t reply;
+    reply.sink = wbus_serial_sink;
+    // No argument describes every object: one round trip is enough for a menu
+    // builder, and the arguments stay lowercase so names match the tables.
+    wbus_describe(strtok(nullptr, " \t"), &reply);
+  } else if (strcmp(command, "CALL") == 0) {
+    // CALL deauth.start idx=3 reason=7
+    char* target = strtok(nullptr, " \t");
+    char* dot = (target != nullptr) ? strchr(target, '.') : nullptr;
+    if (dot == nullptr) {
+      Serial.println("ERR usage: CALL <object>.<method> [arg=value ...]");
+    } else {
+      *dot = 0;
+      char* argv[WB_MAX_ARGS];
+      int argc = 0;
+      while (argc < WB_MAX_ARGS) {
+        char* token = strtok(nullptr, " \t");
+        if (token == nullptr) break;
+        argv[argc++] = token;
+      }
+      wb_reply_t reply;
+      reply.sink = wbus_serial_sink;
+      wbus_call_named(target, dot + 1, argc, argv, &reply);
+    }
+  } else if (strcmp(command, "EVTSUB") == 0) {
+    char* pattern = strtok(nullptr, " \t");
+    if (pattern == nullptr) {
+      wbus_subscribe_clear();
+      Serial.println("OK EVTSUB none");
+    } else if (wbus_subscribe(pattern)) {
+      Serial.printf("OK EVTSUB %s\n", pattern);
+    } else {
+      Serial.println("ERR too many subscribers");
+    }
+  } else if (strcmp(command, "HELP") == 0) {
     print_help();
   } else if (strcmp(command, "PING") == 0) {
     Serial.println("OK PONG");
@@ -1502,13 +1541,6 @@ void dispatch(char* line) {
     do_stats();
   } else if (strcmp(command, "STOP") == 0) {
     do_stop();
-  } else if (strcmp(command, "DEAUTH") == 0) {
-    // One strtok per statement: two calls inside one argument list have
-    // unspecified evaluation order and corrupt the arguments.
-    char* index_token = strtok(nullptr, " \t");
-    char* reason_token = strtok(nullptr, " \t");
-    const reason_arg_t arg = parse_reason_arg(reason_token);
-    if (apply_reason_arg(arg)) do_deauth(parse_index(index_token), arg.value);
   } else if (strcmp(command, "DEAUTH_ALL") == 0) {
     const reason_arg_t arg = parse_reason_arg(strtok(nullptr, " \t"));
     if (apply_reason_arg(arg)) do_deauth_all(arg.value);
@@ -1524,24 +1556,6 @@ void dispatch(char* line) {
     if (apply_reason_arg(arg)) do_deauth_list(list, arg.value, true);
   } else if (strcmp(command, "REASON") == 0) {
     do_reason(strtok(nullptr, " \t"));
-  } else if (strcmp(command, "CSA") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* ch_token = strtok(nullptr, " \t");
-    char* count_token = strtok(nullptr, " \t");
-    char* hold_token = strtok(nullptr, " \t");
-    const int csa_idx = parse_index(idx_token);
-    if (csa_idx < 0) {
-      Serial.println("ERR usage: CSA <idx> [new-channel|auto] [count 2-8] [hold-seconds]");
-    } else {
-      const bool auto_ch = (ch_token == nullptr) || (strcmp(ch_token, "auto") == 0);
-      do_csa(csa_idx, auto_ch ? -1 : strtol(ch_token, nullptr, 10),
-             auto_ch ? 5 : (count_token ? strtol(count_token, nullptr, 10) : 5),
-             auto_ch ? 5 : (hold_token ? strtol(hold_token, nullptr, 10) : 15));
-    }
-  } else if (strcmp(command, "CSASTOP") == 0) {
-    do_csa_stop();
-  } else if (strcmp(command, "CSATEST") == 0) {
-    do_csa_test();
   } else if (strcmp(command, "DELBA") == 0) {
     char* idx_token = strtok(nullptr, " \t");
     char* reason_token = strtok(nullptr, " \t");
@@ -1701,12 +1715,45 @@ void dispatch(char* line) {
 
 }  // namespace
 
+// ---- wbus bridge -----------------------------------------------------------
+// External linkage on purpose: bus_objects.cpp (another translation unit) calls
+// console_scan_count/console_apply_reason and stores wbus_serial_sink.
+
+void wbus_serial_sink(const char* bytes) {
+  // Whole lines, written untouched: println-style lines already carry "\r\n" and
+  // printf("...\n") lines carry a bare "\n", and both must stay that way.
+  if (bytes != nullptr) Serial.print(bytes);
+}
+
+int console_scan_count(void) { return g_scan_count; }
+
+// The bus validates the token, this applies it. Order matters: the legacy DEAUTH
+// branch applied the reason first, so a bad reason is reported even when the index
+// is bad as well, and an out-of-set reason emits its INFO line before the OK.
+bool console_apply_reason(const wb_value_t* value, uint16_t* out_value) {
+  reason_arg_t arg = {REASON_FIXED, 1};
+  if (value != nullptr && value->present) {
+    if (value->text != nullptr && strcmp(value->text, "random") == 0) {
+      arg.kind = REASON_RANDOM;
+    } else {
+      arg.value = (uint16_t)value->num;
+    }
+  }
+  if (!apply_reason_arg(arg)) return false;
+  if (out_value != nullptr) *out_value = arg.value;
+  return true;
+}
+
+void console_ui_log(const char* text) { ui_log(text); }
+
 void init_serial_console() {
   // The default UART RX ring is 256 bytes; a burst of commands (the GUI, a script,
   // or a pentest harness) overruns it and lines get dropped. Grow it *before*
   // begin() so the driver allocates the bigger ring.
   Serial.setRxBufferSize(SERIAL_RX_BUFFER_SIZE);
   Serial.begin(115200);
+  wbus_set_sink(wbus_serial_sink);
+  wbus_register_all();
   xTaskCreate(scan_task, "scan", 4096, nullptr, 2, &s_scan_task);
   delay(50);
   Serial.println("INFO Wireless-Attack ready, type HELP");
