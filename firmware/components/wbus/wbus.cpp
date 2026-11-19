@@ -83,7 +83,14 @@ bool eval_arg(const wb_arg_spec_t& spec, const char* token, wb_value_t* out) {
             // Same semantics as the legacy parse_index(): a leading number wins,
             // trailing junk is ignored. Stricter parsing would reject commands
             // the console accepted before ("DEAUTH 3x" used to mean 3).
-            if (token == nullptr || !has_digit(token)) return false;
+            if (token == nullptr) return false;
+            if (!has_digit(token)) {
+                if ((spec.flags & WB_F_JUNK_ZERO) == 0) return false;
+                out->num = 0;
+                out->text = token;
+                if (spec.min < spec.max && (spec.min > 0 || spec.max < 0)) return false;
+                return true;
+            }
             out->num = strtol(token, nullptr, 10);
             out->text = token;
             if (spec.min < spec.max && (out->num < spec.min || out->num > spec.max)) return false;

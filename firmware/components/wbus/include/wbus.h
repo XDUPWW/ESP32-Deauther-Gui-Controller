@@ -49,6 +49,9 @@ enum {
     // A WB_T_ENUM argument also accepts a number (CSA's channel is either "auto"
     // or 1..14/36..196).
     WB_F_NUMERIC_OK = 1 << 0,
+    // A WB_T_INT token without a digit parses as 0 instead of failing. Legacy
+    // compatibility only: `BARPUSH 0 abc` used to reach strtol() and mean step 0.
+    WB_F_JUNK_ZERO = 1 << 1,
 };
 
 // One declared argument. The struct is meant to live in .rodata: `err` is the

@@ -540,13 +540,19 @@ class FirmwareFunctionalTests(unittest.TestCase):
             self.skipTest("本次 SCAN 没有扫到任何 AP")
 
     def test_wbus_lists_migrated_objects(self):
-        line, lines = self.client.command("WBUS", lambda l: l.startswith("WBUS csa"), 3)
-        self.assertIsNotNone(line, "WBUS 未列出 csa")
+        _, lines = self.client.command("WBUS", lambda l: l.startswith("WBUS csa"), 3)
         text = "\n".join(lines)
-        self.assertIn("WBUS objects=2", text)
-        self.assertIn("WBUS deauth", text)
+        self.assertRegex(text, r"WBUS objects=\d+")
+        self.assertIn("WBUS deauth ", text)
         self.assertIn("methods=start,stop", text)
         self.assertIn("events=state", text)
+        # 逐个 DESCRIBE，不依赖 WBUS 的列举顺序（列表是一行一对象，读多长取决于行数）
+        for obj, method in (("delba", "start"), ("ba", "attack")):
+            line, described = self.client.command(f"DESCRIBE {obj}",
+                                                  lambda l: l.startswith("EVT "), 3)
+            self.assertIsNotNone(line, f"DESCRIBE {obj} 无 EVT 行")
+            self.assertIn(f'OBJ {obj} ', "\n".join(described))
+            self.assertIn(f"METHOD {obj}.{method}", "\n".join(described))
 
     def test_describe_reports_arguments(self):
         line, lines = self.client.command("DESCRIBE csa", lambda l: l.startswith("EVT "), 3)

