@@ -31,6 +31,12 @@ namespace {
 const uint8_t kBroadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 const uint8_t kRates[8] = {0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24};
 
+// Module driver table (see deauth.h): filled once at boot by
+// attack_modules_register_defaults(), read by the sniffer, attack_step() and
+// attack_stop(). 12 slots is twice today's eight modules.
+const attack_module_t* s_modules[12];
+int s_module_count;
+
 struct ap_target_t {
     uint8_t bssid[6];
     uint8_t channel;
@@ -477,14 +483,11 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (sig_len <= sizeof(mac_hdr_t)) {
         return;
     }
-    csa_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
-    delba_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
-    wnm_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
-    tim_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
-    eapol_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
-    pspoll_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
-    sae_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
-    authflood_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+    for (int i = 0; i < s_module_count; i++) {
+        if (s_modules[i]->on_rx != nullptr) {
+            s_modules[i]->on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype);
+        }
+    }
 
     // CSA recognition: action frames (cat 4 / act 4) and beacons with IE 37.
     uint8_t cat = 0;
@@ -848,19 +851,43 @@ uint32_t attack_rx_delba() {
     return s_rx_delba;
 }
 
+// ---- module driver table ---------------------------------------------------
+
+bool attack_module_register(const attack_module_t* module) {
+    if (module == nullptr) return false;
+    if (s_module_count >= (int)(sizeof(s_modules) / sizeof(s_modules[0]))) return false;
+    s_modules[s_module_count++] = module;
+    return true;
+}
+
+int attack_module_count(void) { return s_module_count; }
+
+void attack_modules_register_defaults(void) {
+    // Same order the three flat chains used to be written in. Order matters for
+    // on-air behaviour: two modules listening to the same frame type may act on it.
+    static const attack_module_t kModules[] = {
+        {"csa", csa_step, csa_stop, csa_on_rx},
+        {"delba", delba_step, delba_stop, delba_on_rx},
+        {"wnm", wnm_step, wnm_stop, wnm_on_rx},
+        {"tim", tim_step, tim_stop, tim_on_rx},
+        {"eapol", eapol_step, eapol_stop, eapol_on_rx},
+        {"pspoll", pspoll_step, pspoll_stop, pspoll_on_rx},
+        {"sae", sae_step, sae_stop, sae_on_rx},
+        {"authflood", authflood_step, authflood_stop, authflood_on_rx},
+    };
+    for (const attack_module_t& module : kModules) {
+        attack_module_register(&module);
+    }
+}
+
 void attack_sniffer_enable() {
     start_promiscuous();
 }
 
 void attack_stop() {
-    csa_stop();
-    delba_stop();
-    wnm_stop();
-    tim_stop();
-    eapol_stop();
-    pspoll_stop();
-    sae_stop();
-    authflood_stop();
+    for (int i = 0; i < s_module_count; i++) {
+        if (s_modules[i]->stop != nullptr) s_modules[i]->stop();
+    }
     esp_wifi_set_promiscuous(false);
     deauth_active = false;
     s_mode = ATTACK_IDLE;
@@ -868,14 +895,9 @@ void attack_stop() {
 
 void attack_step() {
     const uint32_t now = millis();
-    csa_step();
-    delba_step();
-    wnm_step();
-    tim_step();
-    eapol_step();
-    pspoll_step();
-    sae_step();
-    authflood_step();
+    for (int i = 0; i < s_module_count; i++) {
+        if (s_modules[i]->step != nullptr) s_modules[i]->step();
+    }
 
     if (s_mon_active) {
         if (s_mon_channel == 0 && now - s_mon_last_hop > 150) {

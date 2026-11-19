@@ -59,6 +59,9 @@ void setup() {
 #endif
 
   init_serial_console();
+  // One table for every attack module: sniffer fan-out, attack_step() and
+  // attack_stop() all read it instead of naming the modules themselves.
+  attack_modules_register_defaults();
 
   // No SoftAP: the board must not advertise a BSSID, so it never sends beacons.
   WiFi.mode(WIFI_MODE_STA);

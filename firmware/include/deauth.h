@@ -44,6 +44,31 @@ uint32_t attack_rx_csa_ie(void);
 uint32_t attack_rx_addba(void);
 uint32_t attack_rx_delba(void);
 
+// ---- module driver table ----
+//
+// Every attack module is one row here instead of being named in three hand-written
+// chains: the promiscuous fan-out, attack_step() and attack_stop(). The table order
+// is the old call order, so registering in the same order changes nothing on air;
+// adding a module is one row and no edit to deauth.cpp's hot paths.
+//
+// `step` runs from the main loop, `on_rx` runs inside the promiscuous callback (it
+// must not block and must not print), `stop` is called by STOP and by every attack
+// that needs the radio to itself.
+typedef void (*attack_rx_sink_t)(const uint8_t* frame, uint16_t len, uint8_t type,
+                                 uint8_t subtype);
+
+typedef struct {
+    const char* name;
+    void (*step)(void);      // may be NULL
+    void (*stop)(void);      // may be NULL
+    attack_rx_sink_t on_rx;  // may be NULL
+} attack_module_t;
+
+bool attack_module_register(const attack_module_t* module);
+int attack_module_count(void);
+// Registers the eight frame-level modules in their historical order.
+void attack_modules_register_defaults(void);
+
 // Installs the promiscuous filter + receive callback (idempotent). Modules that
 // only need to *listen* (CSA, DELBA) must call this before turning promiscuous
 // mode on themselves: without the callback the radio receives nothing, which
