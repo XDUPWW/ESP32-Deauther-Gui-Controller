@@ -135,6 +135,9 @@ void wbus_emit(const char* topic, const char* kv);
 const wb_value_t* wb_arg(const wb_args_t* args, const char* name);
 long wb_arg_num(const wb_args_t* args, const char* name);
 bool wb_arg_mac(const wb_args_t* args, const char* name, uint8_t out[6]);
+// Parses "AA:BB:CC:DD:EE:FF", "AA-BB-.." or "AABBCCDDEEFF". Exposed because a few
+// handlers classify free-form tokens (PSPOLL's [sta-mac] slot) themselves.
+bool wb_parse_mac(const char* token, uint8_t out[6]);
 void wb_reply_line(wb_reply_t* reply, const char* text);
 void wb_reply_printf(wb_reply_t* reply, const char* fmt, ...);
 

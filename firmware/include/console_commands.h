@@ -14,6 +14,9 @@
 // Number of APs from the last SCAN (the index space every attack command uses).
 int console_scan_count(void);
 
+// The legacy "1,3,5" index list parser, shared with DEAUTH_ONLY / DEAUTH_EXCEPT.
+int console_parse_index_list(char* text, int* out, int max);
+
 // Applies an already policy-checked reason argument ("random" or 1..65535).
 // Returns false when the value was rejected (the ERR/INFO line is already printed).
 bool console_apply_reason(const wb_value_t* value, uint16_t* out_value);

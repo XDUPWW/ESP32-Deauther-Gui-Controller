@@ -430,6 +430,8 @@ bool wb_arg_mac(const wb_args_t* args, const char* name, uint8_t out[6]) {
     return true;
 }
 
+bool wb_parse_mac(const char* token, uint8_t out[6]) { return parse_mac_token(token, out); }
+
 void wb_reply_line(wb_reply_t* reply, const char* text) {
     if (text == nullptr) return;
     char buffer[200];

