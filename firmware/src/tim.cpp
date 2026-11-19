@@ -26,6 +26,7 @@
 //     (capability, status, AID at offset 28..29, masked to 14 bits).
 
 #include "tim.h"
+#include "radio.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -269,7 +270,7 @@ bool tim_start(int index, tim_mode_t mode, uint16_t aid) {
     s_beacon_interval = 0;
     s_dtim_period = 0;
 
-    esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("tim", s_channel);
     // The clone is worthless without the target's beacon parameters and the
     // victims' AIDs, and both come from the sniffer.
     attack_sniffer_enable();

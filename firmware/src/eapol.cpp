@@ -19,6 +19,7 @@
 //     it noticed the logoff and re-authenticated.
 
 #include "eapol.h"
+#include "radio.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -139,7 +140,7 @@ bool eapol_start(int index, int8_t qos_tid) {
     s_last_tx_ms = 0;
     s_cursor = 0;
 
-    esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("eapol", s_channel);
     attack_sniffer_enable();
     return true;
 }

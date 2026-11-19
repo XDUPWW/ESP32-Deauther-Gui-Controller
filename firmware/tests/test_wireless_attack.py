@@ -354,8 +354,9 @@ class FirmwareFunctionalTests(unittest.TestCase):
         self.client.send("SCAN")
         line, _ = self.client.command("", lambda l: l.startswith("SCAN_END"), 40)
         self.assertIsNotNone(line, "扫描超时")
-        ok, _ = self.client.command("DELBA 0 37", lambda l: l.startswith("OK DELBA"), 5)
-        self.assertIsNotNone(ok, "DELBA 启动失败")
+        ok, delba_lines = self.client.command("DELBA 0 37",
+                                             lambda l: l.startswith("OK DELBA"), 5)
+        self.assertIsNotNone(ok, f"DELBA 启动失败: {delba_lines[-3:]}")
         time.sleep(2.0)
         status, _ = self.client.command("STATUS", lambda l: l.startswith("STATUS "), 5)
         info = protocol.parse_status(status)
@@ -527,6 +528,16 @@ class FirmwareFunctionalTests(unittest.TestCase):
 
     # ---- wbus：已迁移到总线的命令（TODO.md 第 5 节 P1）----------------------
 
+    def _scan_and_require_ap0(self):
+        """SCAN 并确认 NET 0 存在；空扫描时跳过而不是误报成"命令没回 OK"。
+
+        本机环境的扫描偶发一个 AP 都扫不到（AGENTS §8 记录的现象），那条路径下
+        idx 0 本来就该报越界，与命令迁移无关。
+        """
+        _, lines = self.client.command("SCAN", lambda l: l.startswith("SCAN_END"), 25)
+        self.assertTrue(any(l.startswith("NET 0 ") for l in lines),
+                        "本次 SCAN 没有扫到任何 AP")
+
     def test_wbus_lists_migrated_objects(self):
         line, lines = self.client.command("WBUS", lambda l: l.startswith("WBUS csa"), 3)
         self.assertIsNotNone(line, "WBUS 未列出 csa")
@@ -562,7 +573,7 @@ class FirmwareFunctionalTests(unittest.TestCase):
 
     def test_legacy_leniency_survives_the_migration(self):
         # 迁移前就接受（且不报错）的写法，迁移后必须继续接受，否则脚本会断。
-        self.client.command("SCAN", lambda l: l.startswith("SCAN_END"), 25)
+        self._scan_and_require_ap0()
         line, _ = self.client.command("CSA 0 auto 99", lambda l: l.startswith("OK CSA"), 3)
         self.assertIsNotNone(line, "auto 模式仍应忽略 count 参数")
         self.assertIn("count=5", line)
@@ -571,7 +582,7 @@ class FirmwareFunctionalTests(unittest.TestCase):
         self.assertEqual(line, "ERR index out of range, run SCAN first")
 
     def test_events_are_opt_in(self):
-        self.client.command("SCAN", lambda l: l.startswith("SCAN_END"), 25)
+        self._scan_and_require_ap0()
         line, _ = self.client.command("EVTSUB deauth.*", lambda l: l.startswith("OK EVTSUB"), 3)
         self.assertIsNotNone(line, "EVTSUB 未确认")
         self.client.send("DEAUTH 0")

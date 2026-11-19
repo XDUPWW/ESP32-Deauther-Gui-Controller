@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "authflood.h"
+#include "radio.h"
 #include "csa.h"
 #include "deauth.h"
 #include "definitions.h"
@@ -12,6 +13,7 @@
 #include "pspoll.h"
 #include "sae.h"
 #include "tim.h"
+#include "tx_guard.h"
 #include "types.h"
 #include "wnm.h"
 
@@ -347,7 +349,10 @@ uint16_t next_reason(void) {
 
 // Returns true when the driver accepted the frame.
 bool tx_raw(uint8_t* frame, size_t len) {
-    const esp_err_t res = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    // The burst policy: no pacing (attack_step() schedules the 2 unicast + 1
+    // broadcast bundle) and 0x101 only backs off, because a reboot here would throw
+    // away the scan table and station list mid-attack.
+    const esp_err_t res = tx_guard_send_as(&kTxPolicyBurst, frame, (uint16_t)len);
     if (res != ESP_OK) {
         s_tx_err++;
         s_tx_last_err = (int)res;
@@ -695,7 +700,7 @@ void prepare_radio_for_scan() {
 
 uint8_t sweep_next_channel() {
     s_probe_channel = (s_probe_channel % CHANNEL_MAX) + 1;
-    esp_wifi_set_channel(s_probe_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("deauth", s_probe_channel);
     return s_probe_channel;
 }
 
@@ -719,7 +724,7 @@ bool attack_deauth_single(int index, uint16_t reason) {
     apply_band_mode();
     apply_country(channel, false);
     radio_to_sta();
-    esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("deauth", channel);
     start_promiscuous();
     deauth_active = true;
     return true;
@@ -786,7 +791,7 @@ bool attack_probe_broadcast() {
     apply_band_mode();
     apply_country(CHANNEL_MAX, true);
     radio_to_sta();
-    esp_wifi_set_channel(next_probe_channel(), WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("deauth", next_probe_channel());
     deauth_active = true;
     return true;
 }
@@ -805,7 +810,7 @@ void monitor_begin(uint8_t channel, uint16_t seconds) {
     if (channel != 0) {
         apply_country(channel, false);
         radio_to_sta();
-        esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
+        radio_set_channel("deauth", channel);
     } else {
         apply_country(CHANNEL_MAX, true);
         radio_to_sta();
@@ -876,7 +881,7 @@ void attack_step() {
         if (s_mon_channel == 0 && now - s_mon_last_hop > 150) {
             s_mon_last_hop = now;
             s_mon_hop = (s_mon_hop % CHANNEL_MAX) + 1;
-            esp_wifi_set_channel(s_mon_hop, WIFI_SECOND_CHAN_NONE);
+            radio_set_channel("deauth", s_mon_hop);
         }
         if ((int32_t)(now - s_mon_until) >= 0) {
             s_mon_active = false;
@@ -889,7 +894,7 @@ void attack_step() {
         if (now - s_sta_scan_last_hop > 150) {
             s_sta_scan_last_hop = now;
             s_sta_scan_channel = (s_sta_scan_channel % CHANNEL_MAX) + 1;
-            esp_wifi_set_channel(s_sta_scan_channel, WIFI_SECOND_CHAN_NONE);
+            radio_set_channel("deauth", s_sta_scan_channel);
         }
         if (now > s_sta_scan_deadline) {
             s_sta_scan_active = false;
@@ -941,7 +946,7 @@ void attack_step() {
             for (int tries = 0; tries < s_ap_count; tries++) {
                 s_ap_cursor = (s_ap_cursor + 1) % s_ap_count;
                 if (s_aps[s_ap_cursor].enabled) {
-                    esp_wifi_set_channel(s_aps[s_ap_cursor].channel, WIFI_SECOND_CHAN_NONE);
+                    radio_set_channel("deauth", s_aps[s_ap_cursor].channel);
                     break;
                 }
             }
@@ -952,7 +957,7 @@ void attack_step() {
     if (s_mode == ATTACK_PROBE_BROADCAST) {
         if (now - s_last_channel_hop > 120) {
             s_last_channel_hop = now;
-            esp_wifi_set_channel(next_probe_channel(), WIFI_SECOND_CHAN_NONE);
+            radio_set_channel("deauth", next_probe_channel());
         }
         if (now - s_last_probe >= 4) {
             s_last_probe = now;
@@ -1164,7 +1169,7 @@ void stations_begin(uint16_t seconds) {
     apply_band_mode();
     apply_country(CHANNEL_MAX, true);
     radio_to_sta();
-    esp_wifi_set_channel(s_sta_scan_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("deauth", s_sta_scan_channel);
     start_promiscuous();
 }
 

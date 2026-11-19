@@ -29,6 +29,7 @@
 //     the TIDs already observed keeps aggregation off.
 
 #include "delba.h"
+#include "radio.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -36,6 +37,7 @@
 #include <string.h>
 
 #include "deauth.h"
+#include "tx_guard.h"
 
 namespace {
 
@@ -159,7 +161,7 @@ size_t build_delba(uint8_t* frame, const uint8_t da[6], const uint8_t sa[6],
 }
 
 bool tx(uint8_t* frame, size_t len) {
-    if (esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false) != ESP_OK) {
+    if (tx_guard_send_as(&kTxPolicyBurst, frame, (uint16_t)len) != ESP_OK) {
         return false;
     }
     s_frames++;
@@ -286,7 +288,7 @@ size_t build_bar(uint8_t* frame, const uint8_t ra[6], const uint8_t ta[6], uint8
 }
 
 bool ba_tx(uint8_t* frame, size_t len, uint32_t* counter) {
-    const esp_err_t err = esp_wifi_80211_tx(WIFI_IF_STA, frame, len, false);
+    const esp_err_t err = tx_guard_send_as(&kTxPolicyBurst, frame, (uint16_t)len);
     if (err != ESP_OK) {
         s_ba_errors++;
         s_ba_last_error = (int32_t)err;
@@ -400,7 +402,7 @@ bool delba_start(int index, uint16_t reason) {
     s_pending_tail = 0;
     s_last_ms = millis();
 
-    esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("delba", s_channel);
     // The receive callback is what makes the ADDBA-triggered path possible: with
     // promiscuous mode on but no callback the radio hears nothing and the attack
     // silently degrades to blind group-addressed DELBA.

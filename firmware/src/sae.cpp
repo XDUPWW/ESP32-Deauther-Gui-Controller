@@ -23,6 +23,7 @@
 //     chip, see tx_guard.h).
 
 #include "sae.h"
+#include "radio.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -273,7 +274,7 @@ bool sae_start(int index, sae_element_t element, uint32_t gap_ms) {
     s_id_cursor = 0;
     s_last_tx_ms = millis() - s_gap_ms;
 
-    esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("sae", s_channel);
     // The sniffer is what turns the AP's status-76 answers into echoed commits.
     attack_sniffer_enable();
     return true;

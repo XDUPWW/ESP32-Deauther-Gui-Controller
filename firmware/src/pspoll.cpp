@@ -47,6 +47,7 @@
 // the AP.
 
 #include "pspoll.h"
+#include "radio.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -211,7 +212,7 @@ bool pspoll_start(int index, pspoll_frame_t frame) {
     // refused change means the frames go out on whatever channel the scan stopped
     // on -- silently attacking the wrong network. The verdict is therefore reported
     // by the CLI instead of being dropped on the floor.
-    s_chan_err = (int32_t)esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+    s_chan_err = (int32_t)radio_set_channel("pspoll", s_channel);
     // Victims come from the sniffer, and so does `pspdl`.
     attack_sniffer_enable();
     return true;

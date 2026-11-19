@@ -16,6 +16,7 @@
 #include "delba.h"
 #include "eapol.h"
 #include "pspoll.h"
+#include "radio.h"
 #include "sae.h"
 #include "tim.h"
 #include "tx_guard.h"
@@ -665,9 +666,12 @@ void do_radio() {
   const esp_err_t e2 = esp_wifi_get_promiscuous_filter(&type_filter);
   const esp_err_t e3 = esp_wifi_get_promiscuous_ctrl_filter(&ctrl_filter);
   esp_wifi_get_channel(&prim, &sec);
-  Serial.printf("RADIO promisc=%u(%d) filter=0x%08X(%d) ctrl_filter=0x%08X(%d) ch=%u\n",
+  // owner/rtake come from the arbiter (radio.cpp): when two attacks run at once the
+  // channel belongs to whoever claimed it last, and that used to be invisible.
+  Serial.printf("RADIO promisc=%u(%d) filter=0x%08X(%d) ctrl_filter=0x%08X(%d) ch=%u owner=%s rtake=%u\n",
                 (unsigned)(promisc ? 1 : 0), (int)e1, (unsigned)type_filter.filter_mask, (int)e2,
-                (unsigned)ctrl_filter.filter_mask, (int)e3, (unsigned)prim);
+                (unsigned)ctrl_filter.filter_mask, (int)e3, (unsigned)prim,
+                radio_owner()[0] != 0 ? radio_owner() : "none", (unsigned)radio_takeovers());
 }
 
 // DELBA <idx> [reason]: tear down the Block Ack sessions of that BSS. Needs the

@@ -17,6 +17,7 @@
 //     channel within seconds and nothing is achieved.
 
 #include "csa.h"
+#include "radio.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -294,7 +295,7 @@ bool csa_start(int index, uint8_t new_channel, uint8_t start_count, uint16_t hol
     s_hold_ms = hold_ms < 100 ? 100 : hold_ms;
     s_hold_until = millis() + s_hold_ms;
 
-    esp_wifi_set_channel(s_ap_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("csa", s_ap_channel);
     // Same reason as DELBA: without the receive callback the HOLD phase never
     // sees the client's auth/assoc requests.
     attack_sniffer_enable();
@@ -323,7 +324,7 @@ void csa_step(void) {
             s_count--;
             return;
         }
-        esp_wifi_set_channel(s_new_channel, WIFI_SECOND_CHAN_NONE);
+        radio_set_channel("csa", s_new_channel);
         s_phase = CSA_HOLD;
         s_hold_until = millis() + s_hold_ms;
         s_cycles++;
@@ -346,7 +347,7 @@ void csa_step(void) {
                 s_new_channel = pick_opposite_band_channel();
             }
             s_count = s_count_start;
-            esp_wifi_set_channel(s_ap_channel, WIFI_SECOND_CHAN_NONE);
+            radio_set_channel("csa", s_ap_channel);
             s_last_tick = now - 100;  // fire the first round immediately
             s_phase = CSA_ANNOUNCE;
         }

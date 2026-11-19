@@ -31,6 +31,7 @@
 //     skipped instead of being flooded for nothing.
 
 #include "wnm.h"
+#include "radio.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -235,7 +236,7 @@ bool wnm_start(int index, wnm_mode_t mode, uint16_t disassoc_timer, uint8_t cand
     s_last_status = 0;
     s_last_tx_ms = 0;
 
-    esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("wnm", s_channel);
     // Without the receive callback the capability learning never sees a client
     // and every request would go out blind.
     attack_sniffer_enable();

@@ -22,6 +22,7 @@
 //     our forged identities.
 
 #include "authflood.h"
+#include "radio.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -170,7 +171,7 @@ bool authflood_start(int index, authflood_mode_t mode, bool auto_upgrade) {
     random_identity();
     s_last_tx_ms = millis() - kGapMs;
 
-    esp_wifi_set_channel(s_channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("authflood", s_channel);
     attack_sniffer_enable();
     return true;
 }

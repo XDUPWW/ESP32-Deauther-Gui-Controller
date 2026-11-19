@@ -8,8 +8,7 @@
 extern "C" {
 #endif
 
-// Injection guard shared by the 802.11v / TIM-TSF / EAPOL / SAE / auth-flood
-// modules.
+// Injection guard shared by every module that injects raw frames.
 //
 // The driver hands out a fixed pool of short (management + control) frames --
 // 32 in the measurements of 测试报告 §4.3. When it is exhausted
@@ -52,29 +51,56 @@ extern "C" {
 // esp_wifi_register_80211_tx_cb() for injected frames, and the capture pipe drops
 // frames, so the curve above is the evidence, not a stopwatch.)
 //
-// Rule for the modules: every unicast frame is paced by kUnicastGapMs and the
-// governor below refuses anything faster, so no module (and no operator-supplied
-// argument) can push the radio over 20 frames/s. Broadcast frames are exempt.
-//
-// Firmware rule for these modules: the *first* 0x101 restarts the chip. The
-// reset is the recovery, so the doomed run makes no further WiFi call after it.
-// The refusal is printed as a FATAL line before esp_restart() so the operator
-// sees why the board rebooted instead of guessing.
-//
 // The pool diagnostics that exist to measure that limit on purpose (BARSEQ, the
 // NAV-era NAVSEQ) deliberately stay outside this guard: restarting there would
 // destroy the very measurement they exist for.
+//
+// ---- pacing and 0x101 are now policy, not per-module folklore ----------------
+//
+// Every injection path calls tx_guard_send_as() with a policy, so there is exactly
+// one place that decides "too fast, drop this tick" and exactly one place that
+// decides what a full pool means. The modules differ only in the data below, and
+// the difference is real: a burst of two unicast deauth frames plus one broadcast
+// cannot be paced at 33 ms, and the BA sequence (DELBA -> ADDBA -> BAR) is
+// deliberately back to back.
 
+typedef enum {
+    // Count the refusal and let the caller retry on its next tick. Used where the
+    // module owns a natural retry cadence and a reboot would throw away its state
+    // (deauth's scan table, BA's sequence numbers).
+    TX_ON_NOMEM_BACKOFF = 0,
+    // Print FATAL and esp_restart(): the frame-level flood modules, whose whole
+    // run is disposable and whose pool is a hard wall.
+    TX_ON_NOMEM_RESTART,
+} tx_nomem_action_t;
+
+typedef struct {
+    const char* name;        // shown by RADIO / DESCRIBE
+    uint16_t min_gap_ms;     // 0 = the caller paces itself (burst sequences)
+    tx_nomem_action_t on_nomem;
+} tx_policy_t;
+
+// 45 ms between unicast frames, restart on 0x101: the six frame-level modules
+// (WNM / TIM / EAPOL / PSPOLL / SAE / AUTHFLOOD) plus CSA. This is the ~20 fps
+// ceiling from the measurements above.
+extern const tx_policy_t kTxPolicyGuard;
+
+// No pacing, back off on 0x101: deauth (its pacing lives in attack_step() --
+// a gap here would silently drop the second frame of every unicast pair) and the
+// DELBA/BA sequence (the 40 ms tick is what produced the -99% throughput result,
+// and DELBA/ADDBA/BAR are sent back to back inside one tick).
+extern const tx_policy_t kTxPolicyBurst;
+
+esp_err_t tx_guard_send_as(const tx_policy_t* policy, uint8_t* frame, uint16_t len);
+
+// Convenience wrapper for the guard policy. Callers treat any non-OK result as
+// "nothing was sent this tick" and retry on their next tick, which is exactly what
+// a flood loop wants; a policy that throttles returns ESP_ERR_INVALID_STATE without
+// touching the driver and counts it as "throttled" (not as an error). Broadcast
+// frames (group RA) are never throttled in the guard policy: they need no ACK, so
+// their buffer comes back immediately and they cannot fill the pool.
 esp_err_t tx_guard_send(uint8_t* frame, uint16_t len);
 
-// Unicast frames are paced: when the previous one went out less than
-// kUnicastGapMs ago, tx_guard_send() returns ESP_ERR_INVALID_STATE *without*
-// touching the driver and counts it as "throttled" (not as an error). Broadcast
-// frames (group RA) are never throttled: they need no ACK, so their buffer is
-// returned immediately and they cannot fill the pool.
-//
-// Callers treat any non-OK result as "nothing was sent this tick" and retry on
-// their next tick, which is exactly what a flood loop wants.
 #define TX_GUARD_UNICAST_GAP_MS 45
 
 // Frames refused by the governor so far (never reached the driver).

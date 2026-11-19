@@ -1,4 +1,5 @@
 #include "evil_twin.h"
+#include "radio.h"
 #include "deauth.h"
 #include "definitions.h"
 #include <SPIFFS.h>
@@ -48,7 +49,7 @@ void start_evil_twin_attack(int network_index) {
     
     // Clona SSID e canal (sem senha para captive portal)
     WiFi.softAP(target_network.ssid, "", target_network.channel);
-    esp_wifi_set_channel(target_network.channel, WIFI_SECOND_CHAN_NONE);
+    radio_set_channel("evil", target_network.channel);
     
     // 6. Inicia captive portal
     start_captive_portal();

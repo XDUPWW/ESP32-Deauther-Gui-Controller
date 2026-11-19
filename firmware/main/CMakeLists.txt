@@ -9,6 +9,7 @@ set(SRCS
     "../src/delba.cpp"
     "../src/storage.cpp"
     "../src/tx_guard.cpp"
+    "../src/radio.cpp"
     "../src/ie_util.cpp"
     "../src/wnm.cpp"
     "../src/tim.cpp"
