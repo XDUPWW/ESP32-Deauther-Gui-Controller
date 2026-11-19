@@ -146,7 +146,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()          └→ 计�
 | `pspoll.cpp` | 电源管理（PM 位）欺骗：伪造 PM=1 的帧让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；三种承载帧 `null`/`qosnull`（默认）/`action`；`pspoll_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
 | `tx_guard.cpp` | 统一注入入口 + 策略：`kTxPolicyGuard`（45 ms、首个 `0x101` 重启）/ `kTxPolicyBurst`（不节拍、`0x101` 退避），并集中记录 ok/err/throttled |
 | `radio.cpp` | 信道仲裁：`radio_set_channel(owner, ch)` 记录 owner，两个 owner 在 2 s 内抢同一信道时打 `WARN radio:`；`RADIO` 的 `owner=`/`rtake=` 来自这里 |
-| `bus_objects.cpp` | wbus 对象表：`deauth` / `csa` 的参数策略、handler、事件（handler 从 `serial_console.cpp` 原样搬来，回执字节不变） |
+| `bus_objects.cpp` | wbus 对象表：`deauth` / `csa` / `delba` / `ba` 的参数策略、handler、事件（handler 从 `serial_console.cpp` 原样搬来，回执字节不变） |
 | `include/console_commands.h` | 总线与控制台的桥：`console_scan_count()`、`console_apply_reason()`、`console_ui_log()`、`wbus_register_all()` |
 | `components/wbus/` | 迷你 ubus：对象注册表、`wb_arg_spec_t` 参数策略、`wb_reply_t` 注入式输出、`EVT` 事件订阅。纯 C++，不依赖 Arduino/esp_* |
 | `ie_util.cpp` | IE 遍历、RSN AKM（SAE/PSK）、MFPR、Extended Capabilities bit19 判定 |

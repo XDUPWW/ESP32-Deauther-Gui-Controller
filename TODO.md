@@ -185,8 +185,10 @@ PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3
 `0 differ`，只有这时才允许删掉旧的 `strcmp` 分支。
 
 - [x] 底板：`tx_policy` / `radio_set_channel` / `attack_module_t` 驱动表 / wbus 注册表
-- [ ] `delba` + `ba` 对象（`start` / `stop` / `test`，`attack` / `plant` / `push` / `tx`）——下一批，
-      它们共用 `delba.cpp`，一起搬
+- [x] `delba` + `ba` 对象（`start` / `stop` / `test`，`attack` / `plant` / `push` / `tx`）：
+      9 条旧命令（`DELBA` / `DELBASTOP` / `DELBATEST` / `BAATTACK` / `BAPLANT` / `BARPUSH` / `BATX` /
+      `BASTOP` / `BATEST`）走别名表，回执 89 条命令零差异；新增 `WB_F_JUNK_ZERO` 标志专门保留
+      `BARPUSH 0 abc` → `step=0` 这条旧行为（strtol 语义）
 - [ ] `wnm`、`tim`、`eapol`、`sae`、`authflood`、`pspoll` 六个对象
       （`pspoll` 的 `[sta-mac] [null|qosnull|action]` 三个自由位置需要按内容分派，单独处理）
 - [ ] `radio` 对象（`status` / `channel`），把 `RADIO` 命令也收进总线
