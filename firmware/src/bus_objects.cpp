@@ -286,9 +286,12 @@ wb_err_t delba_bus_start(const wb_args_t* args, wb_reply_t* reply) {
     wb_reply_line(reply, "ERR usage: DELBA <idx> [reason]");
     return WB_ERR_ARG;
   }
-  // Cast like the legacy path did: 70000 wraps to 4464 and is then rejected by
-  // delba_reason_is_defined(), not by the parser.
-  const uint16_t reason = (uint16_t)wb_arg_num(args, "reason");
+  const long reason_value = wb_arg_num(args, "reason");
+  if (reason_value < 0 || reason_value > 65535) {
+    wb_reply_line(reply, "ERR reason must be one of 1, 32, 37, 38, 39");
+    return WB_ERR_ARG;
+  }
+  const uint16_t reason = (uint16_t)reason_value;
   if (index >= console_scan_count()) {
     wb_reply_line(reply, "ERR index out of range, run SCAN first");
     return WB_ERR_ARG;
@@ -335,10 +338,8 @@ const wb_method_t kDelbaMethods[] = {
 
 // ---- BA session hijack ------------------------------------------------------
 
-// `step` is deliberately not range-checked by the policy: the legacy commands
-// checked the index first and the step second, and the error text differs between
-// BAATTACK and the plant/push pair. WB_F_JUNK_ZERO keeps `BARPUSH 0 abc` meaning
-// step 0, exactly as strtol() used to.
+// `step` is validated by the handler (0..2047, 0..127 = control run) so the two
+// variants can keep their own wording.
 
 const wb_arg_spec_t kBaAttackArgs[] = {
     {.name = "idx",
@@ -352,7 +353,7 @@ const wb_arg_spec_t kBaAttackArgs[] = {
      .max = 0},
     {.name = "step",
      .type = WB_T_INT,
-     .flags = WB_F_JUNK_ZERO,
+     .flags = 0,
      .enums = nullptr,
      .label = "window offset 0..2047 (0..127 = control run)",
      .err = nullptr,
@@ -373,7 +374,7 @@ const wb_arg_spec_t kBaPlantArgs[] = {
      .max = 0},
     {.name = "step",
      .type = WB_T_INT,
-     .flags = WB_F_JUNK_ZERO,
+     .flags = 0,
      .enums = nullptr,
      .label = "window offset 0..2047 (0..127 = control run)",
      .err = nullptr,
@@ -394,7 +395,7 @@ const wb_arg_spec_t kBaPushArgs[] = {
      .max = 0},
     {.name = "step",
      .type = WB_T_INT,
-     .flags = WB_F_JUNK_ZERO,
+     .flags = 0,
      .enums = nullptr,
      .label = "window offset 0..2047 (0..127 = control run)",
      .err = nullptr,
@@ -525,9 +526,9 @@ const wb_method_t kBaMethods[] = {
 
 // ---- shared helpers ---------------------------------------------------------
 
-// The bus parses values, but a few legacy tokens are "any word, compared
-// case-insensitively" (noauto, poll/both, frame shapes). Keeping the helper here
-// avoids exporting str_ieq from the component.
+// The bus parses values, but PSPOLL's frame-shape words are free-form tokens that
+// need a case-insensitive compare. Keeping the helper here avoids exporting
+// str_ieq from the component.
 bool token_eq(const char* a, const char* b) {
   if (a == nullptr || b == nullptr) return false;
   while (*a != 0 && *b != 0) {
@@ -553,10 +554,10 @@ const wb_arg_spec_t kWnmStartArgs[] = {
      .err = "mode must be 'cand' (candidate list) or 'bare'", .def = 0, .min = 0, .max = 0},
     // timer/ch are JUNK_ZERO so that "abc" behaves like strtol's 0 and the handler's
     // own check (with its own wording) still runs after the index check.
-    {.name = "timer", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+    {.name = "timer", .type = WB_T_INT, .flags = 0, .enums = nullptr,
      .label = "disassociation timer in TBTT (1..65535)", .err = nullptr, .def = 10, .min = 0,
      .max = 0},
-    {.name = "ch", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+    {.name = "ch", .type = WB_T_INT, .flags = 0, .enums = nullptr,
      .label = "candidate channel 0..196 (0 = pick one)", .err = nullptr, .def = 0, .min = 0,
      .max = 0},
     {.name = "sta", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
@@ -637,7 +638,7 @@ const wb_arg_spec_t kTimStartArgs[] = {
     {.name = "mode", .type = WB_T_ENUM, .flags = 0, .enums = "tim|clear",
      .label = "tim = set the AID bit(s), clear = empty the bitmap",
      .err = "mode must be tim|clear", .def = 0, .min = 0, .max = 0},
-    {.name = "aid", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+    {.name = "aid", .type = WB_T_INT, .flags = 0, .enums = nullptr,
      .label = "AID 0..255 (0 = every learned AID)", .err = nullptr, .def = 0, .min = 0, .max = 0},
 };
 
@@ -696,7 +697,7 @@ const wb_method_t kTimMethods[] = {
 const wb_arg_spec_t kEapolStartArgs[] = {
     {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
      .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
-    {.name = "tid", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+    {.name = "tid", .type = WB_T_INT, .flags = 0, .enums = nullptr,
      .label = "QoS TID -1..7 (-1 = plain data frames only)", .err = nullptr, .def = 6, .min = 0,
      .max = 0},
     {.name = "sta", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
@@ -794,11 +795,6 @@ wb_err_t pspoll_bus_start(const wb_args_t* args, wb_reply_t* reply) {
     } else if (wb_parse_mac(token, sta)) {
       // Tested before any numeric branch: "02AABBCCDDEE" starts with a digit.
       have_sta = true;
-    } else if (token_eq(token, "poll") || token_eq(token, "both")) {
-      wb_reply_line(reply,
-                    "ERR poll/both are gone: a unicast PS-Poll never leaves this MAC"
-                    " (CTRLTEST 10 bssid 0xC025 -> 0/10 on the air).");
-      return WB_ERR_ARG;
     } else {
       wb_reply_printf(reply,
                       "ERR unknown PSPOLL argument '%s' (usage: PSPOLL <idx> [sta-mac]"
@@ -882,7 +878,7 @@ const wb_arg_spec_t kSaeStartArgs[] = {
     {.name = "elem", .type = WB_T_ENUM, .flags = 0, .enums = "point|rand",
      .label = "point = real P-256 generator, rand = garbage control",
      .err = "element must be 'point' (P-256 generator) or 'rand'", .def = 0, .min = 0, .max = 0},
-    {.name = "gap", .type = WB_T_INT, .flags = WB_F_JUNK_ZERO, .enums = nullptr,
+    {.name = "gap", .type = WB_T_INT, .flags = 0, .enums = nullptr,
      .label = "gap between commits in ms (0..1000)", .err = nullptr, .def = 0, .min = 0, .max = 0},
 };
 
@@ -954,10 +950,9 @@ const wb_arg_spec_t kAuthfloodStartArgs[] = {
     {.name = "mode", .type = WB_T_ENUM, .flags = 0, .enums = "both|auth|assoc",
      .label = "which frames to flood", .err = "mode must be both|auth|assoc", .def = 0, .min = 0,
      .max = 0},
-    // Free-form, not enum: any token other than "noauto" means "auto upgrade on".
-    {.name = "noauto", .type = WB_T_STR, .flags = 0, .enums = nullptr,
-     .label = "pass 'noauto' to keep a WPA3 AP on auth/assoc only", .err = nullptr, .def = 0,
-     .min = 0, .max = 0},
+    {.name = "noauto", .type = WB_T_ENUM, .flags = 0, .enums = "noauto",
+     .label = "pass 'noauto' to keep a WPA3 AP on auth/assoc only",
+     .err = "noauto accepts only the literal 'noauto'", .def = 0, .min = 0, .max = 0},
 };
 
 wb_err_t authflood_bus_start(const wb_args_t* args, wb_reply_t* reply) {
@@ -973,8 +968,7 @@ wb_err_t authflood_bus_start(const wb_args_t* args, wb_reply_t* reply) {
     else if (strcmp(mode_arg->text, "assoc") == 0) mode = AUTHFLOOD_ASSOC_ONLY;
   }
   const wb_value_t* noauto = wb_arg(args, "noauto");
-  const bool auto_upgrade =
-      !(noauto != nullptr && noauto->present && token_eq(noauto->text, "noauto"));
+  const bool auto_upgrade = !(noauto != nullptr && noauto->present);
   attack_stop();
   if (!authflood_start(index, mode, auto_upgrade)) {
     wb_reply_line(reply, "ERR cannot start the auth flood on that network");

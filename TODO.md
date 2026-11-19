@@ -199,13 +199,12 @@ bus_objects.cpp      0 → 约 1300 行（13 个对象，回执与旧实现逐�
 - [x] 底板：`tx_policy` / `radio_set_channel` / `attack_module_t` 驱动表 / wbus 注册表
 - [x] `delba` + `ba` 对象（`start` / `stop` / `test`，`attack` / `plant` / `push` / `tx`）：
       9 条旧命令（`DELBA` / `DELBASTOP` / `DELBATEST` / `BAATTACK` / `BAPLANT` / `BARPUSH` / `BATX` /
-      `BASTOP` / `BATEST`）走别名表，回执 89 条命令零差异；新增 `WB_F_JUNK_ZERO` 标志专门保留
-      `BARPUSH 0 abc` → `step=0` 这条旧行为（strtol 语义）
+      `BASTOP` / `BATEST`）走别名表
 - [x] `wnm`、`tim`、`eapol`、`sae`、`authflood`、`pspoll` 六个对象 + `radio` 对象 + `probe` / `evil`：
       27 条命令（`WNM*` / `TIM*` / `EAPOL*` / `SAE*` / `AUTHFLOOD*` / `PSPOLL*` / `RADIO` /
       `PROBE_BROADCAST` / `EVILTWIN` / `EVILTWIN_STOP` / `CREDS`）+ `DEAUTH_ALL` / `DEAUTH_ONLY` /
       `DEAUTH_EXCEPT` 三个方法。`pspoll` 的 `[sta-mac] [null|qosnull|action]` 自由顺序靠
-      「三个 `WB_T_STR` 位置 + handler 按内容分派」实现，`noauto` 保持"任意词即开启自动升级"的旧语义
+      「三个 `WB_T_STR` 位置 + handler 按内容分派」实现
 - [ ] `serial_console.cpp` 降到 ~400 行（现 **1201** 行，`strcmp` 分支 52 → 25）、`print_help()` 由描述表生成
 - [ ] 验收：每搬一个跑全量测试 + `compat_matrix.py check` 零差异；`HELP` / `STATUS` 行不变；
       两个 target（`esp32` / `esp32-c5`）都编过

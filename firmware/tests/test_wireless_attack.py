@@ -578,8 +578,9 @@ class FirmwareFunctionalTests(unittest.TestCase):
         line, _ = self.client.command("CALL csa.start idx=0 ch=999", lambda l: l.startswith("ERR "), 3)
         self.assertEqual(line, "ERR new channel must be 1..14 or 36..196")
 
-    def test_legacy_leniency_survives_the_migration(self):
-        # 迁移前就接受（且不报错）的写法，迁移后必须继续接受，否则脚本会断。
+    def test_strict_parsing_keeps_the_same_messages(self):
+        # 参数现在严格解析（非数字一律报错），但报错文案仍是原来那一句，
+        # 所以脚本的匹配规则不用改。
         self._scan_and_require_ap0()
         line, _ = self.client.command("CSA 0 auto 99", lambda l: l.startswith("OK CSA"), 3)
         self.assertIsNotNone(line, "auto 模式仍应忽略 count 参数")
@@ -990,11 +991,12 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
         # 参数校验要在一个有效索引上做，否则先撞上"index out of range"
         self._scan_first_ap()
 
-        # poll/both 已删除（单播 PS-Poll 发不出去），要给出明确错误而不是"未知参数"
+        # poll/both 不再是特例：未知参数统一报错并给出用法（参数现在是严格解析）
         for bad in ("PSPOLL 0 poll", "PSPOLL 0 both"):
             err, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
             self.assertIsNotNone(err, f"{bad} 应被拒绝")
-            self.assertIn("PS-Poll", err, "错误信息要点明 PS-Poll 不可用")
+            self.assertIn("unknown PSPOLL argument", err)
+            self.assertIn("usage: PSPOLL", err)
         err, _ = self.client.command("PSPOLL 0 nonsense",
                                      lambda l: l.startswith("ERR "), 3)
         self.assertIsNotNone(err, "未知参数应被拒绝")
