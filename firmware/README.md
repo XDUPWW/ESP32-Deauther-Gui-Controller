@@ -212,12 +212,14 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 
 `<idx>` 只在最近一次 `SCAN` 内有效（重扫后旧索引无意义）。
 
-`DEAUTH` / `CSA` / `CSASTOP` / `CSATEST` / `DELBA` / `DELBASTOP` / `DELBATEST` / `BAATTACK` / `BAPLANT` /
-`BARPUSH` / `BATX` / `BASTOP` / `BATEST` 已迁移到 wbus 总线（`TODO.md` 第 5 节）：
-命令名与回执文本**一个字节都没变**，内部改由 `wbus_call()` 分发，所以参数校验、
-`DESCRIBE` 元数据、`EVT` 事件都不会再各自写一遍。新代码优先用 `CALL <obj>.<method> k=v`。
-迁移是按命令逐个做的，其余命令仍走原来的 `strcmp` 链，两种路径的对外行为一致；
-每次迁移都必须过 `lab/compat_matrix.py check`（89 条命令零差异）。
+所有攻击与射频命令都已迁移到 wbus 总线（`TODO.md` 第 5 节 P1–P4）：`DEAUTH*` / `CSA*` / `DELBA*` /
+`BA*` / `WNM*` / `TIM*` / `EAPOL*` / `PSPOLL*` / `SAE*` / `AUTHFLOOD*` / `PROBE_BROADCAST` /
+`EVILTWIN*` / `CREDS` / `RADIO`，共 40 条命令映射到 13 个对象。命令名与回执文本
+**一个字节都没变**，内部改由 `wbus_call()` 分发，所以参数校验、`DESCRIBE` 元数据、`EVT` 事件
+都不必每个模块各写一遍。新代码优先用 `CALL <obj>.<method> k=v`。
+留在旧 `strcmp` 链里的是控制台管道（`HELP`/`PING`/`STATUS`/`STATS`/`SCAN`/`STOP`/`REASON`/`MON`/
+`STATIONS`/`RXMIX`/`RXLOG`/`RESTART`/`CTRLTEST`/`CTRLFILTER`/`TOUCH`/`CALIBRATE`/`UI*`），
+两种路径的对外行为一致；改动后必须过 `lab/compat_matrix.py check`（89 条命令零差异）。
 
 ### 4.2 输出行
 

@@ -178,21 +178,35 @@ PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3
 - [ ] `ui.c` 消费同一份元数据生成页面；保留 `ui_commands_drain()` 的"手势只回投主循环"模型
 - [ ] 验收：GUI 全功能回归 + 触屏回归；中文页仍由 `tools/gen_cjk_font.py` 子集生成
 
-### P4 余下 8 个模块（进行中，2026-11-18 起）
+### P4 余下 8 个模块（2026-11-18 完成）
 
-底板已经统一完（注入策略、信道仲裁、模块驱动表、对象注册表），剩下的是把每个模块的
-`do_XXX` 搬成 wbus 对象。每搬一个都要过 `lab/compat_matrix.py check`：89 条命令的回执必须
-`0 differ`，只有这时才允许删掉旧的 `strcmp` 分支。
+所有**攻击与射频模块**都已搬到 wbus 对象表：`deauth` / `csa` / `delba` / `ba` / `wnm` / `tim` /
+`eapol` / `pspoll` / `sae` / `authflood` / `probe` / `evil` / `radio`，共 13 个对象、40 条别名。
+加一个攻击现在是三处数据：驱动表一行（`attack_module_t`）、对象表一张（方法 + 参数策略 + handler）、
+别名表一行；`deauth.cpp` 的热路径与 `serial_console.cpp` 的 `strcmp` 链都不用动。
+
+留在旧 `strcmp` 链里的是**控制台管道本身**，不是攻击模块：`HELP` / `PING` / `STATUS` / `STATS` /
+`SCAN` / `STOP` / `REASON` / `MON` / `STATIONS` / `RXMIX` / `RXLOG` / `RESTART` /
+`CTRLTEST` / `CTRLFILTER` / `TOUCH` / `CALIBRATE` / `UI*`。它们要么是多行的诊断 dump（`STATUS` 一行
+~1.1 KB、`RXLOG` 逐帧打印），要么直接操作 LVGL；对象化它们要先把 `do_status()` 这类 200 行输出改成
+`wb_reply_*`，收益低而回归面大。
+
+```text
+serial_console.cpp  1743 → 1201 行（strcmp 分支 52 → 25，其余走别名表）
+bus_objects.cpp      0 → 约 1300 行（13 个对象，回执与旧实现逐字节一致）
+```
 
 - [x] 底板：`tx_policy` / `radio_set_channel` / `attack_module_t` 驱动表 / wbus 注册表
 - [x] `delba` + `ba` 对象（`start` / `stop` / `test`，`attack` / `plant` / `push` / `tx`）：
       9 条旧命令（`DELBA` / `DELBASTOP` / `DELBATEST` / `BAATTACK` / `BAPLANT` / `BARPUSH` / `BATX` /
       `BASTOP` / `BATEST`）走别名表，回执 89 条命令零差异；新增 `WB_F_JUNK_ZERO` 标志专门保留
       `BARPUSH 0 abc` → `step=0` 这条旧行为（strtol 语义）
-- [ ] `wnm`、`tim`、`eapol`、`sae`、`authflood`、`pspoll` 六个对象
-      （`pspoll` 的 `[sta-mac] [null|qosnull|action]` 三个自由位置需要按内容分派，单独处理）
-- [ ] `radio` 对象（`status` / `channel`），把 `RADIO` 命令也收进总线
-- [ ] `serial_console.cpp` 降到 ~400 行，`print_help()` 由描述表生成
+- [x] `wnm`、`tim`、`eapol`、`sae`、`authflood`、`pspoll` 六个对象 + `radio` 对象 + `probe` / `evil`：
+      27 条命令（`WNM*` / `TIM*` / `EAPOL*` / `SAE*` / `AUTHFLOOD*` / `PSPOLL*` / `RADIO` /
+      `PROBE_BROADCAST` / `EVILTWIN` / `EVILTWIN_STOP` / `CREDS`）+ `DEAUTH_ALL` / `DEAUTH_ONLY` /
+      `DEAUTH_EXCEPT` 三个方法。`pspoll` 的 `[sta-mac] [null|qosnull|action]` 自由顺序靠
+      「三个 `WB_T_STR` 位置 + handler 按内容分派」实现，`noauto` 保持"任意词即开启自动升级"的旧语义
+- [ ] `serial_console.cpp` 降到 ~400 行（现 **1201** 行，`strcmp` 分支 52 → 25）、`print_help()` 由描述表生成
 - [ ] 验收：每搬一个跑全量测试 + `compat_matrix.py check` 零差异；`HELP` / `STATUS` 行不变；
       两个 target（`esp32` / `esp32-c5`）都编过
 
