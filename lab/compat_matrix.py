@@ -140,10 +140,9 @@ def canon(line):
             parts.append(token.split("=", 1)[0] + "=#")
         elif token in MODE_WORDS:
             parts.append(token)
-        elif any(ch.isdigit() for ch in token) or not token.isascii():
-            parts.append("#")
         else:
-            parts.append(token)
+            # Everything else is data: an SSID, a MAC, a channel, a reason code.
+            parts.append("#")
     return " ".join(parts)
 
 
