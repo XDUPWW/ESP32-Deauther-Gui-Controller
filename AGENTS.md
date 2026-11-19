@@ -141,7 +141,8 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()          └→ 计�
 | `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
 | `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
 | `pspoll.cpp` | 电源管理（PM 位）欺骗：伪造 PM=1 的帧让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；三种承载帧 `null`/`qosnull`（默认）/`action`；`pspoll_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
-| `tx_guard.cpp` | 统一注入入口：首个 `0x101` 立即 `esp_restart()`，并集中记录 ok/err |
+| `tx_guard.cpp` | 统一注入入口 + 策略：`kTxPolicyGuard`（45 ms、首个 `0x101` 重启）/ `kTxPolicyBurst`（不节拍、`0x101` 退避），并集中记录 ok/err/throttled |
+| `radio.cpp` | 信道仲裁：`radio_set_channel(owner, ch)` 记录 owner，两个 owner 在 2 s 内抢同一信道时打 `WARN radio:`；`RADIO` 的 `owner=`/`rtake=` 来自这里 |
 | `bus_objects.cpp` | wbus 对象表：`deauth` / `csa` 的参数策略、handler、事件（handler 从 `serial_console.cpp` 原样搬来，回执字节不变） |
 | `include/console_commands.h` | 总线与控制台的桥：`console_scan_count()`、`console_apply_reason()`、`console_ui_log()`、`wbus_register_all()` |
 | `components/wbus/` | 迷你 ubus：对象注册表、`wb_arg_spec_t` 参数策略、`wb_reply_t` 注入式输出、`EVT` 事件订阅。纯 C++，不依赖 Arduino/esp_* |
@@ -286,10 +287,11 @@ python main.py --self-test
    实测：20 帧/s 注入 ≈ 空口 ~220 帧/s 负载。漏水桶拟合（排水 ≈32 帧/s、容量 ≈22）：50 帧/s → 63 帧
    `0x101`、40 帧/s → 117 帧、30/20 帧/s → 45 s 各 1350/900 帧零拒收；广播克隆 beacon 50 帧/s
    → 3000 帧零拒收（无需 ACK，缓存立刻回收）。精确占用时长不可观测（`tx_cb` 对注入帧不回调）。
-   `tx_guard.cpp` 现在强制单播 45 ms 间隔、`SAE` 的 `gap_ms` 低于 50 会被抬高并打 `INFO`，
-   `STATUS` 的 `txg=` 是被守卫挡下的帧数（不算错误）。守卫覆盖六个帧级模块 + `CSA`；
-   `DELBA`/BA/deauth 仍用自己的封装（长跑 19–25 帧/s，在排水速率以下，且 BA 的 40 ms 节拍是已记录
-   -99% 吞吐实验的前提），它们遇到 `0x101` 是"计一次错、下轮重试"，不重启。`BARSEQ` 探针永在守卫外。
+   `tx_guard.cpp` 现在按策略节拍（`tx_guard_send_as()`）：`kTxPolicyGuard` 强制单播 45 ms 间隔、
+   首个 `0x101` 立即重启，覆盖六个帧级模块 + `CSA`；`kTxPolicyBurst` 不节拍、`0x101` 只退避，
+   覆盖 deauth 与 `DELBA`/BA——它们长跑 19–25 帧/s（在排水速率以下），且 deauth 的"2 单播 + 1 广播"
+   与 BA 的 DELBA→ADDBA→BAR 都必须连发，加间隔会静默丢帧。`SAE` 的 `gap_ms` 低于 50 会被抬高并打 `INFO`，
+   `STATUS` 的 `txg=` 是被策略挡下的帧数（不算错误）。`BARSEQ`/`BATX` 这类"故意打空池"的探针永在守卫外。
 8. **beacon 的 TSF 上不了空口（TSF 投毒因此删除）**：MAC 用接口自己的 TSF 覆盖 beacon 的
    24..31 字节（未关联 STA 时为 0）。实测交给驱动的 `last_tsf=654632723879` vs 空口 `tsf=0`，
    同一帧的 TIM/SSID/interval/capability 逐字节保留。与第 1 条（Duration）同源的驱动字段重写；

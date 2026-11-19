@@ -143,16 +143,30 @@ PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3
       旧宽容行为保留：`DEAUTH 5x` 前缀解析成 5、`CSA 0 auto 99` 静默忽略 count；
       `EVT deauth.state active=1` 只在 `EVTSUB` 之后出现，`EVTSUB` 取消后立刻消失
 
-### P2 radio 对象：信道仲裁 + TX 收口（估 2–3 天）
+### P2 radio 对象：信道仲裁 + TX 收口（2026-11-18 完成）
 
-- [ ] `radio.channel.request/release`：owner 标记 + 冲突打 `WARN`，**不做抢占调度**（会改多攻击并发时序）
-- [ ] `radio.tx.send`：把限速做成参数化策略 `tx_policy{min_gap_ms, allow_burst, on_nomem}`，
-      三个实例——deauth 逐站 30 fps、delba 的 BAR 连发、其余 45 ms 单播间隔
-- [ ] 0x101 处置单点化：现在只有 `tx_guard.cpp:52` 会 `esp_restart()`，
-      `deauth.cpp` 的 `tx_raw()` 与 `delba.cpp` 遇 `ESP_ERR_NO_MEM` 只计数 + 回退 5 ms 继续打
-- [ ] 两套 TX 账本（`attack_tx_ok` vs `tx_guard_ok`）合并，`STATUS` 单一口径
-- [ ] 混杂回调扇出（`deauth.cpp:475-482`）改成订阅数组
-- [ ] 验收：`RXMIX` / `RADIO` 双板回归；60 s 长跑无 `FATAL tx 0x101`；`STATUS` 字段名不变
+- [x] 注入策略化：`tx_policy_t{name, min_gap_ms, on_nomem}` + `tx_guard_send_as()`，节拍与 0x101 处置都变成数据。
+      **实际是两个策略而不是三个**：`kTxPolicyGuard`（45 ms、重启）与 `kTxPolicyBurst`（0 ms、退避）。
+      deauth 的 30 fps 不能变成 33 ms 间隔——它在同一 tick 里发 2 单播 + 1 广播，加了间隔会静默丢掉第二帧；
+      BA 的 DELBA→ADDBA→BAR 也必须连发（40 ms 节拍在 `attack_step()` 里，是 −99% 吞吐那个实验的前提）
+- [x] 0x101 处置单点化：只剩 `tx_guard.cpp` 一处判断 `ESP_ERR_NO_MEM`，`FATAL tx 0x101 ... policy=<name> -> restart`
+      只对 `on_nomem=RESTART` 的策略生效；deauth 与 BA 保持"计一次错、下轮重试"，与 §11 第 7 条原结论一致
+- [x] 单播注入收口：`deauth.cpp` 的 `tx_raw()`、`delba.cpp` 的 `tx()` / `ba_tx()` 改走 `kTxPolicyBurst`，
+      六个帧级模块与 CSA 继续走 `kTxPolicyGuard`。三类**故意不进守卫**：`PROBE_BROADCAST` 的广播泛洪
+      （8 帧/4 ms、无需 ACK，进守卫会把 `txgok` 刷成没意义的数字）、`BARSEQ`/`BATX`/`CTRLTEST` 诊断探针
+      （它们存在的目的就是打空池）
+- [x] 信道仲裁：新增 `src/radio.cpp` + `include/radio.h`，20 处 `esp_wifi_set_channel()` 全部改走
+      `radio_set_channel(owner, ch)`；两个 owner 在 2 s 内抢同一信道时打一条限速 `WARN radio: …`，
+      `RADIO` 行新增 `owner=` / `rtake=`
+- [ ] `radio.channel.request/release` 的 wbus 对象封装：暂缓到 P4（仲裁本身已生效，现在缺的只是一个方法外壳）
+- [ ] 两套 TX 账本合并：**没做，也不建议现在做**。`STATUS` 的 `txok/txerr/...`（deauth/CSA 视角）与
+      `txg/txgok/txgerr`（守卫视角）是 GUI、测试和 `lab/*.py` 的契约字段，改口径等于破坏它们。
+      真要合并得先给 GUI/测试加一层兼容映射，放到界面数据驱动（P3）之后更省事
+- [ ] 混杂回调扇出（`deauth.cpp` 里手写的 `csa_on_rx` / `delba_on_rx` / … 调用链）改成订阅数组：
+      P2 未动，它不影响注入路径；等 P4 搬这些模块时一起改
+- [x] 验收：`idf.py build` 0 警告（`0x164260`）；`Ran 56 tests, OK`；60 s deauth 浸泡 `txok 7→188`、
+      `txerr=0`、`txerr_nomem=0`、零 `FATAL`；`CSA 0 auto` 期间启动 `DEAUTH` 会打出
+      `WARN radio: deauth took ch1 from csa (chset=0)` 且 `rtake=2`——两个攻击本来就在抢信道，现在看得见了
 
 ### P3 界面数据驱动（估 3–4 天）
 

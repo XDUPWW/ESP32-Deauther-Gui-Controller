@@ -183,7 +183,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `BATEST` / `BATX` | 打印伪造 ADDBA/BAR 的字节与解码 / 各发一帧并打印驱动返回值 | `BATEST addba len=33 ...` / `BATX delba(30B)=0 addba(33B)=0 bar(20B)=0` |
 | `RESTART` | `esp_restart()`；注意 burst 之后它可能卡在 wifi 反初始化，恢复靠主机拉 RTS | `OK RESTART` |
 | `MON <ch> <secs>` | 被动监听（`ch=0` 表示逐信道跳），计数器从 0 开始，便于用第二块板验证注入 | `OK MON ch=6 8s` |
-| `RADIO` | 打印驱动的嗅探状态：`promisc`、类型 mask、**控制帧 subtype mask**、当前信道 | `RADIO promisc=1(0) filter=0x00000007(0) ctrl_filter=0xFF800000(0) ch=1` |
+| `RADIO` | 打印驱动的嗅探状态：`promisc`、类型 mask、**控制帧 subtype mask**、当前信道，以及信道仲裁的当前 owner 与抢占次数 | `RADIO promisc=1(0) filter=0x00000007(0) ctrl_filter=0xFF800000(0) ch=1 owner=csa rtake=2` |
 | `CTRLFILTER [hex\|all\|none]` | 查询/设置二级控制帧过滤器（默认 `all`；设成 `0` 就一帧控制帧都收不到） | `OK CTRLFILTER set=0xFF800000 readback=0xFF800000 err=0` |
 | `CTRLTEST [subtype] [broadcast\|bssid] [dur]` | 注入 10 帧指定子类型的控制帧（默认 RTS=11、RA=广播、Duration=0），用第二块板验证"控制帧到底能不能被上报/被发出去" | `OK CTRLTEST subtype=10 ra=bssid dur=0xC025 sent=10` |
 | `PROBE_BROADCAST` | 随机 SSID/BSSID 泛洪 Beacon + Probe Response | `OK PROBE_BROADCAST` |
