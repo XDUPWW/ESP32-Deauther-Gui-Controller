@@ -162,8 +162,12 @@ PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3
 - [ ] 两套 TX 账本合并：**没做，也不建议现在做**。`STATUS` 的 `txok/txerr/...`（deauth/CSA 视角）与
       `txg/txgok/txgerr`（守卫视角）是 GUI、测试和 `lab/*.py` 的契约字段，改口径等于破坏它们。
       真要合并得先给 GUI/测试加一层兼容映射，放到界面数据驱动（P3）之后更省事
-- [ ] 混杂回调扇出（`deauth.cpp` 里手写的 `csa_on_rx` / `delba_on_rx` / … 调用链）改成订阅数组：
-      P2 未动，它不影响注入路径；等 P4 搬这些模块时一起改
+- [x] 模块驱动表：`attack_module_t{name, step, stop, on_rx}` + `attack_module_register()`。
+      以前 `deauth.cpp` 里三条手写链（混杂回调 8 个 `*_on_rx`、`attack_step()` 8 个 `*_step()`、
+      `attack_stop()` 8 个 `*_stop()`）现在是**一张表 + 三个循环**，顺序保持原样，
+      加模块 = 表里一行。注册在 `main.cpp` 的 `setup()` 里调 `attack_modules_register_defaults()`
+- [x] 回执兼容性矩阵：`lab/compat_matrix.py`（89 条命令，错误文案逐字比对、OK/TEST 行比对结构，
+      计数器与随机元素自动屏蔽）+ `lab/compat_baseline.json`。本轮改完 `0 command(s) differ`
 - [x] 验收：`idf.py build` 0 警告（`0x164260`）；`Ran 56 tests, OK`；60 s deauth 浸泡 `txok 7→188`、
       `txerr=0`、`txerr_nomem=0`、零 `FATAL`；`CSA 0 auto` 期间启动 `DEAUTH` 会打出
       `WARN radio: deauth took ch1 from csa (chset=0)` 且 `rtake=2`——两个攻击本来就在抢信道，现在看得见了
@@ -174,12 +178,21 @@ PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3
 - [ ] `ui.c` 消费同一份元数据生成页面；保留 `ui_commands_drain()` 的"手势只回投主循环"模型
 - [ ] 验收：GUI 全功能回归 + 触屏回归；中文页仍由 `tools/gen_cjk_font.py` 子集生成
 
-### P4 余下 8 个模块（估 3–5 天）
+### P4 余下 8 个模块（进行中，2026-11-18 起）
 
-- [ ] `delba` / `ba` / `wnm` / `tim` / `eapol` / `pspoll` / `sae` / `authflood` 逐个搬进对象表，
-      补齐 `scan` / `targets` / `system` 三个基础对象
+底板已经统一完（注入策略、信道仲裁、模块驱动表、对象注册表），剩下的是把每个模块的
+`do_XXX` 搬成 wbus 对象。每搬一个都要过 `lab/compat_matrix.py check`：89 条命令的回执必须
+`0 differ`，只有这时才允许删掉旧的 `strcmp` 分支。
+
+- [x] 底板：`tx_policy` / `radio_set_channel` / `attack_module_t` 驱动表 / wbus 注册表
+- [ ] `delba` + `ba` 对象（`start` / `stop` / `test`，`attack` / `plant` / `push` / `tx`）——下一批，
+      它们共用 `delba.cpp`，一起搬
+- [ ] `wnm`、`tim`、`eapol`、`sae`、`authflood`、`pspoll` 六个对象
+      （`pspoll` 的 `[sta-mac] [null|qosnull|action]` 三个自由位置需要按内容分派，单独处理）
+- [ ] `radio` 对象（`status` / `channel`），把 `RADIO` 命令也收进总线
 - [ ] `serial_console.cpp` 降到 ~400 行，`print_help()` 由描述表生成
-- [ ] 验收：每搬一个跑全量测试；`HELP` / `STATUS` 行不变；两个 target（`esp32` / `esp32-c5`）都编过
+- [ ] 验收：每搬一个跑全量测试 + `compat_matrix.py check` 零差异；`HELP` / `STATUS` 行不变；
+      两个 target（`esp32` / `esp32-c5`）都编过
 
 ### 明确不做
 

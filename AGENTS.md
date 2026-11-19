@@ -117,6 +117,9 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()          └→ 计�
   封装，`BARSEQ` 这类"故意要把池打空"的诊断探针**必须**留在守卫之外，否则测不到它要测的东西。
   单播注入的节拍上限约 20 帧/s（§11 第 10 条），新模块的 step 里都按这个定过间隔——
   唯一例外是 `pspoll.cpp`：PM 位帧在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s（§11 第 8 条）。
+- **攻击模块只在一张表里注册**（`attack_module_t`，`include/deauth.h`）：`attack_modules_register_defaults()`
+  在 `main.cpp` 的 `setup()` 里调用一次，之后混杂回调扇出、`attack_step()`、`attack_stop()` 全部遍历这张表。
+  加模块 = 表里加一行，不要再往那三处手写调用。
 - 界面与固件解耦：`components/wireless_ui/` 只暴露纯 C 的 `wireless_ui.h`，按钮通过 `wireless_ui_set_command_cb()`
   注入的回调发协议行；固件 → UI 方向只调 `wireless_ui_scan_begin/add_network/scan_end/status/log` 置标志，
   UI 更新由 `wireless_ui_tick()` 在主循环里加锁应用（不要跨任务直接调 LVGL）。
@@ -222,6 +225,10 @@ python -m unittest discover -s tests -v
   `lab/air_check.py`（逐模块"起-抓-停"）、`lab/pool_limit.py`（缓冲池速率上限）、
   `lab/soak.py`（逐模块长跑，判据是 `STATUS` 的 `txgerr` 恒为 0 且无 `FATAL tx 0x101`）。
   实测数据见 `测试报告.md §4.4`。
+- 回执兼容性矩阵（重构期间必跑）：`python lab/compat_matrix.py check`，89 条命令，
+  错误文案逐字比对、OK/TEST 行比对结构（计数器和随机元素自动屏蔽），判据是 `0 command(s) differ`。
+  基线 `lab/compat_baseline.json` 由 `baseline` 模式生成；**只有确实要改对外文案时才重新抓基线，
+  并在提交信息里说明**。
 - 管道没起时的兜底：`lab/tim_air.py` 用 `lab/rf_throughput` 的 `sniff <ch>`（COM6 当 beacon
   嗅探器）核对 TIM 元素字节。端到端脚本 `lab/tim_ps.py`（TIM vs 真实省电 STA）与
   `lab/btm_sta.py`（BTM vs 真实 11v STA，判据 `wnmresp>0`）需要两块 lab 板 + 攻击板同时在位，
