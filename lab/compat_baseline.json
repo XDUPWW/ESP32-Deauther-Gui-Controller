@@ -1,0 +1,286 @@
+{
+ "DEAUTH": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "DEAUTH 0": [
+  "OK DEAUTH 0 TP-LINK_2564"
+ ],
+ "DEAUTH 9999": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "DEAUTH 0 0": [
+  "ERR reason must be 1..65535, or 'random'"
+ ],
+ "DEAUTH 0 70000": [
+  "ERR reason must be 1..65535, or 'random'"
+ ],
+ "DEAUTH abc": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "DEAUTH 3x": [
+  "OK DEAUTH 3 z806"
+ ],
+ "DEAUTH_ALL": [],
+ "DEAUTH_ONLY": [
+  "ERR need an index list, e.g. DEAUTH_ONLY 1,3,5"
+ ],
+ "DEAUTH_ONLY 0": [],
+ "DEAUTH_ONLY a,b": [
+  "ERR need an index list, e.g. DEAUTH_ONLY 1,3,5"
+ ],
+ "DEAUTH_EXCEPT": [
+  "ERR need an index list, e.g. DEAUTH_ONLY 1,3,5"
+ ],
+ "DEAUTH_EXCEPT 9999": [],
+ "REASON": [
+  "REASON 1"
+ ],
+ "REASON 7": [
+  "OK REASON 7"
+ ],
+ "REASON random": [
+  "OK REASON random"
+ ],
+ "REASON 0": [
+  "ERR reason must be 1..65535, or 'random'"
+ ],
+ "DELBA": [
+  "ERR usage: DELBA <idx> [reason]"
+ ],
+ "DELBA 0": [
+  "OK DELBA 0 reason=37 ch=1 ssid=TP-LINK_2564"
+ ],
+ "DELBA 0 0": [
+  "ERR reason must be one of 1, 32, 37, 38, 39"
+ ],
+ "DELBA 0 7": [
+  "ERR reason must be one of 1, 32, 37, 38, 39"
+ ],
+ "DELBA 9999 37": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "DELBA 0 abc": [
+  "ERR reason must be one of 1, 32, 37, 38, 39"
+ ],
+ "DELBATEST": [
+  "DELBATEST reason=37",
+  "DELBATEST ap_to_sta len=30 cat=3 act=2 tid=0 init=1 reason=37 hex=D000000002AABBCCDDEECC08FBF62564CC08FBF62564F0FF030200082500",
+  "DELBATEST ap_to_sta len=30 cat=3 act=2 tid=3 init=1 reason=37 hex=D000000002AABBCCDDEECC08FBF62564CC08FBF62564F0FF030200382500",
+  "DELBATEST ap_to_sta len=30 cat=3 act=2 tid=6 init=1 reason=37 hex=D000000002AABBCCDDEECC08FBF62564CC08FBF62564F0FF030200682500",
+  "DELBATEST sta_to_ap hex=D0000000CC08FBF6256402AABBCCDDEECC08FBF62564F0FF030200082500"
+ ],
+ "DELBASTOP": [],
+ "BAATTACK": [
+  "ERR usage: BAATTACK <idx> [step 128-2047]"
+ ],
+ "BAATTACK 0": [
+  "OK BAATTACK 0 step=512 ch=1 ssid=TP-LINK_2564"
+ ],
+ "BAATTACK 9999": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "BAPLANT": [
+  "ERR usage: BAPLANT <idx> [step 0-2047]"
+ ],
+ "BAPLANT 0 0": [
+  "OK BAPLANT 0 step=0 ch=1"
+ ],
+ "BARPUSH": [
+  "ERR usage: BARPUSH <idx> [step 0-2047]"
+ ],
+ "BARPUSH 0 0": [
+  "OK BARPUSH 0 step=0 ch=1"
+ ],
+ "BATEST": [
+  "BATEST addba len=33 cat=3 act=0 tid=5 buf=0 ssn=1175 hex=D0000000CC08FBF6256402AABBCCDDEECC08FBF62564F0FF030007160000007049",
+  "BATEST bar len=20 subtype=8 tid=5 compressed=1 ssn=1175 hex=84000000CC08FBF6256402AABBCCDDEE54007049"
+ ],
+ "BATX": [
+  "BATX delba(30B)=0 addba(33B)=0 bar(20B)=0"
+ ],
+ "BASTOP": [],
+ "WNM": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "WNM 0": [],
+ "WNM 0 bare": [],
+ "WNM 0 nope": [
+  "ERR mode must be 'cand' (candidate list) or 'bare'"
+ ],
+ "WNM 9999": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "WNMTEST": [
+  "WNMTEST mode=cand len=46 cat=10 act=7 dialog=1 req_mode=0x05 imm=1 cand=1 timer=10 validity=10"
+ ],
+ "WNMSTOP": [],
+ "TIM": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "TIM 0": [
+  "OK TIM 0 mode=tim aid=0 ch=1"
+ ],
+ "TIM 0 clear 3": [
+  "OK TIM 0 mode=clear aid=3 ch=1"
+ ],
+ "TIM 0 nope": [
+  "ERR mode must be tim|clear"
+ ],
+ "TIM 9999": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "TIMSTOP": [
+  "OK TIMSTOP frames=41 real_beacons=1"
+ ],
+ "EAPOL": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "EAPOL 0": [
+  "OK EAPOL 0 tid=6 ch=1 ssid=TP-LINK_2564"
+ ],
+ "EAPOL 0 -1": [
+  "OK EAPOL 0 tid=-1 ch=1 ssid=TP-LINK_2564"
+ ],
+ "EAPOL 0 6 02:AA:BB:CC:DD:EE": [
+  "OK EAPOL 0 tid=6 ch=1 ssid=TP-LINK_2564"
+ ],
+ "EAPOL 9999": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "EAPOLTEST": [
+  "EAPOLTEST start plain len=36 fc=0x0108 snap=AAAA03 etype=888E ver=2 type=1 body_len=0",
+  "EAPOLTEST start hex=08010000CC08FBF6256402AABBCCDDEECC08FBF62564F0FFAAAA03000000888E02010000",
+  "EAPOLTEST logoff qos len=38 tid=6 ver=2 type=2",
+  "EAPOLTEST logoff hex=88010000CC08FBF6256402AABBCCDDEECC08FBF62564F0FF0600AAAA03000000888E02020000"
+ ],
+ "EAPOLSTOP": [
+  "OK EAPOLSTOP frames=18 rx_ap=0 rx_sta=0 eap=0"
+ ],
+ "PSPOLL": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "PSPOLL 0": [
+  "OK PSPOLL 0 mode=pm frame=qosnull sta=learned ch=1 chset=0 ssid=TP-LINK_2564"
+ ],
+ "PSPOLL 0 null": [
+  "OK PSPOLL 0 mode=pm frame=null sta=learned ch=1 chset=0 ssid=TP-LINK_2564"
+ ],
+ "PSPOLL 0 action": [
+  "OK PSPOLL 0 mode=pm frame=action sta=learned ch=1 chset=0 ssid=TP-LINK_2564"
+ ],
+ "PSPOLL 0 02:AA:BB:CC:DD:EE qosnull": [
+  "OK PSPOLL 0 mode=pm frame=qosnull sta=02:AA:BB:CC:DD:EE ch=1 chset=0 ssid=TP-LINK_2564"
+ ],
+ "PSPOLL 0 poll": [
+  "ERR poll/both are gone: a unicast PS-Poll never leaves this MAC (CTRLTEST 10 bssid 0xC025 -> 0/10 on the air)."
+ ],
+ "PSPOLL 9999": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "PSPOLLTEST": [
+  "PSPOLLTEST null len=24 fc=0x1148 pm=1 tods=1 ra=CC:08:FB ta=02:AA:BB",
+  "PSPOLLTEST null hex=48110000CC08FBF6256402AABBCCDDEECC08FBF62564F0FF",
+  "PSPOLLTEST qosnull len=26 fc=0x11C8 pm=1 tods=1 tid=0",
+  "PSPOLLTEST qosnull hex=C8110000CC08FBF6256402AABBCCDDEECC08FBF62564F0FF0000",
+  "PSPOLLTEST action len=29 fc=0x10D0 pm=1 cat=127 ra=CC:08:FB ta=02:AA:BB",
+  "PSPOLLTEST action hex=D0100000CC08FBF6256402AABBCCDDEECC08FBF62564F0FF7F00001122",
+  "PSPOLLTEST awake len=24 fc=0x0148 pm=0"
+ ],
+ "PSPOLLREL": [
+  "OK PSPOLLREL clients=1 flushed=1"
+ ],
+ "PSPOLLSTOP": [
+  "OK PSPOLLSTOP frames=10 pm1=10 pm0=2 dl=0"
+ ],
+ "SAE": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "SAE 0": [
+  "OK SAE 0 elem=point gap_ms=50 ch=1"
+ ],
+ "SAE 0 rand 200": [
+  "OK SAE 0 elem=rand gap_ms=200 ch=1"
+ ],
+ "SAE 0 nope": [
+  "ERR element must be 'point' (P-256 generator) or 'rand'"
+ ],
+ "SAE 9999": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "SAETEST": [
+  "SAETEST commit len=128 alg=3 seq=1 status=0 group=19 elem=random",
+  "SAETEST commit+token len=139 token_eid=255 token_ext=93 token_len=8",
+  "SAETEST security=wpa2-psk"
+ ],
+ "SAESTOP": [
+  "OK SAESTOP frames=5 identities=2 responses=0 tokens=0 echoed=0"
+ ],
+ "AUTHFLOOD": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "AUTHFLOOD 0": [
+  "OK AUTHFLOOD 0 mode=both auto=1 ch=1 ssid=TP-LINK_2564"
+ ],
+ "AUTHFLOOD 0 auth": [
+  "OK AUTHFLOOD 0 mode=auth auto=1 ch=1 ssid=TP-LINK_2564"
+ ],
+ "AUTHFLOOD 0 both noauto": [
+  "OK AUTHFLOOD 0 mode=both auto=0 ch=1 ssid=TP-LINK_2564"
+ ],
+ "AUTHFLOOD 0 nope": [
+  "ERR mode must be both|auth|assoc"
+ ],
+ "AUTHFLOOD 9999": [
+  "ERR index out of range, run SCAN first"
+ ],
+ "AUTHFLOODTEST": [
+  "AUTHFLOODTEST auth len=30 alg=0 seq=1 status=0",
+  "AUTHFLOODTEST assoc len=74 cap=0x0411 listen=10 ssid=12 rsn=22"
+ ],
+ "AUTHFLOODSTOP": [
+  "OK AUTHFLOODSTOP frames=18 identities=10 last_status=0 upgraded=0"
+ ],
+ "CSA": [
+  "ERR usage: CSA <idx> [new-channel|auto] [count 2-8] [hold-seconds]"
+ ],
+ "CSA 0 nope": [
+  "ERR new channel must be 1..14 or 36..196"
+ ],
+ "CSA 0 3 1": [
+  "ERR count must be 2..8 (a real AP counts down)"
+ ],
+ "CSA 0 999": [
+  "ERR new channel must be 1..14 or 36..196"
+ ],
+ "CSASTOP": [
+  "OK CSASTOP frames=0"
+ ],
+ "CSATEST": [
+  "CSATEST band ap_ch=1(2.4G) new_ch=153(5G) auto=1",
+  "CSATEST action len=29 cat=4 act=4 mode=0 nch=153 cnt=5",
+  "CSATEST action hex=D0000000FFFFFFFFFFFF021122334455021122334455F0FF0404009905",
+  "CSATEST authresp len=30 status=0 hex=B000000002AABBCCDDEE021122334455021122334455F0FF000002000000",
+  "CSATEST assocresp len=30 status=17 aid=0 hex=1000000002AABBCCDDEE021122334455021122334455F0FF110411000000",
+  "CSATEST beacon len=63 csa_ie_off=58 id=37 ie_len=3 mode=0 nch=153 cnt=5",
+  "CSATEST beacon hex=80000000FFFFFFFFFFFF0211223344550211223344550000000000000000000064000104000743534154455354010882848B960C1218240301012503009905"
+ ],
+ "STOP": [
+  "OK STOP deauth_frames=2 probe_frames=0"
+ ],
+ "WBUS": [
+  "WBUS objects=2",
+  "WBUS deauth \"Deauth / disassoc flood\" methods=start,stop events=state",
+  "WBUS csa \"CSA spoof\" methods=start,stop,test events=state"
+ ],
+ "DESCRIBE csa": [
+  "OBJ csa \"CSA spoof\"",
+  "METHOD csa.start \"CSA spoof (channel switch announce)\"",
+  "ARG csa.start idx type=int default=-1",
+  "ARG csa.start ch type=enum default=-1 values=auto",
+  "ARG csa.start cnt type=int default=5",
+  "ARG csa.start secs type=int default=15",
+  "METHOD csa.stop \"stop the CSA spoof\"",
+  "METHOD csa.test \"dump the CSA action/beacon bytes\"",
+  "EVT csa state"
+ ]
+}
