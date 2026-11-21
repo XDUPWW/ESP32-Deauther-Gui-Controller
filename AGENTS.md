@@ -107,7 +107,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | services | wbus、hal_wifi、wtarget、platform | `Serial` |
 | attacks | wifi_frame、hal_wifi、wtarget、wbus、platform | `esp_wifi_*`、`Serial`、printf 格式化 |
 | wifi_frame | 无 | `Arduino.h`、esp_* |
-| hal_wifi | esp_wifi / Arduino WiFi | 全仓唯一允许处 |
+| hal_wifi | esp_wifi / esp_netif / esp_event / esp_timer | 全仓唯一允许处；唯一调 `esp_wifi_set_channel` 与 `esp_wifi_80211_tx` 的地方 |
 | wireless_ui | transport 客户端 API | 直连 wbus、手写命令文本 |
 | platform | `nvs_flash`、`esp_driver_uart/gpio/spi`、`esp_timer`、`esp_lcd`、`esp_lcd_ili9341` | 任何无线 / 帧 / 总线概念 |
 
@@ -116,7 +116,12 @@ P0/P1 已落地的实际白名单与三条实测踩坑（组件清单见 `firmwa
 - `wbus` 已可用：对象注册表 + `obj.method key=value` 调用 + 参数策略校验 + 回执 + 事件；组件本身不依赖任何 esp_* 组件。
 - `transport` 已是插件表（串口插件 + 界面插件），输入行进 `wb_call_line`，回执广播给所有插件；
   `services` 只提供对象，界面能力由 `main` 通过 `services_ui_bind` 注入，界面不直连总线。
-- `hal_wifi` / `wifi_frame` / `wtarget` 目前是契约占位（返回 `ESP_ERR_NOT_SUPPORTED` / `-1`），签名已固定。
+- `hal_wifi` 已实现：STA 初始化（不关联、PS 关）、国家码、信道租约（PINNED/ROAMING + 过期）、
+  注入（45 ms 单播节流、`0x101` → `esp_restart`、覆盖 `ieee80211_raw_frame_sanity_check` + `-Wl,-z,muldefs`）、
+  混杂接收（RX 队列 16 深、帧长上限 512、订阅扇出）、主动扫描、SoftAP、TSF、统计与驱动读回。
+- `wifi_frame` 目前只实现 probe request 组帧与 IE/beacon/TIM/CSA 解析，其余帧构造仍是空实现（返回 `-1`）。
+- `wtarget` 已实现（AP 按 BSSID upsert、RSSI 取最强、STA 记归属 AP）；`services` 的 `scan`/`radio`
+  对象把扫描与信道操作暴露成方法。
 - `idf_component_register` 不能放进 `if(...)`：条件分支里的 `REQUIRES` 不生效（只登记 `SRCS`/`INCLUDE_DIRS`），
   条件只能作用于源文件列表。踩过：屏幕组件整块 REQUIRES 丢失。
 - 渲染（`lv_refr_now`、全屏刷）只能在 LVGL 任务里做。踩过：在 `console` 任务（栈 4 KB）里刷全屏 → 栈溢出重启。
@@ -254,12 +259,13 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 
 ```sh
 cd firmware-v2
-sh host_tests/run.sh                       # 脱机：wbus 70 项，用系统 gcc，不需要板子
-python tools/selftest.py COM5              # 板端：29 项，复位后逐条校验回执
+sh host_tests/run.sh                       # 脱机：wbus 70 + wifi_frame 36 项，用系统 gcc，不需要板子
+python tools/selftest.py COM5              # 板端：44 项，复位后逐条校验回执
 ```
 
 板端脚本覆盖启动横幅、每个对象方法、参数校验报错文案、超长行、突发 40 条背压、
-界面日志镜像（`ui.status` 的 `flush` 增长）、刷屏增量与运行期稳定性。
+界面日志镜像（`ui.status` 的 `flush` 增长）、刷屏增量、主动扫描、信道仲裁拒绝、
+注入闭环（广播 probe request → AP 发回 probe response）与运行期稳定性。
 
 固件旧套件 `firmware/tests/test_wireless_attack.py`（50 个用例，unittest）：
 
