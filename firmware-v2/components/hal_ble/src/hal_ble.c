@@ -191,15 +191,20 @@ static int job_execute(const ble_job_t *job) {
             if (rc == 0) {
                 s_adv_running = true;
                 s_stats.adv_starts++;
-            } else {
-                s_stats.adv_errors++;
+                return 0;
             }
+            if (rc == BLE_HS_EALREADY) {
+                // 本来就在广播，对调用方来说结果一样
+                s_adv_running = true;
+                return 0;
+            }
+            s_stats.adv_errors++;
             return rc;
         }
         case OP_ADV_STOP: {
             const int rc = ble_gap_adv_stop();
             s_adv_running = false;
-            return rc;
+            return (rc == BLE_HS_EALREADY) ? 0 : rc;
         }
         case OP_SCAN_START: {
             struct ble_gap_disc_params params;
