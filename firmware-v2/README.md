@@ -108,11 +108,12 @@ idf.py -B build -p COM5 flash
 | --- | --- | --- |
 | `sh host_tests/run.sh` | 系统 gcc | `wbus` 70 项 + `wifi_frame` 36 项：注册表、调用、参数策略、回执、事件、边界、probe 组帧逐字节、beacon/TIM/CSA/RSN 解析 |
 | `python tools/aircheck.py COM5 COM6` | pyserial + **两块板** | 22 项：控制帧/管理帧逐字段比对、指定与随机 TA、单播节流、广播突发 |
+| `python tools/pipecheck.py --port COM5` | pyserial + C5 的 pcap 管道 | 速率核对：CCK 1/2/5.5/11 Mbps 与 radiotap 逐项比对（OFDM 记 skip）、BAR 20 字节 1 Mbps |
 | `python tools/selftest.py COM5` | pyserial + 板子 | 47 项：启动、对象方法、参数报错、超长行、突发背压、界面镜像、刷屏增量、主动扫描、信道仲裁、注入闭环（AP 回应我们的 probe）、稳定性 |
 
 `selftest.py` 复位单块板逐条校验回执；`aircheck.py` 一块注入一块嗅探，确认帧真的按预期的
 形状上了空气（两块板刷同一份固件）。失败都返回非 0。
-最近一次结果：主机 128/128、板端 47/47、跨板 22/22。
+最近一次结果：主机 128/128、板端 47/47、跨板 22/22、管道速率 5 passed / 8 skipped。
 
 ## 状态
 
@@ -136,7 +137,9 @@ idf.py -B build -p COM5 flash
   把带一堆 IE 的 beacon 全丢了）。
 - 注入速率用 `esp_wifi_config_80211_tx_rate()`，是按接口全局生效的；IDF 6.1 的
   `wifi_pkt_rx_ctrl_t` 里已经没有 `rate` 字段，所以**收到帧的实际速率读不出来**，
-  固定速率只能靠第三方 radiotap 抓包（C5 的管道 + tshark）才能自证。
+  固定速率只能靠第三方 radiotap 抓包自证。C5 管道实测：CCK 1/2/5.5/11 Mbps 生效并可从
+  radiotap 读到；6~54 Mbps 设置返回成功但空口仍是 1 Mbps，无法区分是抓包端报不出 OFDM 还是
+  驱动对管理帧做了钳制（这套管道往 radiotap Rate 里写的是 ESP 的 PHY rate 编码，值域只见到 0~3）。
 - 驱动文档写 `esp_wifi_80211_tx` 只支持 len >= 24，但实测 20 字节的 BAR 能发出去并被抓到。
 - WiFi 起来后剩余堆约 80 KB（LVGL 池 80 KB + WiFi 栈 + RX 队列 8 KB），后续攻击模块要按这个预算分配缓冲。
 
