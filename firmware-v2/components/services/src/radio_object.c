@@ -114,6 +114,14 @@ static hal_rate_t parse_rate(const char *text) {
     if (strcmp(text, "36m") == 0) return HAL_RATE_36M;
     if (strcmp(text, "48m") == 0) return HAL_RATE_48M;
     if (strcmp(text, "54m") == 0) return HAL_RATE_54M;
+    if (strcmp(text, "mcs0") == 0) return HAL_RATE_MCS0;
+    if (strcmp(text, "mcs1") == 0) return HAL_RATE_MCS1;
+    if (strcmp(text, "mcs2") == 0) return HAL_RATE_MCS2;
+    if (strcmp(text, "mcs3") == 0) return HAL_RATE_MCS3;
+    if (strcmp(text, "mcs4") == 0) return HAL_RATE_MCS4;
+    if (strcmp(text, "mcs5") == 0) return HAL_RATE_MCS5;
+    if (strcmp(text, "mcs6") == 0) return HAL_RATE_MCS6;
+    if (strcmp(text, "mcs7") == 0) return HAL_RATE_MCS7;
     return HAL_RATE_DEFAULT;
 }
 
@@ -159,6 +167,12 @@ static esp_err_t radio_tx_test(wb_args_t *args, wb_reply_t *reply) {
     if (strcmp(kind, "bar") == 0) {
         len = wf_build_bar(frame, sizeof(frame), ra, ta, (uint8_t)wb_args_u32(args, "tid"),
                            (uint16_t)wb_args_u32(args, "ssn"));
+    } else if (strcmp(kind, "qosnull") == 0) {
+        // QoS Null 是 26 字节、无 payload 的最小载体。如果 blob 的 HT 发送路径是按帧型
+        // 门控的（只对带 QoS 位的帧构造 HT-SIG），这一帧能把它逼出来。
+        // bssid 也填 RA：Addr1 落在组播地址上才不会等 ACK，否则驱动一轮重传十几次，
+        // 每次降速，抓到的全是降速后的帧。
+        len = wf_build_null_data(frame, sizeof(frame), ra, ta, ra, true, false);
     } else if (strcmp(kind, "data") == 0) {
         // ToDS 的 QoS data + LLC/SNAP(EAPOL)：数据帧不受管理帧的基本速率钳制
         uint8_t payload[32];
@@ -319,7 +333,7 @@ static const wb_method_t kRadioMethods[] = {
     {"diag", radio_diag, "", NULL, 0},
     {"tx_bench", radio_tx_bench, "[count=1..2000] [gap=0..500] [kind=probe|bar|data] [unicast=bool] [pad=0..1000]",
      kBenchPolicy, 5},
-    {"tx_test", radio_tx_test, "[kind=probe|bar|data] [ta=mac|random] [ra=mac] [tid] [ssn]",
+    {"tx_test", radio_tx_test, "[kind=probe|bar|data|qosnull] [ta=mac|random] [ra=mac] [tid] [ssn]",
      kTxTestPolicy, 6},
 };
 

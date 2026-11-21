@@ -21,7 +21,9 @@ TA = "02:00:00:06:00:01"
 LEGACY = [("1m", 1.0), ("2m", 2.0), ("5m5", 5.5), ("11m", 11.0),
           ("6m", 6.0), ("9m", 9.0), ("12m", 12.0), ("18m", 18.0),
           ("24m", 24.0), ("36m", 36.0), ("48m", 48.0), ("54m", 54.0)]
-HT = [("mcs0", "mcs0", 6.5), ("mcs7", "mcs7", 65.0)]
+HT = [("mcs0", "mcs0", 6.5), ("mcs1", "mcs1", 13.0), ("mcs2", "mcs2", 19.5),
+      ("mcs3", "mcs3", 26.0), ("mcs4", "mcs4", 39.0), ("mcs5", "mcs5", 52.0),
+      ("mcs6", "mcs6", 58.5), ("mcs7", "mcs7", 65.0)]
 
 
 class Board:
@@ -84,12 +86,17 @@ def main():
         inj.pump(4.0)
         inj.cmd("radio.chan ch=%s" % channel, 1.2)
 
-        # 嗅探板：同信道 + 按 TA 过滤
+        # 嗅探板：同信道 + 按 TA 过滤。开抓之前把上一档积压的输出排干净，否则
+        # 上一档的帧会串进来，判定时 got[0] 根本不是这一档的。
         snf.cmd("monitor.chan ch=%s" % channel, 1.0)
+        snf.pump(0.4)
+        snf.buf = ""
         snf.cmd("monitor.start kind=all ta=%s max=50" % TA, 1.0)
+        snf.pump(0.2)
+        snf.buf = ""
 
         # 管理帧多半被驱动按 legacy 发，MCS 档改用数据帧验证
-        kind = "data" if name.startswith("mcs") else "probe"
+        kind = "qosnull" if name.startswith("mcs") else "probe"
         for _ in range(8):
             inj.cmd("radio.tx_test kind=%s ta=%s" % (kind, TA), 0.3)
             time.sleep(0.15)
