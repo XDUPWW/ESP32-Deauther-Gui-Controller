@@ -19,6 +19,14 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 
 ## 组件作用
 
+两份配套文档：
+
+- [`docs/adding-an-attack.md`](docs/adding-an-attack.md)——怎么给这个固件加一种新攻击：
+  七步流程、wbus 对象与参数策略、HAL/WiFi 组帧/目标表三层的可用接口、五条红线、
+  以及现有 12 个空目录各自的难点。
+- [`docs/learning-roadmap.md`](docs/learning-roadmap.md)——用了哪些库（含版本）、从零学过来
+  的 26 天路线、802.11 专项、常见坑速查。
+
 | 组件 | 作用 |
 | --- | --- |
 | `hal_wifi` | 收发与射频：裸帧注入与节流、混杂接收与订阅、信道与国家码、扫描、SoftAP、诊断探针 |
