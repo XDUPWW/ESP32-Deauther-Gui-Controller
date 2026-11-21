@@ -153,8 +153,9 @@ static esp_err_t monitor_start(wb_args_t *args, wb_reply_t *reply) {
         return err;
     }
     s_on = true;
-    wb_reply_line(reply, "monitor on kind=%s ta=%s ch=%u", wb_args_str(args, "kind"),
-                  s_has_ta ? wb_args_str(args, "ta") : "any", (unsigned)hal_wifi_channel());
+    wb_reply_line(reply, "monitor on kind=%s ta=%s ch=%u max=%u", wb_args_str(args, "kind"),
+                  s_has_ta ? wb_args_str(args, "ta") : "any", (unsigned)hal_wifi_channel(),
+                  (unsigned)s_max_per_s);
     return ESP_OK;
 }
 

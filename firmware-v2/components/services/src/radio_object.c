@@ -235,14 +235,14 @@ static esp_err_t radio_tx_test(wb_args_t *args, wb_reply_t *reply) {
     int len = 0;
     const char *kind = wb_args_str(args, "kind");
     if (strcmp(kind, "bar") == 0) {
-        len = wf_build_bar(frame, sizeof(frame), ra, ta, (uint8_t)wb_args_u32(args, "tid"),
+        len = wf_build_bar(frame, WF_FRAME_CAP, ra, ta, (uint8_t)wb_args_u32(args, "tid"),
                            (uint16_t)wb_args_u32(args, "ssn"));
     } else if (strcmp(kind, "qosnull") == 0) {
         // QoS Null 是 26 字节、无 payload 的最小载体。如果 blob 的 HT 发送路径是按帧型
         // 门控的（只对带 QoS 位的帧构造 HT-SIG），这一帧能把它逼出来。
         // bssid 也填 RA：Addr1 落在组播地址上才不会等 ACK，否则驱动一轮重传十几次，
         // 每次降速，抓到的全是降速后的帧。
-        len = wf_build_null_data(frame, sizeof(frame), ra, ta, ra, true, false);
+        len = wf_build_null_data(frame, WF_FRAME_CAP, ra, ta, ra, true, false);
     } else if (strcmp(kind, "data") == 0) {
         // ToDS 的 QoS data + LLC/SNAP(EAPOL)：数据帧不受管理帧的基本速率钳制
         uint8_t payload[32];
@@ -253,11 +253,11 @@ static esp_err_t radio_tx_test(wb_args_t *args, wb_reply_t *reply) {
             wb_reply_fail(reply, "llc/snap build failed");
             return ESP_FAIL;
         }
-        len = wf_build_data(frame, sizeof(frame), ta, ta, ta, true, false, true,
+        len = wf_build_data(frame, WF_FRAME_CAP, ta, ta, ta, true, false, true,
                             (uint8_t)wb_args_u32(args, "tid"), payload, (size_t)payload_len);
     } else {
         const char *ssid = wb_args_str(args, "ssid");
-        len = wf_build_probe_req(frame, sizeof(frame), ra, ta, ssid, strlen(ssid));
+        len = wf_build_probe_req(frame, WF_FRAME_CAP, ra, ta, ssid, strlen(ssid));
     }
     if (len <= 0) {
         wb_reply_fail(reply, "build failed");
