@@ -57,14 +57,24 @@ int wf_build_disassoc(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8
 
 int wf_build_auth(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t sa[6],
                   const uint8_t bssid[6], uint16_t algorithm, uint16_t seq, uint16_t status) {
+    return wf_build_auth_ext(buf, cap, da, sa, bssid, algorithm, seq, status, NULL, 0);
+}
+
+int wf_build_auth_ext(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t sa[6],
+                      const uint8_t bssid[6], uint16_t algorithm, uint16_t seq, uint16_t status,
+                      const uint8_t *extra, size_t extra_len) {
     size_t off = mgmt_header(buf, cap, WF_ST_AUTH, da, sa, bssid);
-    if (off == 0 || off + 6 > cap) {
+    if (off == 0 || off + 6 + extra_len > cap) {
         return -1;
     }
     wf_put_le16(buf + off, algorithm);
     wf_put_le16(buf + off + 2, seq);
     wf_put_le16(buf + off + 4, status);
-    return (int)(off + 6);
+    off += 6;
+    if (extra_len > 0 && extra != NULL) {
+        memcpy(buf + off, extra, extra_len);
+    }
+    return (int)(off + extra_len);
 }
 
 int wf_build_assoc_req(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t sa[6],
@@ -103,6 +113,25 @@ int wf_build_probe_req(uint8_t *buf, size_t cap, const uint8_t da[6], const uint
 int wf_build_beacon(uint8_t *buf, size_t cap, const uint8_t bssid[6], uint64_t tsf,
                     uint16_t interval, uint16_t capab, const uint8_t *ies, size_t ies_len) {
     size_t off = mgmt_header(buf, cap, WF_ST_BEACON, kBroadcast, bssid, bssid);
+    if (off == 0 || off + 12 + ies_len > cap) {
+        return -1;
+    }
+    for (int i = 0; i < 8; i++) {
+        buf[off + i] = (uint8_t)(tsf >> (8 * i));
+    }
+    wf_put_le16(buf + off + 8, interval);
+    wf_put_le16(buf + off + 10, capab);
+    off += 12;
+    if (ies_len > 0 && ies != NULL) {
+        memcpy(buf + off, ies, ies_len);
+    }
+    return (int)(off + ies_len);
+}
+
+int wf_build_probe_resp(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t bssid[6],
+                        uint64_t tsf, uint16_t interval, uint16_t capab, const uint8_t *ies,
+                        size_t ies_len) {
+    size_t off = mgmt_header(buf, cap, WF_ST_PROBE_RESP, da, bssid, bssid);
     if (off == 0 || off + 12 + ies_len > cap) {
         return -1;
     }

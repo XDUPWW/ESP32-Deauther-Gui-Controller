@@ -8,6 +8,7 @@
 
 #include "wifi_frame/frame_build.h"
 #include "wifi_frame/frames.h"
+#include "wifi_frame/ie_build.h"
 #include "wifi_frame/ie_parse.h"
 #include "wifi_frame/mac.h"
 
@@ -303,6 +304,103 @@ static void test_ctrl_builders(void) {
     CHECK(memcmp(frame + 10, kSta, 6) == 0, "rts ta");
 }
 
+static void test_ie_build(void) {
+    printf("ie build\n");
+    uint8_t ies[128];
+    wf_ie_writer_t w;
+    wf_ie_begin(&w, ies, sizeof(ies));
+
+    CHECK(wf_ie_ssid(&w, "lab", 3), "ssid ok");
+    CHECK(wf_ie_rates(&w, 1, 0x0C), "rates ok");
+    CHECK(wf_ie_ds(&w, 6), "ds ok");
+    CHECK(wf_ie_csa(&w, 11, 5), "csa ok");
+    CHECK(wf_ie_extcap_btm(&w), "extcap ok");
+    wf_ie_tim(&w, 1, 2, 0x01, (const uint8_t *)"\x02", 1);
+    CHECK(wf_ie_ok(&w), "writer still ok");
+
+    uint8_t frame[64];
+    const int len = wf_build_beacon(frame, sizeof(frame), kAp, 0x1122334455667788ULL, 100, 0x0411,
+                                    ies, wf_ie_len(&w));
+    CHECK(len == 36 + (int)wf_ie_len(&w), "beacon length");
+
+    wf_bss_t bss;
+    CHECK(wf_parse_beacon(frame, (size_t)len, &bss), "cloned beacon parses");
+    CHECK(memcmp(bss.ssid, "lab", 3) == 0, "ssid round trip");
+    CHECK(bss.channel == 6, "ds channel round trip");
+    CHECK(bss.bss_transition, "extcap btm round trip");
+
+    size_t body = 0;
+    const uint8_t *csa = wf_ie_find(frame + 36, wf_ie_len(&w), WF_IE_CSA, &body);
+    uint8_t channel = 0;
+    uint8_t count = 0;
+    CHECK(wf_csa_parse(csa, body, &channel, &count), "csa round trip");
+    CHECK(channel == 11 && count == 5, "csa values");
+
+    // RSN 用解析器回读，AKM 和 MFPR 位都要能对上
+    wf_ie_begin(&w, ies, sizeof(ies));
+    CHECK(wf_ie_rsn_psk(&w), "rsn psk ok");
+    const uint8_t *rsn = wf_ie_find(ies, wf_ie_len(&w), WF_IE_RSN, &body);
+    CHECK(rsn != NULL && body == 20, "rsn psk body length");
+    CHECK(wf_rsn_has_akm(rsn, body, WF_AKM_PSK), "rsn has psk akm");
+    CHECK(!wf_rsn_has_akm(rsn, body, WF_AKM_SAE), "rsn has no sae");
+    CHECK(!wf_rsn_mfpr_required(rsn, body), "mfpr clear");
+
+    wf_ie_begin(&w, ies, sizeof(ies));
+    CHECK(wf_ie_rsn_sae(&w), "rsn sae ok");
+    rsn = wf_ie_find(ies, wf_ie_len(&w), WF_IE_RSN, &body);
+    CHECK(rsn != NULL && body == 24, "rsn sae body length");
+    CHECK(wf_rsn_has_akm(rsn, body, WF_AKM_SAE), "rsn has sae akm");
+    CHECK(wf_rsn_has_akm(rsn, body, WF_AKM_PSK), "sae element keeps psk too");
+
+    // 空间不够时必须置 ok=false，且 off 不越界
+    uint8_t tight[6];
+    wf_ie_begin(&w, tight, sizeof(tight));
+    CHECK(wf_ie_ssid(&w, "abc", 3), "first ie fits");
+    CHECK(!wf_ie_ds(&w, 6), "second ie refused");
+    CHECK(!wf_ie_ok(&w), "writer flagged");
+    CHECK(wf_ie_len(&w) == 5, "offset unchanged after refusal");
+
+    // 克隆：跳过 TIM，其余原样搬
+    uint8_t src[64];
+    size_t off = put_ie(src, 0, WF_IE_SSID, (const uint8_t *)"ap", 2);
+    off = put_ie(src, off, WF_IE_TIM, (const uint8_t *)"\x00\x01\x00\x01", 4);
+    const size_t src_len = put_ie(src, off, WF_IE_CSA, (const uint8_t *)"\x00\x0b\x05", 3);
+    wf_ie_begin(&w, ies, sizeof(ies));
+    const size_t copied = wf_ie_copy(&w, src, src_len, WF_IE_TIM);
+    CHECK(wf_ie_ok(&w), "copy ok");
+    CHECK(copied == src_len - 6, "tim skipped");
+    CHECK(wf_ie_find(ies, wf_ie_len(&w), WF_IE_TIM, &body) == NULL, "no tim in copy");
+    CHECK(wf_ie_find(ies, wf_ie_len(&w), WF_IE_CSA, &body) != NULL, "csa survived");
+
+    // 尾巴缺字节的 IE 串不能被照搬
+    const uint8_t ragged[4] = {WF_IE_SSID, 8, 'a', 'b'};
+    wf_ie_begin(&w, ies, sizeof(ies));
+    CHECK(wf_ie_copy(&w, ragged, sizeof(ragged), -1) == 0, "ragged tail dropped");
+}
+
+static void test_auth_ext(void) {
+    printf("auth with extra body\n");
+    uint8_t frame[WF_FRAME_CAP];
+    const uint8_t extra[4] = {0x13, 0x00, 0xAA, 0xBB};
+    const int len = wf_build_auth_ext(frame, sizeof(frame), kAp, kSta, kAp, 3, 1, 0, extra,
+                                      sizeof(extra));
+    CHECK(len == 34, "auth + 4 bytes of body");
+    CHECK(frame[0] == WF_ST_AUTH, "auth subtype");
+    CHECK(wf_le16(frame + 24) == 3, "algorithm sae");
+    CHECK(wf_le16(frame + 26) == 1, "sequence commit");
+    CHECK(wf_le16(frame + 28) == 0, "status success");
+    CHECK(memcmp(frame + 30, extra, sizeof(extra)) == 0, "extra body");
+
+    // 不带 extra 时和旧接口一个字节都不差
+    const int plain = wf_build_auth(frame, sizeof(frame), kAp, kSta, kAp, 0, 1, 0);
+    CHECK(plain == 30, "plain auth is 30 bytes");
+
+    uint8_t small[30];
+    CHECK(wf_build_auth_ext(small, sizeof(small), kAp, kSta, kAp, 3, 1, 0, extra, sizeof(extra)) <
+              0,
+          "cap too small");
+}
+
 int main(void) {
     printf("wifi_frame host tests\n");
     test_mac();
@@ -313,6 +411,8 @@ int main(void) {
     test_probe_req();
     test_beacon();
     test_ie_helpers();
+    test_ie_build();
+    test_auth_ext();
     printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;
 }

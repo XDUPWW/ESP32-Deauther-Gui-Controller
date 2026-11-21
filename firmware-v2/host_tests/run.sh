@@ -26,6 +26,7 @@ echo "== build =="
     -I components/wifi_frame/include \
     host_tests/test_frame.c \
     components/wifi_frame/src/frame_build.c \
+    components/wifi_frame/src/ie_build.c \
     components/wifi_frame/src/ie_parse.c \
     components/wifi_frame/src/mac.c \
     -o build/host/test_frame

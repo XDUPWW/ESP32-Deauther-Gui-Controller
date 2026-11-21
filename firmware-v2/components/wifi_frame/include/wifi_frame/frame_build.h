@@ -18,6 +18,11 @@ int wf_build_disassoc(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8
 int wf_build_auth(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t sa[6],
                   const uint8_t bssid[6], uint16_t algorithm, uint16_t seq, uint16_t status);
 
+// 固定 6 字节字段之后还能再挂一段。SAE Commit 的 group/scalar/element 就走这里。
+int wf_build_auth_ext(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t sa[6],
+                      const uint8_t bssid[6], uint16_t algorithm, uint16_t seq, uint16_t status,
+                      const uint8_t *extra, size_t extra_len);
+
 int wf_build_assoc_req(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t sa[6],
                        const uint8_t bssid[6], uint16_t capab, uint16_t listen_interval,
                        const uint8_t *ies, size_t ies_len);
@@ -27,6 +32,10 @@ int wf_build_probe_req(uint8_t *buf, size_t cap, const uint8_t da[6], const uint
 
 int wf_build_beacon(uint8_t *buf, size_t cap, const uint8_t bssid[6], uint64_t tsf,
                     uint16_t interval, uint16_t capab, const uint8_t *ies, size_t ies_len);
+
+int wf_build_probe_resp(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t bssid[6],
+                        uint64_t tsf, uint16_t interval, uint16_t capab, const uint8_t *ies,
+                        size_t ies_len);
 
 int wf_build_action(uint8_t *buf, size_t cap, const uint8_t da[6], const uint8_t sa[6],
                     const uint8_t bssid[6], uint8_t category, const uint8_t *body,
