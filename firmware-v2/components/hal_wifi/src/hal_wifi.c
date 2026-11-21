@@ -257,13 +257,28 @@ hal_rate_t hal_wifi_tx_rate(void) {
 }
 
 float hal_wifi_rx_mbps(const hal_wifi_rx_meta_t *meta) {
-    static const float kLegacy[12] = {1.0f, 2.0f, 5.5f, 11.0f, 6.0f, 9.0f,
-                                      12.0f, 18.0f, 24.0f, 36.0f, 48.0f, 54.0f};
     if (meta == NULL) {
         return 0.0f;
     }
     if (meta->sig_mode == 0) {
-        return (meta->rate_code < 12) ? kLegacy[meta->rate_code] : 0.0f;
+        // rate_code 里混着两套编码：11b 的 CCK 帧是 0..3 的索引，11g 的 OFDM 帧是
+        // L-SIG 的 RATE 字段按 LSB-first 解释后的值。台架实测：设 6M 读回 0xB，
+        // 设 12M 读回 0xA，设 54M 读回 0xC，所以按实测反推的表查，不是标准表正序。
+        if (meta->rate_code < 4) {
+            static const float kCck[4] = {1.0f, 2.0f, 5.5f, 11.0f};
+            return kCck[meta->rate_code];
+        }
+        switch (meta->rate_code & 0x0F) {
+            case 0x0B: return 6.0f;
+            case 0x0F: return 9.0f;
+            case 0x0A: return 12.0f;
+            case 0x0E: return 18.0f;
+            case 0x09: return 24.0f;
+            case 0x0D: return 36.0f;
+            case 0x08: return 48.0f;
+            case 0x0C: return 54.0f;
+            default: return 0.0f;
+        }
     }
     // HT20：每档 MCS 差 6.5 Mbps，短 GI 乘 7.2/6.5
     const uint8_t mcs = (meta->mcs > 7) ? 7 : meta->mcs;

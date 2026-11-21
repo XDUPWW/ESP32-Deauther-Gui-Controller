@@ -1210,16 +1210,32 @@ static void format_mbps2(uint16_t mbps2, char* buf, int buf_len) {
     }
 }
 
+// 11g/11a 的 OFDM 速率编码，单位是 0.5 Mbps。台架实测反推：设 6M 读回 0xB、
+// 设 12M 读回 0xA、设 54M 读回 0xC —— 是 L-SIG 的 RATE 字段按 LSB-first 解释
+// 之后的值，跟标准表正序不是一回事。按标准表查会把 6M 报成 54M。
+static uint16_t ofdm_mbps2(uint8_t code) {
+    switch (code & 0x0F) {
+        case 0x0B: return 12;   // 6
+        case 0x0F: return 18;   // 9
+        case 0x0A: return 24;   // 12
+        case 0x0E: return 36;   // 18
+        case 0x09: return 48;   // 24
+        case 0x0D: return 72;   // 36
+        case 0x08: return 96;   // 48
+        case 0x0C: return 108;  // 54
+        default: return 0;
+    }
+}
+
 const char* rx_rate_text(uint8_t fmt, uint8_t rate, uint8_t mcs, uint8_t sgi, char* buf,
                          int buf_len) {
     if (buf == nullptr || buf_len < 12) {
         return "-";
     }
 #if CONFIG_SOC_WIFI_HE_SUPPORT
-    // C5: an 11b frame carries the transmission rate; everything else only
-    // carries the 4-bit RATE field of L-SIG (802.11-2020 Table 17-4). For
-    // HT/VHT/HE that field describes the preamble, so calling it "the" rate
-    // would be wrong -- those get a format name instead.
+    // C5: cur_bb_format tells 11b from 11g. 11b frames carry the CCK index;
+    // everything else carries the L-SIG RATE code, which on HT/VHT/HE only
+    // describes the preamble -- those get a format name instead of a number.
     if (fmt == 0) {
         if (rate >= 4) {
             return "-";
@@ -1228,17 +1244,9 @@ const char* rx_rate_text(uint8_t fmt, uint8_t rate, uint8_t mcs, uint8_t sgi, ch
         return buf;
     }
     if (fmt == 1) {
-        uint16_t mbps2;
-        switch (rate & 0x0F) {
-            case 0x0D: mbps2 = 12; break;   // 6
-            case 0x0F: mbps2 = 18; break;   // 9
-            case 0x05: mbps2 = 24; break;   // 12
-            case 0x07: mbps2 = 36; break;   // 18
-            case 0x09: mbps2 = 48; break;   // 24
-            case 0x0B: mbps2 = 72; break;   // 36
-            case 0x01: mbps2 = 96; break;   // 48
-            case 0x03: mbps2 = 108; break;  // 54
-            default: return "-";
+        const uint16_t mbps2 = ofdm_mbps2(rate);
+        if (mbps2 == 0) {
+            return "-";
         }
         format_mbps2(mbps2, buf, buf_len);
         return buf;
@@ -1253,13 +1261,18 @@ const char* rx_rate_text(uint8_t fmt, uint8_t rate, uint8_t mcs, uint8_t sgi, ch
         default: return "-";
     }
 #else
-    // Classic ESP32: sig_mode decides. 0 means the rate code is a PHY rate
-    // encoding, 1 means an 11n frame where only mcs/sgi carry information.
+    // Classic ESP32 has no cur_bb_format, so the code value itself tells the
+    // two apart: 0..3 is a CCK index, 8..15 is the OFDM L-SIG code.
     if (fmt == 0) {
-        if (rate >= 12) {
+        if (rate < 4) {
+            format_mbps2(kLegacyMbps2[rate], buf, buf_len);
+            return buf;
+        }
+        const uint16_t mbps2 = ofdm_mbps2(rate);
+        if (mbps2 == 0) {
             return "-";
         }
-        format_mbps2(kLegacyMbps2[rate], buf, buf_len);
+        format_mbps2(mbps2, buf, buf_len);
         return buf;
     }
     if (fmt == 2) {

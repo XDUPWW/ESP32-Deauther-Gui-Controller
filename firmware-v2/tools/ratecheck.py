@@ -64,6 +64,9 @@ def main():
     channel = "6"
     if "--channel" in sys.argv:
         channel = sys.argv[sys.argv.index("--channel") + 1]
+    only = None
+    if "--only" in sys.argv:
+        only = sys.argv[sys.argv.index("--only") + 1].split(",")
 
     inj = Board(inj_port, reset=False)
     snf = Board(snf_port, reset=False)
@@ -73,6 +76,8 @@ def main():
     passed = failed = 0
     print("== 速率（收包侧读 wifi_pkt_rx_ctrl_t） ==")
     for name, expect in LEGACY + [(n, mbps) for n, _, mbps in HT]:
+        if only and name not in only:
+            continue
         # 注入板：写 NVS 后重启，让速率在 esp_wifi_start() 之前生效
         inj.cmd("radio.rate rate=%s" % name, 0.8)
         inj.ser.write(b"system.reset\r\n")
@@ -81,12 +86,14 @@ def main():
 
         # 嗅探板：同信道 + 按 TA 过滤
         snf.cmd("monitor.chan ch=%s" % channel, 1.0)
-        snf.cmd("monitor.start kind=mgmt ta=%s max=50" % TA, 1.0)
+        snf.cmd("monitor.start kind=all ta=%s max=50" % TA, 1.0)
 
-        for _ in range(4):
-            inj.cmd("radio.tx_test kind=probe ta=%s" % TA, 0.3)
+        # 管理帧多半被驱动按 legacy 发，MCS 档改用数据帧验证
+        kind = "data" if name.startswith("mcs") else "probe"
+        for _ in range(8):
+            inj.cmd("radio.tx_test kind=%s ta=%s" % (kind, TA), 0.3)
             time.sleep(0.15)
-        lines = snf.pump(1.0)
+        lines = snf.pump(1.8)
         snf.cmd("monitor.stop", 0.6)
 
         got = [l for l in lines if "EVT monitor.rx" in l and ("a2=" + TA) in l]
