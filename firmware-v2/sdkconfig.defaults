@@ -1,4 +1,20 @@
+# Console output stays readable: the protocol stream shares UART0 with the logs.
 CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+
+# 4 MB flash with the project's own partition table.
 CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+CONFIG_FREERTOS_HZ=1000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+
+# LVGL touch UI (ESP32-2432S028R: ILI9341 + XPT2046). The option depends on
+# IDF_TARGET_ESP32, so a C5 build leaves the UI out.
+CONFIG_WB_LVGL=y
+
+# LVGL 9 tuning for a 320x240 panel on an ESP32 without PSRAM.
+CONFIG_LV_COLOR_DEPTH_16=y
+CONFIG_LV_MEM_SIZE_KILOBYTES=80
+CONFIG_LV_DEF_REFR_PERIOD=33
+CONFIG_LV_USE_LOG=n
