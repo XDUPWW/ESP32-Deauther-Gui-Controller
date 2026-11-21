@@ -21,6 +21,9 @@ typedef struct {
 
 void ui_calib_defaults(ui_calib_t *calib);
 
+bool ui_calib_solve(const int16_t raw[4][2], int16_t width, int16_t height, int16_t inset,
+                    ui_calib_t *calib);
+
 bool ui_calib_load(ui_calib_t *calib);
 
 void ui_calib_save(const ui_calib_t *calib);

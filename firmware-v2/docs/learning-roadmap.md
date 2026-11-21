@@ -16,8 +16,8 @@
 | esp_wifi | 随 IDF | WiFi 驱动：STA/AP 模式、裸帧注入、混杂接收、扫描、TSF | **只有** `components/hal_wifi/` |
 | esp_timer | 随 IDF | 微秒级计时 | `main.c` 的主循环、`hal_wifi` 的节流 |
 | NVS | 随 IDF | flash 键值存储，掉电不丢 | `plat_storage.c`（存注入速率、触摸校准） |
-| esp_lcd + esp_lcd_ili9341 | 2.1.0 | LCD 面板驱动（SPI） | `plat_display.c` |
-| XPT2046 | 无（自己写的） | 电阻触摸屏控制器 | `plat_touch.c`，裸 SPI 时序 |
+| esp_lcd + esp_lcd_ili9341 | 2.1.0 | LCD 面板驱动（SPI） | `board_cyd/src/board_cyd_lcd.c` |
+| XPT2046 | 无（自己写的） | 电阻触摸屏控制器 | `board_cyd/src/board_cyd_touch.c`，裸 SPI 时序 |
 | LVGL | 9.5.0 | 图形库：控件、布局、动画 | `wireless_ui/` |
 | esp_lvgl_port | 6.1.0 | LVGL 与 ESP-IDF 的胶水：刷屏任务、输入设备注册 | `wireless_ui/ui_port.c` |
 | CMake + Ninja | 随 IDF | 构建：CMake 描述依赖，Ninja 执行编译 | `CMakeLists.txt`、`build/` |
@@ -41,7 +41,7 @@ C5 只引出原生 USB（USB-Serial-JTAG），没有 UART0 排针。所以它的
 HWCDC，否则能烧写但一条命令都不回——这个坑在 `firmware/CMakeLists.txt` 里用
 `ARDUINO_USB_MODE=1` 解决。
 
-CYD 的接线（`plat_display.c` / `plat_touch.c` 里写死）：
+CYD 的接线（`board_cyd/src/board_cyd_lcd.c` / `board_cyd_touch.c` 里写死）：
 
 ```
 LCD  : SPI3  MISO12 MOSI13 SCLK14 CS15 DC2  BL21   320x240
@@ -171,7 +171,7 @@ idf.py -B build -p COM5 monitor      # 退出按 Ctrl+]
 概念：电阻屏输出的是原始 ADC 值（0..4095），不是屏幕坐标。要建立映射得采四个角算线性
 变换，算出来的系数存起来，掉电不丢——这就用到 NVS。
 
-**读**：`plat_touch.c`（裸 SPI 读 0x90/0xD0 命令）、`ui_calib.c`、
+**读**：`board_cyd_touch.c`（裸 SPI 读 0x90/0xD0 命令）、`ui_calib.c`、
 `plat_storage.c`。
 
 **动手**：用 `system.touch` 采几次原始值，观察按下和松开的差别。

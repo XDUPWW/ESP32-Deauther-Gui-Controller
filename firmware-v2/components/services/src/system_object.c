@@ -40,6 +40,16 @@ static esp_err_t system_help(wb_args_t *args, wb_reply_t *reply) {
 
 static esp_err_t system_touch(wb_args_t *args, wb_reply_t *reply) {
     (void)args;
+    const services_ui_ops_t *ui = services_ui_ops();
+    char text[WB_LINE_MAX];
+    text[0] = '\0';
+    if (ui->touch != NULL) {
+        ui->touch(text, sizeof(text));
+    }
+    if (text[0] != '\0') {
+        wb_reply_line(reply, "%s", text);
+        return ESP_OK;
+    }
     int raw_x = 0;
     int raw_y = 0;
     const bool pressed = plat_touch_read(&raw_x, &raw_y);

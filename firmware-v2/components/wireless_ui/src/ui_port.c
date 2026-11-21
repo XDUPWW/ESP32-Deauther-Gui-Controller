@@ -15,6 +15,10 @@ static const char *TAG = "ui_port";
 static ui_calib_t s_calib;
 static lv_display_t *s_disp;
 static volatile uint32_t s_flush_count;
+static int s_tap_x;
+static int s_tap_y;
+static int s_tap_press;
+static int s_tap_wait;
 
 static void on_flush_start(lv_event_t *event) {
     if (lv_event_get_code(event) == LV_EVENT_FLUSH_START) {
@@ -52,8 +56,40 @@ void ui_port_set_calib(const ui_calib_t *calib) {
     }
 }
 
+// 软件点一下屏幕：绕开触摸硬件，专门用来看按钮本身有没有接上事件
+static void tap_read_cb(lv_indev_t *indev, lv_indev_data_t *data) {
+    (void)indev;
+    if (s_tap_press > 0) {
+        s_tap_press--;
+        data->state = LV_INDEV_STATE_PRESSED;
+    } else {
+        if (s_tap_wait > 0) {
+            s_tap_wait--;
+        }
+        data->state = LV_INDEV_STATE_RELEASED;
+    }
+    data->point.x = (int16_t)s_tap_x;
+    data->point.y = (int16_t)s_tap_y;
+}
+
+void ui_port_tap(int x, int y) {
+    s_tap_x = x;
+    s_tap_y = y;
+    s_tap_press = 3;
+    s_tap_wait = 3;
+}
+
 bool ui_port_touch_raw(int *raw_x, int *raw_y) {
     return plat_touch_read(raw_x, raw_y);
+}
+
+bool ui_port_touch_map(int raw_x, int raw_y, int *screen_x, int *screen_y) {
+    if (s_disp == NULL) {
+        return false;
+    }
+    ui_calib_apply(&s_calib, raw_x, raw_y, (int)lv_display_get_horizontal_resolution(s_disp),
+                   (int)lv_display_get_vertical_resolution(s_disp), screen_x, screen_y);
+    return true;
 }
 
 bool ui_port_lock(uint32_t timeout_ms) {
@@ -88,9 +124,9 @@ bool ui_port_start(int16_t *width, int16_t *height) {
         .color_format = LV_COLOR_FORMAT_RGB565,
         .rotation =
             {
-                .swap_xy = true,
-                .mirror_x = true,
-                .mirror_y = true,
+                .swap_xy = lcd.swap_xy,
+                .mirror_x = lcd.mirror_x,
+                .mirror_y = lcd.mirror_y,
             },
         .flags =
             {
@@ -117,6 +153,15 @@ bool ui_port_start(int16_t *width, int16_t *height) {
             lv_indev_set_read_cb(indev, touch_read_cb);
             lv_indev_set_display(indev, s_disp);
         }
+    }
+
+    lv_indev_t *fake = lv_indev_create();
+    if (fake == NULL) {
+        ESP_LOGW(TAG, "tap indev alloc failed");
+    } else {
+        lv_indev_set_type(fake, LV_INDEV_TYPE_POINTER);
+        lv_indev_set_read_cb(fake, tap_read_cb);
+        lv_indev_set_display(fake, s_disp);
     }
 
     plat_lcd_backlight(true);

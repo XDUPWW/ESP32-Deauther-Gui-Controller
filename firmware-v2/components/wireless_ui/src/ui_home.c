@@ -140,6 +140,7 @@ void ui_home_create(void) {
 
     make_button(row1, "PING", on_button, "system.ping");
     make_button(row1, "INFO", on_button, "system.info");
+    make_button(row1, "CAL", on_button, "ui.touch_cal reset=1");
 
     lv_obj_t *row2 = lv_obj_create(root);
     lv_obj_set_width(row2, LV_PCT(100));

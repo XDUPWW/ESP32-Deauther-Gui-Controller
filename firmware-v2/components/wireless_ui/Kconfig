@@ -2,11 +2,9 @@ menu "Wireless UI"
 
     config WB_LVGL
         bool "Enable the LVGL touch UI"
-        depends on IDF_TARGET_ESP32
-        default n
         help
-            Local screen and touch panel. Widgets only submit the same command
-            lines the serial console accepts, so the firmware behaves the same
-            with the screen removed.
+            屏幕和触屏只是把同样的命令行交给 wbus，攻击逻辑只有一份。
+            打开后需要有板级组件提供 plat_lcd_* / plat_touch_*（见 board_cyd）；
+            没有板级实现时自动回落成无屏。
 
 endmenu

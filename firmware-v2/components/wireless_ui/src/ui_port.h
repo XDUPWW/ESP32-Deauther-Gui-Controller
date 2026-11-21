@@ -19,4 +19,8 @@ void ui_port_set_calib(const ui_calib_t *calib);
 
 bool ui_port_touch_raw(int *raw_x, int *raw_y);
 
+bool ui_port_touch_map(int raw_x, int raw_y, int *screen_x, int *screen_y);
+
+void ui_port_tap(int x, int y);
+
 uint32_t ui_port_flush_count(void);

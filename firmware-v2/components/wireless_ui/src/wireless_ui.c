@@ -17,6 +17,7 @@
 #include "ui_calib.h"
 #include "ui_home.h"
 #include "ui_port.h"
+#include "ui_touch_cal.h"
 
 static const char *TAG = "wireless_ui";
 
@@ -97,6 +98,43 @@ void wireless_ui_calib_reset(void) {
     ui_port_set_calib(&calib);
 }
 
+bool wireless_ui_touch_calib(bool reset) {
+    if (!s_ready) {
+        return false;
+    }
+    if (reset) {
+        ui_calib_clear();
+    }
+    if (!ui_port_lock(100)) {
+        return false;
+    }
+    const bool ok = ui_touch_cal_start();
+    ui_port_unlock();
+    return ok;
+}
+
+void wireless_ui_touch_report(char *buf, size_t cap) {    if (buf == NULL || cap == 0) {
+        return;
+    }
+    if (!s_ready) {
+        snprintf(buf, cap, "touch no display");
+        return;
+    }
+    if (!ui_port_lock(50)) {
+        snprintf(buf, cap, "touch busy");
+        return;
+    }
+    int raw_x = 0;
+    int raw_y = 0;
+    const bool pressed = ui_port_touch_raw(&raw_x, &raw_y);
+    int x = 0;
+    int y = 0;
+    ui_port_touch_map(raw_x, raw_y, &x, &y);
+    ui_port_unlock();
+    snprintf(buf, cap, "touch raw_x=%d raw_y=%d x=%d y=%d pressed=%d", raw_x, raw_y, x, y,
+             pressed ? 1 : 0);
+}
+
 bool wireless_ui_ready(void) {
     return s_ready;
 }
@@ -121,13 +159,84 @@ void wireless_ui_status(char *buf, size_t cap) {
              (unsigned)ui_port_flush_count(), (unsigned)(esp_get_free_heap_size() / 1024));
 }
 
+static void dump_obj(lv_obj_t *obj, int depth) {
+    if (obj == NULL || depth > 4) {
+        return;
+    }
+    lv_area_t a;
+    lv_obj_get_coords(obj, &a);
+    const char *cls = "obj";
+    char text[24] = "";
+    if (lv_obj_check_type(obj, &lv_label_class)) {
+        cls = "label";
+        const char *t = lv_label_get_text(obj);
+        if (t != NULL) {
+            size_t i = 0;
+            for (; i < sizeof(text) - 1 && t[i] != '\0'; i++) {
+                text[i] = (t[i] == '\n') ? ' ' : t[i];
+            }
+            text[i] = '\0';
+        }
+    } else if (lv_obj_check_type(obj, &lv_button_class)) {
+        cls = "btn";
+    } else if (lv_obj_check_type(obj, &lv_image_class)) {
+        cls = "img";
+    }
+    char indent[9];
+    const int pad = (depth < 4) ? depth * 2 : 8;
+    memset(indent, ' ', (size_t)pad);
+    indent[pad] = '\0';
+    const char flags[3] = {
+        lv_obj_has_flag(obj, LV_OBJ_FLAG_CLICKABLE) ? 'c' : '-',
+        lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) ? 'h' : '-',
+        '\0',
+    };
+    char line[96];
+    snprintf(line, sizeof(line), "UI %s%-6s %s %3d,%3d %3dx%-3d %.20s", indent, cls, flags,
+             (int)a.x1, (int)a.y1, (int)(a.x2 - a.x1 + 1), (int)(a.y2 - a.y1 + 1), text);
+    transport_out(line);
+    const uint32_t n = lv_obj_get_child_count(obj);
+    for (uint32_t i = 0; i < n; i++) {
+        dump_obj(lv_obj_get_child(obj, (int32_t)i), depth + 1);
+    }
+}
+
+void wireless_ui_dump(void) {
+    if (!s_ready) {
+        transport_out("WARN ui.dump: no display");
+        return;
+    }
+    if (!ui_port_lock(120)) {
+        transport_out("WARN ui.dump: lock timeout");
+        return;
+    }
+    transport_out("UI screen");
+    dump_obj(lv_screen_active(), 1);
+    transport_out("UI top layer");
+    dump_obj(lv_layer_top(), 1);
+    ui_port_unlock();
+}
+
+bool wireless_ui_tap(int x, int y) {
+    if (!s_ready || x < 0 || y < 0) {
+        return false;
+    }
+    if (!ui_port_lock(120)) {
+        return false;
+    }
+    ui_port_tap(x, y);
+    ui_port_unlock();
+    return true;
+}
+
 bool wireless_ui_start(void) {
     if (s_ready) {
         return true;
     }
 
     ui_calib_t calib;
-    if (!ui_calib_load(&calib)) {
+    const bool calibrated = ui_calib_load(&calib);
+    if (!calibrated) {
         ui_calib_defaults(&calib);
     }
 
@@ -149,6 +258,10 @@ bool wireless_ui_start(void) {
     }
     ui_home_create();
     lv_timer_create(ui_tick, TICK_PERIOD_MS, NULL);
+    if (!calibrated) {
+        // 没存过校准值就直接进四点校准，默认映射只是按别人的板子猜的
+        (void)ui_touch_cal_start();
+    }
     ui_port_unlock();
 
     if (transport_add(&s_plugin) != ESP_OK) {

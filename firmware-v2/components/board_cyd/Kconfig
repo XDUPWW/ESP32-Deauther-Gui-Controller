@@ -1,0 +1,11 @@
+menu "Board"
+
+    config WB_BOARD_CYD
+        bool "ESP32-2432S028R (CYD) 屏幕与触摸"
+        depends on IDF_TARGET_ESP32
+        default y if IDF_TARGET_ESP32
+        help
+            ILI9341(SPI3) + XPT2046(SPI2) + 背光 GPIO21。关掉就只剩串口，
+            UI 会回落到无屏模式。换板子写一个同接口的组件即可，不用动 UI。
+
+endmenu

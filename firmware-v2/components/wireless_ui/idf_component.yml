@@ -1,17 +1,9 @@
 dependencies:
   idf: ">=5.3"
 
+  # 面板驱动不归 UI 管，谁提供 plat_lcd_init 谁自己带面板依赖（见 board_cyd）
   lvgl/lvgl:
     version: "^9.4"
-    rules:
-      - if: "target == esp32"
 
   espressif/esp_lvgl_port:
     version: "^2.7"
-    rules:
-      - if: "target == esp32"
-
-  espressif/esp_lcd_ili9341:
-    version: "^2.0"
-    rules:
-      - if: "target == esp32"

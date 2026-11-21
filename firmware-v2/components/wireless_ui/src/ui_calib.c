@@ -28,13 +28,49 @@ void ui_calib_defaults(ui_calib_t *calib) {
     }
     memset(calib, 0, sizeof(*calib));
     calib->valid = true;
-    calib->axis_x = 1;
-    calib->axis_y = 0;
-    calib->off_x = 240.0f;
-    calib->gain_x = (320.0f - 1.0f - 2.0f * UI_CALIB_INSET) / (3750.0f - 240.0f);
-    calib->off_y = 200.0f;
-    calib->gain_y = (240.0f - 1.0f - 2.0f * UI_CALIB_INSET) / (3700.0f - 200.0f);
+    // 本机 CYD 实测：屏的 X 取 raw_x，两个轴都是反向的
+    calib->axis_x = 0;
+    calib->axis_y = 1;
+    calib->off_x = 3249.0f;
+    calib->gain_x = -0.0933f;
+    calib->off_y = 3280.0f;
+    calib->gain_y = -0.0693f;
     calib->inset = (float)UI_CALIB_INSET;
+}
+
+static float edge_mean(const int16_t raw[4][2], int axis, int a, int b) {
+    return ((float)raw[a][axis] + (float)raw[b][axis]) * 0.5f;
+}
+
+bool ui_calib_solve(const int16_t raw[4][2], int16_t width, int16_t height, int16_t inset,
+                    ui_calib_t *calib) {
+    if (raw == NULL || calib == NULL) {
+        return false;
+    }
+    memset(calib, 0, sizeof(*calib));
+
+    // 上边两点哪个轴的跨度大，那个轴就是屏的 X 方向
+    const float dx_x = fabsf((float)raw[1][0] - (float)raw[0][0]);
+    const float dx_y = fabsf((float)raw[1][1] - (float)raw[0][1]);
+    calib->axis_x = (dx_y > dx_x) ? 1 : 0;
+    calib->axis_y = calib->axis_x ? 0 : 1;
+
+    const float x0 = edge_mean(raw, calib->axis_x, 0, 3);  // 左边缘
+    const float x1 = edge_mean(raw, calib->axis_x, 1, 2);  // 右边缘
+    const float y0 = edge_mean(raw, calib->axis_y, 0, 1);  // 上边缘
+    const float y1 = edge_mean(raw, calib->axis_y, 3, 2);  // 下边缘
+
+    const float span_x = (float)(width - 1 - 2 * inset);
+    const float span_y = (float)(height - 1 - 2 * inset);
+    calib->off_x = x0;
+    calib->gain_x = (fabsf(x1 - x0) > 1.0f) ? span_x / (x1 - x0) : 0.0f;
+    calib->off_y = y0;
+    calib->gain_y = (fabsf(y1 - y0) > 1.0f) ? span_y / (y1 - y0) : 0.0f;
+    calib->inset = (float)inset;
+    calib->valid = (calib->gain_x != 0.0f && calib->gain_y != 0.0f);
+    ESP_LOGI(TAG, "solve ax=%u ay=%u gx=%.4f gy=%.4f", calib->axis_x, calib->axis_y,
+             calib->gain_x, calib->gain_y);
+    return calib->valid;
 }
 
 bool ui_calib_load(ui_calib_t *calib) {

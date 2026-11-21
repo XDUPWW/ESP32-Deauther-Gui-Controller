@@ -5,7 +5,10 @@
 
 #include <stdint.h>
 
+#include "services/services.h"
 #include "wbus/wbus.h"
+
+const services_ui_ops_t *services_ui_ops(void);
 
 const wb_object_t *services_system_object(void);
 const wb_object_t *services_ui_object(void);

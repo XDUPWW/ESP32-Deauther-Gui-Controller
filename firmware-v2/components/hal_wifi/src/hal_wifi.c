@@ -107,12 +107,15 @@ static void sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
                 .rssi = pkt->rx_ctrl.rssi,
                 .channel = pkt->rx_ctrl.channel,
                 .rate_code = (uint8_t)pkt->rx_ctrl.rate,
-                .sig_mode = (uint8_t)pkt->rx_ctrl.sig_mode,
-                .mcs = (uint8_t)pkt->rx_ctrl.mcs,
-                .sgi = (uint8_t)pkt->rx_ctrl.sgi,
                 .timestamp = pkt->rx_ctrl.timestamp,
             },
     };
+#if CONFIG_IDF_TARGET_ESP32
+    // 经典 ESP32 才有这三个；C5 的 rxctrl 结构里没有，HT 信息在别的字段
+    item.meta.sig_mode = (uint8_t)pkt->rx_ctrl.sig_mode;
+    item.meta.mcs = (uint8_t)pkt->rx_ctrl.mcs;
+    item.meta.sgi = (uint8_t)pkt->rx_ctrl.sgi;
+#endif
     memcpy(item.data, pkt->payload, len);
     s_rx_frames++;
     if (xQueueSend(s_rxq, &item, 0) != pdTRUE) {

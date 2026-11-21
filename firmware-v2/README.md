@@ -108,9 +108,22 @@ idf.py -B build build
 idf.py -B build -p COM5 flash
 ```
 
-不依赖 Arduino。托管组件（`lvgl`、`esp_lvgl_port`、`esp_lcd_ili9341`、`cmake_utilities`）
-由 `components/wireless_ui/idf_component.yml` 声明，首次构建需要组件本地缓存或网络；
-解析结果记在 `dependencies.lock`，`managed_components/` 不入库。
+不依赖 Arduino。界面库与面板驱动分开声明：`lvgl`、`esp_lvgl_port` 由
+`components/wireless_ui/idf_component.yml` 声明（任何芯片都拉得到），`esp_lcd_ili9341`
+只由 `components/board_cyd/idf_component.yml` 声明、并且只对 ESP32 系列生效。
+首次构建需要组件本地缓存或网络；解析结果记在 `dependencies.lock`，`managed_components/` 不入库。
+
+两个宏决定屏幕这件事：
+
+| 宏 | 作用 | 在哪 |
+| --- | --- | --- |
+| `CONFIG_WB_LVGL` | 编不编 LVGL 界面层，与芯片无关 | `components/wireless_ui/Kconfig` |
+| `CONFIG_WB_BOARD_CYD` | 编不编 CYD 的 ILI9341 + XPT2046 后端 | `components/board_cyd/Kconfig` |
+
+`WB_LVGL` 打开但没绑板级后端时，固件照常起来，只是回落成无屏（`WARN no display, headless`）。
+换一块板要接屏幕，按 `plat_display_ops_t` 实现四个函数再 `plat_display_bind()` 即可，
+UI 层不用改一行。
+
 
 ## 自测
 

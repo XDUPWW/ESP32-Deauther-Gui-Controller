@@ -9,7 +9,9 @@
 #include "freertos/task.h"
 
 #include "attacks/attack.h"
+#include "board_cyd/board_cyd.h"
 #include "hal_wifi/hal_wifi.h"
+#include "platform/plat_display.h"
 #include "platform/plat_led.h"
 #include "platform/plat_console.h"
 #include "platform/plat_storage.h"
@@ -24,6 +26,10 @@ static const char *TAG = "main";
 static const services_ui_ops_t kUiOps = {
     .screen = wireless_ui_selftest,
     .status = wireless_ui_status,
+    .touch = wireless_ui_touch_report,
+    .touch_cal = wireless_ui_touch_calib,
+    .tap = wireless_ui_tap,
+    .dump = wireless_ui_dump,
 };
 
 void app_main(void) {
@@ -31,6 +37,7 @@ void app_main(void) {
 
     plat_storage_init();
     plat_led_init();
+    plat_display_bind(board_cyd_display_ops());
     if (plat_console_init() != ESP_OK) {
         ESP_LOGE(TAG, "console init failed");
         return;
