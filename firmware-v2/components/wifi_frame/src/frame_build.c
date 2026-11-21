@@ -114,8 +114,20 @@ int wf_build_llc_snap(uint8_t *buf, size_t cap, uint16_t ethertype, const uint8_
 
 int wf_build_bar(uint8_t *buf, size_t cap, const uint8_t ra[6], const uint8_t ta[6], uint8_t tid,
                  uint16_t ssn) {
-    (void)buf, (void)cap, (void)ra, (void)ta, (void)tid, (void)ssn;
-    return -1;
+    if (buf == NULL || ra == NULL || ta == NULL || cap < 20) {
+        return -1;
+    }
+    memset(buf, 0, 20);
+    buf[0] = WF_ST_BAR;
+    buf[1] = 0x00;
+    memcpy(buf + 4, ra, 6);
+    memcpy(buf + 10, ta, 6);
+    // BAR Control: bit2 = compressed bitmap, bits12..15 = TID_INFO
+    const uint16_t control = (uint16_t)(0x0004 | ((tid & 0x0F) << 12));
+    wf_put_le16(buf + 16, control);
+    // Starting Sequence Control: 12-bit sequence number in bits4..15
+    wf_put_le16(buf + 18, (uint16_t)((ssn & 0x0FFF) << 4));
+    return 20;
 }
 
 int wf_build_rts(uint8_t *buf, size_t cap, const uint8_t ra[6], const uint8_t ta[6],

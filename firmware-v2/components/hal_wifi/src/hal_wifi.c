@@ -40,9 +40,14 @@ typedef struct {
     uint32_t expire_ms;
 } lease_t;
 
+typedef struct {
+    hal_wifi_rx_fn fn;
+    void *ctx;
+} rx_sub_t;
+
 static QueueHandle_t s_rxq;
-static hal_wifi_rx_fn s_rx_fn;
-static void *s_rx_ctx;
+static rx_sub_t s_subs[HAL_WIFI_RX_SUBS];
+static size_t s_sub_count;
 static lease_t s_lease;
 static uint8_t s_channel;
 static uint32_t s_last_unicast_ms;
@@ -58,6 +63,8 @@ static volatile uint32_t s_chan_granted;
 static volatile uint32_t s_chan_denied;
 static volatile uint32_t s_chan_expired;
 static volatile int32_t s_last_tx_err;
+
+static hal_rate_t s_rate = HAL_RATE_DEFAULT;
 
 static hal_scan_ap_t s_scan[HAL_WIFI_SCAN_MAX];
 static uint32_t s_scan_count;
@@ -109,8 +116,10 @@ static void rx_task(void *arg) {
         if (xQueueReceive(s_rxq, &item, portMAX_DELAY) != pdTRUE) {
             continue;
         }
-        if (s_rx_fn != NULL) {
-            s_rx_fn(item.data, item.len, item.rssi, item.channel, s_rx_ctx);
+        for (size_t i = 0; i < s_sub_count; i++) {
+            if (s_subs[i].fn != NULL) {
+                s_subs[i].fn(item.data, item.len, item.rssi, item.channel, s_subs[i].ctx);
+            }
         }
     }
 }
@@ -172,6 +181,83 @@ esp_err_t hal_wifi_mac(uint8_t out[6]) {
         return ESP_ERR_INVALID_ARG;
     }
     return esp_wifi_get_mac(WIFI_IF_STA, out);
+}
+
+static wifi_phy_rate_t to_phy_rate(hal_rate_t rate) {
+    switch (rate) {
+        case HAL_RATE_1M:
+            return WIFI_PHY_RATE_1M_L;
+        case HAL_RATE_2M:
+            return WIFI_PHY_RATE_2M_L;
+        case HAL_RATE_5M5:
+            return WIFI_PHY_RATE_5M_L;
+        case HAL_RATE_11M:
+            return WIFI_PHY_RATE_11M_L;
+        case HAL_RATE_6M:
+            return WIFI_PHY_RATE_6M;
+        case HAL_RATE_9M:
+            return WIFI_PHY_RATE_9M;
+        case HAL_RATE_12M:
+            return WIFI_PHY_RATE_12M;
+        case HAL_RATE_18M:
+            return WIFI_PHY_RATE_18M;
+        case HAL_RATE_24M:
+            return WIFI_PHY_RATE_24M;
+        case HAL_RATE_36M:
+            return WIFI_PHY_RATE_36M;
+        case HAL_RATE_48M:
+            return WIFI_PHY_RATE_48M;
+        case HAL_RATE_54M:
+            return WIFI_PHY_RATE_54M;
+        default:
+            return WIFI_PHY_RATE_1M_L;
+    }
+}
+
+esp_err_t hal_wifi_set_tx_rate(hal_rate_t rate) {
+    if (rate == HAL_RATE_DEFAULT) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    const esp_err_t err = esp_wifi_config_80211_tx_rate(WIFI_IF_STA, to_phy_rate(rate));
+    if (err == ESP_OK) {
+        s_rate = rate;
+    }
+    return err;
+}
+
+hal_rate_t hal_wifi_tx_rate(void) {
+    return s_rate;
+}
+
+const char *hal_wifi_rate_name(hal_rate_t rate) {
+    switch (rate) {
+        case HAL_RATE_1M:
+            return "1m";
+        case HAL_RATE_2M:
+            return "2m";
+        case HAL_RATE_5M5:
+            return "5m5";
+        case HAL_RATE_11M:
+            return "11m";
+        case HAL_RATE_6M:
+            return "6m";
+        case HAL_RATE_9M:
+            return "9m";
+        case HAL_RATE_12M:
+            return "12m";
+        case HAL_RATE_18M:
+            return "18m";
+        case HAL_RATE_24M:
+            return "24m";
+        case HAL_RATE_36M:
+            return "36m";
+        case HAL_RATE_48M:
+            return "48m";
+        case HAL_RATE_54M:
+            return "54m";
+        default:
+            return "default";
+    }
 }
 
 esp_err_t hal_wifi_channel_acquire(const char *owner, hal_ch_mode_t mode, uint8_t channel,
@@ -269,9 +355,33 @@ esp_err_t hal_wifi_tx(const uint8_t *frame, uint16_t len) {
 }
 
 esp_err_t hal_wifi_rx_subscribe(hal_wifi_rx_fn fn, void *ctx) {
-    s_rx_fn = fn;
-    s_rx_ctx = ctx;
+    if (fn == NULL || s_sub_count >= HAL_WIFI_RX_SUBS) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t i = 0; i < s_sub_count; i++) {
+        if (s_subs[i].fn == fn) {
+            s_subs[i].ctx = ctx;
+            return ESP_OK;
+        }
+    }
+    s_subs[s_sub_count].fn = fn;
+    s_subs[s_sub_count].ctx = ctx;
+    s_sub_count++;
     return ESP_OK;
+}
+
+esp_err_t hal_wifi_rx_unsubscribe(hal_wifi_rx_fn fn) {
+    for (size_t i = 0; i < s_sub_count; i++) {
+        if (s_subs[i].fn != fn) {
+            continue;
+        }
+        for (size_t j = i + 1; j < s_sub_count; j++) {
+            s_subs[j - 1] = s_subs[j];
+        }
+        s_sub_count--;
+        return ESP_OK;
+    }
+    return ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t hal_wifi_rx_set_filter(bool mgmt, bool ctrl, bool data) {

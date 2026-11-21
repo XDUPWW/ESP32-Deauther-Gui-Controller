@@ -9,6 +9,7 @@
 #include "wifi_frame/frame_build.h"
 #include "wifi_frame/frames.h"
 #include "wifi_frame/ie_parse.h"
+#include "wifi_frame/mac.h"
 
 static int g_pass;
 static int g_fail;
@@ -147,8 +148,61 @@ static void test_ie_helpers(void) {
     CHECK(channel == 11 && count == 5, "csa fields");
 }
 
+static void test_mac(void) {
+    printf("mac helpers\n");
+    uint8_t mac[6] = {0};
+    CHECK(wf_mac_parse("aa:BB:01:02:03:04", mac), "parse mixed case");
+    CHECK(mac[0] == 0xAA && mac[1] == 0xBB && mac[5] == 0x04, "parsed bytes");
+    CHECK(!wf_mac_parse("aa:bb:01:02:03", mac), "short mac rejected");
+    CHECK(!wf_mac_parse("aa:bb:01:02:03:1ff", mac), "overflow octet rejected");
+
+    char text[18];
+    wf_mac_format(text, mac);
+    CHECK(strcmp(text, "aa:bb:01:02:03:04") == 0, "format");
+
+    static const uint8_t kGroup[6] = {0x01, 0, 0, 0, 0, 0};
+    static const uint8_t kUnicast[6] = {0x02, 0, 0, 0, 0, 0};
+    static const uint8_t kBcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+    CHECK(wf_mac_is_group(kGroup), "group bit");
+    CHECK(!wf_mac_is_group(kUnicast), "unicast bit");
+    CHECK(wf_mac_is_broadcast(kBcast), "broadcast");
+    CHECK(!wf_mac_is_broadcast(kUnicast), "not broadcast");
+
+    uint8_t rnd[6];
+    wf_mac_randomize(rnd, 0x1122334455667788ULL);
+    CHECK(!wf_mac_is_group(rnd), "randomized mac is unicast");
+    CHECK((rnd[0] & 0x02) != 0, "randomized mac is locally administered");
+    uint8_t again[6];
+    wf_mac_randomize(again, 0x1122334455667788ULL);
+    CHECK(memcmp(rnd, again, 6) == 0, "same entropy same mac");
+    wf_mac_randomize(again, 0x8877665544332211ULL);
+    CHECK(memcmp(rnd, again, 6) != 0, "different entropy different mac");
+}
+
+static void test_bar(void) {
+    printf("block ack request\n");
+    static const uint8_t kRa[6] = {0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
+    static const uint8_t kTa[6] = {0x02, 0x21, 0x22, 0x23, 0x24, 0x25};
+    uint8_t frame[WF_FRAME_CAP];
+    const int len = wf_build_bar(frame, sizeof(frame), kRa, kTa, 5, 0x123);
+    CHECK(len == 20, "BAR is 20 bytes");
+    CHECK(frame[0] == WF_ST_BAR, "control subtype 8");
+    CHECK(frame[1] == 0x00, "flags");
+    CHECK(memcmp(frame + 4, kRa, 6) == 0, "addr1 is RA");
+    CHECK(memcmp(frame + 10, kTa, 6) == 0, "addr2 is TA");
+    const uint16_t control = wf_le16(frame + 16);
+    CHECK((control & 0x0004) != 0, "compressed bitmap bit");
+    CHECK(((control >> 12) & 0x0F) == 5, "tid in bits12..15");
+    CHECK(wf_le16(frame + 18) == (uint16_t)(0x123 << 4), "starting sequence");
+
+    uint8_t small[10];
+    CHECK(wf_build_bar(small, sizeof(small), kRa, kTa, 0, 0) < 0, "cap too small");
+}
+
 int main(void) {
     printf("wifi_frame host tests\n");
+    test_mac();
+    test_bar();
     test_probe_req();
     test_beacon();
     test_ie_helpers();

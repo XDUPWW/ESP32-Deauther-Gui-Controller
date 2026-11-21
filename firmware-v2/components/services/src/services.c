@@ -15,7 +15,9 @@ void services_start(void) {
     wb_register(services_ui_object());
     wb_register(services_radio_object());
     wb_register(services_scan_object());
+    wb_register(services_monitor_object());
     services_scan_attach_rx();
+    services_monitor_attach_rx();
     ESP_LOGI(TAG, "objects registered");
 }
 

@@ -123,13 +123,13 @@ def main():
         device,
         "system.info",
         "system.info",
-        must=("idf=v6.1", "uptime_s=", "heap=", "min_heap=", "objects=4", "OK system.info"),
+        must=("idf=v6.1", "uptime_s=", "heap=", "min_heap=", "objects=5", "OK system.info"),
     )
     out = expect(report, device, "system.help", "system.help",
                  must=("system", "ping", "screen", "[count=1..4]", "OK system.help"))
     report.check(
         "help lists every object",
-        all(any(obj in l for l in out) for obj in ("system", "ui", "radio", "scan")),
+        all(any(obj in l for l in out) for obj in ("system", "ui", "radio", "scan", "monitor")),
         repr(out[:8]),
     )
     expect(report, device, "system.touch", "system.touch",
@@ -219,7 +219,7 @@ def main():
 
     print("== injection loop ==")
     expect(report, device, "inject probe request", "radio.tx_test",
-           must=("probe request sent len=36", "OK radio.tx_test"))
+           must=("sent kind=probe len=36", "OK radio.tx_test"))
     tx = device.command("radio.info")
     tx_ok = 0
     for line in tx:
@@ -256,6 +256,12 @@ def main():
            must=("channel=6", "owner=radio"))
     expect(report, device, "release channel", "radio.release", must=("released",))
     expect(report, device, "radio diag", "radio.diag", must=("promisc=", "filter=0x", "cc=CN"))
+
+    print("== monitor ==")
+    expect(report, device, "monitor open", "monitor.start kind=ctrl",
+           must=("monitor on kind=ctrl",), timeout=5)
+    expect(report, device, "monitor status", "monitor.status", must=("on=1", "total=", "rx="))
+    expect(report, device, "monitor close", "monitor.stop", must=("monitor off",))
 
     print("== screen flush path ==")
 

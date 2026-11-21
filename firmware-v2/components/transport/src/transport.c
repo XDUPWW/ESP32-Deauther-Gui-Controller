@@ -33,6 +33,11 @@ static void broadcast(void *ctx, const char *line) {
     }
 }
 
+static void on_event(void *ctx, const char *line) {
+    (void)ctx;
+    broadcast(NULL, line);
+}
+
 void transport_out(const char *line) {
     if (line != NULL) {
         broadcast(NULL, line);
@@ -86,6 +91,8 @@ esp_err_t transport_start(void) {
         ESP_LOGE(TAG, "inbox alloc failed");
         return ESP_ERR_NO_MEM;
     }
+    // 所有对象的事件都往所有插件上广播，界面和串口看到的是同一份
+    wb_subscribe("*", on_event, NULL);
     if (xTaskCreate(transport_task, "transport", TASK_STACK, NULL, TASK_PRIORITY, NULL) != pdPASS) {
         ESP_LOGE(TAG, "task create failed");
         vQueueDelete(s_inbox);

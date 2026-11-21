@@ -11,6 +11,8 @@ const wb_object_t *services_system_object(void);
 const wb_object_t *services_ui_object(void);
 const wb_object_t *services_radio_object(void);
 const wb_object_t *services_scan_object(void);
+const wb_object_t *services_monitor_object(void);
 
 void services_scan_attach_rx(void);
+void services_monitor_attach_rx(void);
 void services_scan_tick(uint32_t now_ms);

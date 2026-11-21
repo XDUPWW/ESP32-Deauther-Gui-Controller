@@ -66,7 +66,9 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 | `radio.chan ch=1..196 [hold=0..600000]` | 申请并切换信道（租约），被占时返回占用者 |
 | `radio.release` | 释放信道租约 |
 | `radio.diag` | 从驱动读回混杂/过滤/信道/国家码 |
-| `radio.tx_test [ssid=""]` | 注入一个广播 probe request，用来验证注入链路 |
+| `radio.tx_test [kind=probe\|bar] [ta=mac\|random] [ra=mac] [rate=1m..54m\|keep] [ssid=""] [tid] [ssn]` | 注入一帧并回报长度/信道/速率/TA/RA；`kind=bar` 发 20 字节控制帧 |
+| `monitor.start [kind=all\|mgmt\|ctrl\|data] [ta=mac]` | 打开嗅探，抓到的帧逐条打 `EVT monitor.rx` |
+| `monitor.chan ch=1..196` / `monitor.stop` / `monitor.status` | 嗅探信道 / 停止 / 计数 |
 | `scan.ap [dwell=1..500]` | 主动扫描（阻塞 1~2 s），结果写入目标表并逐条打印 |
 | `scan.listen [dwell=20..2000]` | 被动监听：拿到信道租约后自动跳 1..13 信道 |
 | `scan.stop` / `scan.status` | 停止监听 / 监听计数（beacon、probe response、丢弃） |
@@ -105,9 +107,12 @@ idf.py -B build -p COM5 flash
 | 入口 | 依赖 | 覆盖 |
 | --- | --- | --- |
 | `sh host_tests/run.sh` | 系统 gcc | `wbus` 70 项 + `wifi_frame` 36 项：注册表、调用、参数策略、回执、事件、边界、probe 组帧逐字节、beacon/TIM/CSA/RSN 解析 |
-| `python tools/selftest.py COM5` | pyserial + 板子 | 44 项：启动、对象方法、参数报错、超长行、突发背压、界面镜像、刷屏增量、主动扫描、信道仲裁、注入闭环（AP 回应我们的 probe）、稳定性 |
+| `python tools/aircheck.py COM5 COM6` | pyserial + **两块板** | 22 项：控制帧/管理帧逐字段比对、指定与随机 TA、单播节流、广播突发 |
+| `python tools/selftest.py COM5` | pyserial + 板子 | 47 项：启动、对象方法、参数报错、超长行、突发背压、界面镜像、刷屏增量、主动扫描、信道仲裁、注入闭环（AP 回应我们的 probe）、稳定性 |
 
-板端自测会复位开发板并逐条校验回执，失败返回非 0。最近一次结果：主机 106/106、板端 44/44。
+`selftest.py` 复位单块板逐条校验回执；`aircheck.py` 一块注入一块嗅探，确认帧真的按预期的
+形状上了空气（两块板刷同一份固件）。失败都返回非 0。
+最近一次结果：主机 128/128、板端 47/47、跨板 22/22。
 
 ## 状态
 
@@ -129,6 +134,10 @@ idf.py -B build -p COM5 flash
   `-Wl,-z,muldefs`（已写进顶层 `CMakeLists.txt`），否则会报重复定义。
 - 混杂接收的帧长上限 512 字节；更长的帧直接丢弃并计入 `rx_too_long`（旧版用 256 字节时
   把带一堆 IE 的 beacon 全丢了）。
+- 注入速率用 `esp_wifi_config_80211_tx_rate()`，是按接口全局生效的；IDF 6.1 的
+  `wifi_pkt_rx_ctrl_t` 里已经没有 `rate` 字段，所以**收到帧的实际速率读不出来**，
+  固定速率只能靠第三方 radiotap 抓包（C5 的管道 + tshark）才能自证。
+- 驱动文档写 `esp_wifi_80211_tx` 只支持 len >= 24，但实测 20 字节的 BAR 能发出去并被抓到。
 - WiFi 起来后剩余堆约 80 KB（LVGL 池 80 KB + WiFi 栈 + RX 队列 8 KB），后续攻击模块要按这个预算分配缓冲。
 
 ## 许可证
