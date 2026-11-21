@@ -17,6 +17,10 @@ static const char *TAG = "plat_console";
 #define CONSOLE_RX_BUF 2048
 
 esp_err_t plat_console_init(void) {
+    static bool ready;
+    if (ready) {
+        return ESP_OK;
+    }
     const uart_config_t cfg = {
         .baud_rate = CONSOLE_BAUD,
         .data_bits = UART_DATA_8_BITS,
@@ -31,6 +35,7 @@ esp_err_t plat_console_init(void) {
     ESP_RETURN_ON_ERROR(uart_set_pin(CONSOLE_UART, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
                                      UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE),
                         TAG, "uart pin config failed");
+    ready = true;
     return ESP_OK;
 }
 

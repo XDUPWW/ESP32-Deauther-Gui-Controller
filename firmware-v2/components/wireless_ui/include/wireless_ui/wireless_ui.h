@@ -4,11 +4,14 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 bool wireless_ui_start(void);
 
 bool wireless_ui_ready(void);
 
-void wireless_ui_calib_reset(void);
+bool wireless_ui_selftest(int count);
 
-bool wireless_ui_selftest(void);
+void wireless_ui_status(char *buf, size_t cap);
+
+void wireless_ui_calib_reset(void);

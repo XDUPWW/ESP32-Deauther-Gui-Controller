@@ -1,1 +1,4 @@
-idf_component_register(INCLUDE_DIRS "include")
+idf_component_register(
+    SRCS "src/wbus.c"
+    INCLUDE_DIRS "include"
+)

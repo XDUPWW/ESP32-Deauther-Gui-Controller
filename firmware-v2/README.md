@@ -34,21 +34,32 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 
 ## 已实现
 
+- `wbus`：对象注册表、`obj.method key=value` 调用、参数策略校验（类型/范围/必填/默认值/未知参数）、回执与错误文案、事件发布订阅
 - `platform`：UART0 控制台（115200 8N1）、ILI9341（SPI3）、XPT2046（SPI2）、NVS 键值、GPIO4 状态灯
-- `transport`：行解析、`\r`/`\n`/退格处理、命令表、外部组件可注册命令、输出镜像（供界面显示同一份回执）
-- `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、主页（标题/运行时长/剩余堆/回执行）、触摸四点校准数据存 NVS
-- `main`：初始化顺序与常驻循环
+- `transport`：插件表、行解析（`\r`/`\n`/退格/超长）、串口插件、把输入行路由到 `wbus`、把回执广播给所有插件
+- `services`：`system` 对象（ping/info/help/touch/reset）、`ui` 对象（screen/status），界面能力由 `main` 注入
+- `attacks`：攻击驱动描述符与登记表（空，无攻击注册）
+- `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、主页（标题/运行时长/剩余堆/回执行）、触摸校准存 NVS、作为 `transport` 插件显示同一份回执
+- `main`：按层序编排与常驻循环
 
-串口命令：
+契约占位（只有头文件与空实现，返回 `ESP_ERR_NOT_SUPPORTED` 或 `-1`）：
+`hal_wifi`（收发/信道/混杂/扫描/TSF）、`wifi_frame`（帧构造与 IE 解析）、`wtarget`（设备登记表）。
+
+串口命令一律是 `对象.方法 [key=value ...]`：
 
 | 命令 | 作用 |
 | --- | --- |
-| `PING` | 存活检查，返回毫秒级运行时间 |
-| `INFO` | IDF 版本、剩余堆与历史最小堆、运行秒数 |
-| `TOUCH` | 采样一次触摸原始坐标与按下状态 |
-| `HELP` | 命令表（含已注册的外部命令） |
-| `SCREEN` | 全屏红/绿/蓝/白循环，验证 SPI 刷屏通路 |
-| `UI` | 界面状态与累计刷屏次数 |
+| `system.ping` | 存活检查，返回毫秒级运行时间 |
+| `system.info` | IDF 版本、运行秒数、剩余堆与最小堆、已注册对象数 |
+| `system.help` | 从注册表生成的对象/方法/参数签名表 |
+| `system.touch` | 采样一次触摸原始坐标与按下状态 |
+| `system.reset` | 重启 |
+| `ui.status` | 界面状态：就绪与否、累计刷屏次数、剩余堆 |
+| `ui.screen [count=1..4]` | 全屏色块循环，验证 SPI 刷屏通路 |
+
+参数校验由 `wbus` 统一负责，报错文案形如
+`ERR ui.screen: count must be 1..4` / `ERR ui.screen: count is not a number` /
+`ERR ui.screen: extra is not a parameter of screen` / `ERR bogus.ping: unknown object`。
 
 ## 板级接线（ESP32-2432S028R）
 
@@ -76,9 +87,11 @@ idf.py -B build -p COM5 flash
 
 - [x] 目录骨架、空组件、`REQUIRES` 白名单、可编译入口
 - [x] 屏幕点亮（ILI9341 + LVGL）、触摸采样、串口命令闭环
-- [ ] 总线与驱动层代码（wbus / hal_wifi / wifi_frame）
+- [x] 总线骨架：注册表 / 调用 / 参数策略 / 回执 / 事件；插件化传输；对象方法命令
+- [x] 各层契约头文件（`hal_wifi`、`wifi_frame`、`wtarget`、`attacks`）
+- [ ] 总线之后的实现填充：`hal_wifi` 收发与节流、`wifi_frame` 组帧与解析、`wtarget` 登记表
 - [ ] 攻击模块重写
-- [ ] 其余上层接口插件
+- [ ] 其余上层接口插件（LVGL 队列以外的 TCP / BLE）
 
 ## 已知约束
 

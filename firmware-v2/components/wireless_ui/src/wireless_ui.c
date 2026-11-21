@@ -3,6 +3,7 @@
 
 #include "wireless_ui/wireless_ui.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -12,7 +13,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "platform/plat_console.h"
-#include "transport/console.h"
+#include "transport/transport.h"
 #include "ui_calib.h"
 #include "ui_home.h"
 #include "ui_port.h"
@@ -30,11 +31,12 @@ static const uint32_t kTestColors[] = {0xFF0000, 0x00FF00, 0x0000FF, 0xFFFFFF};
 static QueueHandle_t s_logs;
 static bool s_ready;
 static int s_test_step = -1;
+static int s_test_limit = (int)TEST_COLOR_COUNT;
 static uint32_t s_test_stamp;
 static lv_obj_t *s_test_cover;
 
-static void log_mirror(void *ctx, const char *line) {
-    (void)ctx;
+static void ui_line_out(transport_plugin_t *self, const char *line) {
+    (void)self;
     if (s_logs == NULL || line == NULL) {
         return;
     }
@@ -43,6 +45,11 @@ static void log_mirror(void *ctx, const char *line) {
     copy[sizeof(copy) - 1] = '\0';
     xQueueSend(s_logs, copy, 0);
 }
+
+static transport_plugin_t s_plugin = {
+    .name = "lvgl",
+    .line_out = ui_line_out,
+};
 
 static void selftest_tick(void) {
     if (s_test_step < 0) {
@@ -61,7 +68,7 @@ static void selftest_tick(void) {
     if (s_test_step > 0 && (now - s_test_stamp) < SELFTEST_STEP_MS) {
         return;
     }
-    if (s_test_step >= (int)TEST_COLOR_COUNT) {
+    if (s_test_step >= s_test_limit) {
         lv_obj_delete(s_test_cover);
         s_test_cover = NULL;
         s_test_step = -1;
@@ -94,31 +101,31 @@ bool wireless_ui_ready(void) {
     return s_ready;
 }
 
-bool wireless_ui_selftest(void) {
+bool wireless_ui_selftest(int count) {
     if (!s_ready) {
         return false;
     }
+    if (count <= 0 || count > (int)TEST_COLOR_COUNT) {
+        count = (int)TEST_COLOR_COUNT;
+    }
+    s_test_limit = count;
     s_test_step = 0;
     return true;
 }
 
-static int console_screen(const char *args) {
-    (void)args;
-    return wireless_ui_selftest() ? 0 : -1;
-}
-
-static int console_ui(const char *args) {
-    (void)args;
-    plat_console_printf("UI ready=%d flush=%u heap=%u\r\n", s_ready ? 1 : 0,
-                        (unsigned)ui_port_flush_count(),
-                        (unsigned)(esp_get_free_heap_size() / 1024));
-    return 0;
+void wireless_ui_status(char *buf, size_t cap) {
+    if (buf == NULL || cap == 0) {
+        return;
+    }
+    snprintf(buf, cap, "ready=%d flush=%u heap=%uKB", s_ready ? 1 : 0,
+             (unsigned)ui_port_flush_count(), (unsigned)(esp_get_free_heap_size() / 1024));
 }
 
 bool wireless_ui_start(void) {
     if (s_ready) {
         return true;
     }
+
     ui_calib_t calib;
     if (!ui_calib_load(&calib)) {
         ui_calib_defaults(&calib);
@@ -144,9 +151,9 @@ bool wireless_ui_start(void) {
     lv_timer_create(ui_tick, TICK_PERIOD_MS, NULL);
     ui_port_unlock();
 
-    transport_console_set_mirror(log_mirror, NULL);
-    transport_console_register("SCREEN", console_screen);
-    transport_console_register("UI", console_ui);
+    if (transport_add(&s_plugin) != ESP_OK) {
+        ESP_LOGW(TAG, "plugin registration failed");
+    }
     s_ready = true;
     ESP_LOGI(TAG, "ui ready");
     return true;

@@ -7,7 +7,7 @@
 #include <string.h>
 
 #include "platform/plat_led.h"
-#include "transport/console.h"
+#include "transport/transport.h"
 
 #define LOG_LINES 9
 #define LOG_COLS 46
@@ -25,7 +25,7 @@ static bool s_led_on;
 static void on_button(lv_event_t *event) {
     const char *line = (const char *)lv_event_get_user_data(event);
     if (line != NULL) {
-        transport_console_submit(line);
+        (void)transport_submit(line);
     }
 }
 
@@ -138,8 +138,8 @@ void ui_home_create(void) {
     lv_obj_set_style_pad_column(row1, 8, 0);
     lv_obj_set_flex_flow(row1, LV_FLEX_FLOW_ROW);
 
-    make_button(row1, "PING", on_button, "PING");
-    make_button(row1, "INFO", on_button, "INFO");
+    make_button(row1, "PING", on_button, "system.ping");
+    make_button(row1, "INFO", on_button, "system.info");
 
     lv_obj_t *row2 = lv_obj_create(root);
     lv_obj_set_width(row2, LV_PCT(100));
@@ -154,7 +154,7 @@ void ui_home_create(void) {
     lv_label_set_text(s_led_label, "LED off");
     lv_obj_set_flex_grow(s_led_label, 1);
 
-    make_button(row2, "TOUCH", on_button, "TOUCH");
+    make_button(row2, "TOUCH", on_button, "system.touch");
     make_button(row2, "LED", on_led, NULL);
 
     ui_home_push_line("INFO ui ready");
