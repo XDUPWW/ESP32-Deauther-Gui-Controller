@@ -66,6 +66,8 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 | `radio.chan ch=1..196 [hold=0..600000]` | 申请并切换信道（租约），被占时返回占用者 |
 | `radio.release` | 释放信道租约 |
 | `radio.diag` | 从驱动读回混杂/过滤/信道/国家码 |
+| `radio.sta_list [src=auto\|passive\|ap]` | STA 表。`passive` 是混杂嗅出来的，`ap` 是 softAP 已关联的，`auto` 按当前模式自动选（没起 AP 就用被动表） |
+| `radio.ap [ssid="v2-ap"] [pass=""] [ch=1..196]` / `radio.ap_stop` | 起停 softAP。切 AP 模式会关掉混杂 |
 | `radio.rate rate=default\|1m\|2m\|5m5\|11m\|6m..54m\|mcs0..mcs7\|mcs0sgi..mcs7sgi` | 写 NVS，重启后生效——驱动只支持在 `esp_wifi_start()` 之前设速率 |
 | `radio.tx_test [kind=probe\|bar\|data\|qosnull] [ta=mac\|random] [ra=mac] [ssid=""] [tid] [ssn]` | 注入一帧并回报长度/信道/速率/TA/RA；`kind=bar` 发 20 字节控制帧，`kind=qosnull` 发 26 字节 QoS Null（唯一能上 HT 速率的载体） |
 | `radio.tx_bench [count=1..2000] [gap=0..500] [kind=probe\|bar\|data] [unicast=bool] [pad=0..1000]` | 连发测吞吐，回报成功/被拒/节流计数与帧构建耗时 |
@@ -135,8 +137,14 @@ idf.py -B build -p COM5 flash
 - 触摸坐标映射依赖四角校准，默认值来自本板实测；换屏或换分辨率需重新校准。
 - 注入能出去靠覆盖 `libnet80211` 里的 `ieee80211_raw_frame_sanity_check`，链接期必须带
   `-Wl,-z,muldefs`（已写进顶层 `CMakeLists.txt`），否则会报重复定义。
-- 混杂接收的帧长上限 512 字节；更长的帧直接丢弃并计入 `rx_too_long`（旧版用 256 字节时
-  把带一堆 IE 的 beacon 全丢了）。
+- 注入和接收的帧长都跟驱动对齐到 1500：`WF_FRAME_CAP` 1500（组帧）、`RX_FRAME_MAX`
+  1536（比注入宽一点，`sig_len` 含 4 字节 FCS，AMPDU 还会更长）。RX 队列因此从 16 深
+  降到 8 深——16×1536 要吃 25 KB 堆，8×1536 约 12 KB。实测 1478 字节的 QoS data 能发
+  也能完整收到，不再有截断。
+- **广播注入也限速**（20 ms 一帧，约 50 fps）。单播的 45 ms 是等 ACK 的余量，广播不等
+  ACK 但帧池回收照样有限：实测 gap=0 连排 132 帧就把 32 个帧池打穿，然后 0x101 一路到
+  底。这条下限由 HAL 兜住，攻击模块不用自己数节奏；`radio.tx_bench` 遇到节流会自动重试，
+  所以 gap=0 时测出来的是真实的 ~50 fps，不是第一帧。
 - 注入速率是**启动期配置**：`esp_wifi_config_80211_tx_rate()` 必须在 `esp_wifi_init()`
   之后、`esp_wifi_start()` 之前调用，只影响 `esp_wifi_80211_tx()` 发出的帧。官方没有运行期
   逐包选速率的接口，所以 `radio.rate` 只写 NVS，重启才生效。
