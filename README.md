@@ -135,10 +135,12 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ├── README.md                     ← 你正在看的这个文件
 ├── LICENSE                       ← GPLv3（继承上游 ESP32-Deauther）
 ├── .gitignore
-├── TODO.md                       ← 路线图：PMKID / 企业网络 / BTM-SAE-TIM 的效果验证 / Android / BLE / wbus 总线重构
+├── TODO.md                       ← 路线图：PMKID / 企业网络 / BTM-SAE-TIM 的效果验证 / Android / BLE / 框架重构 P0–P10
+├── 架构与路线图-v2.md              ← 框架架构演进方案（分层红线 / transport 插件 / wtarget / 功能对照清单 / 阶段闸门）
 ├── attack-principles.md          ← 攻击原理全量梳理（逐模块：协议层 / 帧格式 / 有效与失效 / 实测）
 ├── learning-roadmap.md           ← 学习路线（零嵌入式经验 → 读懂本工程，含架构与 API 盘点）
-├── firmware/                     ← 固件（ESP-IDF 工程）
+├── firmware/                     ← 固件（ESP-IDF 工程，现有实现，冻结为回归基线）
+├── firmware-v2/                  ← 重构新工程（纯 ESP-IDF，无 Arduino；骨架已建，按分层重写；Apache-2.0）
 │   ├── README.md                 ← 构建 / 协议 / 界面 / 故障排查
 │   ├── 代码框架与攻击原理.md        ← 802.11 背景 + 代码框架（攻击原理已被根目录那份取代）
 │   ├── 测试报告.md                 ← 用例矩阵、性能、已修缺陷、已知限制
@@ -224,6 +226,9 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 2. **协议是唯一控制面**：屏上按钮和上位机都只发协议行，攻击逻辑只有一份。
 3. **界面可选**：`CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT=n` 时 `components/wireless_ui/` 不编译任何源文件。
 4. **频段运行时切换**：按目标信道设国家码 + 信道，C5 额外设 `WIFI_BAND_MODE_AUTO`，所以不需要为 2.4G / 5G 准备两套配置。
+5. **分层目标（P0–P10，未落地）**：`L1 客户端 → L2 transport 插件 → transport_core → L3 wbus + services → L4 attacks → L4.5 wifi_frame → L5 hal_wifi`。
+   只有 L5 允许出现 `esp_wifi_*`，只有 L2 允许碰 `Serial`；新增攻击改一张表，新增上层接口（BLE / 桥接板 / Web）加一个插件。
+   完整方案见 [架构与路线图-v2.md](架构与路线图-v2.md)，执行清单见 [TODO.md §5](TODO.md)。
 
 ---
 
@@ -262,7 +267,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 
 上述 1、2 与 UART 丢行已记入[待修清单](firmware/测试报告.md#71-待修清单已记录尚未动手)，暂未动手。
 
-细节见 [测试报告](firmware/测试报告.md)。后续要做的能力（PMKID 抓取与导出、企业网络凭据、DELBA 的多客户端实测、Android 上位机、BLE 广播泛洪）与架构重构（wbus 总线，`TODO.md` 第 5 节）见 [TODO.md](TODO.md)。
+细节见 [测试报告](firmware/测试报告.md)。后续要做的能力（PMKID 抓取与导出、企业网络凭据、DELBA 的多客户端实测、Android 上位机、BLE 广播泛洪）见 [TODO.md](TODO.md)；框架重构的方案与阶段闸门见 [架构与路线图-v2.md](架构与路线图-v2.md) 与 `TODO.md §5`。
 
 ---
 
@@ -294,6 +299,9 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 | [aligngl/ESP32-Deauther-red](https://github.com/aligngl/ESP32-Deauther-red) | 模块化结构、攻击统计 |
 
 按 **GNU GPL v3** 发布，见 [LICENSE](LICENSE)。二次分发请保留本文件与 LICENSE。
+
+例外：`firmware-v2/` 是独立重写的分层新工程，按 **Apache License 2.0** 发布（见
+[`firmware-v2/LICENSE`](firmware-v2/LICENSE) 与 `NOTICE`）；本仓库其余部分仍是 GPLv3。
 
 发布地址：[XDUPWW/ESP32-Deauther-Gui-Controller](https://github.com/XDUPWW/ESP32-Deauther-Gui-Controller)
 （本项目自己的托管仓库，不是上游）。

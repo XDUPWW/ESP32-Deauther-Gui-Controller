@@ -92,33 +92,90 @@
 | `[ ]` | **BLE 广播泛洪**：NimBLE 非连接广播，随机 MAC/名称，限速与计数可观测 | `src/ble_flood.c`、命令 `BLE_FLOOD [on/off]` | `STATUS` 有 `ble=` 计数；另一台手机扫描时列表被刷满 |
 | `[ ]` | **共存评估**：Wi-Fi 与 BLE 共用射频，洪泛时 Wi-Fi 扫描/攻击的掉帧率 | 测试报告一节 | 给出"BLE 洪泛开着时 Wi-Fi 攻击帧率下降 X%"的实测数字 |
 
-## 5. 架构重构：wbus 总线（提案，待批）
+## 5. 框架重构路线图（P0–P10）
+
+> 完整架构说明见根目录 [架构与路线图-v2.md](架构与路线图-v2.md)。本节只留执行清单。
+> 实现落点：新工程 `firmware-v2/`（骨架已建：目录 / 空组件 / REQUIRES 白名单 / 可编译的 `app_main`，
+> 纯 ESP-IDF、断网可编）；实现方式是按标准**重写**，`firmware/` 只作行为基准（回执/帧字节/计数），
+> 不拷贝代码、不复用实现。
+> 全程硬约束：89 条串口命令逐字节 0 diff、攻击行为不变、wbus 核心语义不变。
+
+### 路线总表
+
+| 阶段 | 一句话内容 | 验收闸门 |
+| --- | --- | --- |
+| P0 | 组件化骨架 + REQUIRES 白名单（30 min） | 越层 include 编译失败 |
+| P5 | hal_tx + hal_chan 重写 | 56 tests OK、compat 0 diff、浸泡 txgerr=0 |
+| P5b | hal_rx + hal_scan，嗅探扇出归 hal | lab/soak 全模块 |
+| P6 | attack.h + registry.cpp | 同上 |
+| P6.5（可选） | tx_profile 声明式攻击 | dummy 攻击 ≤2 文件 |
+| P7 | bus_objects 解散 + legacy 模板表 | **89 条 0 diff** |
+| P8a | wbus：reply.ctx + 多订阅 | 3 个新单测 |
+| P8b | transport_core + serial 插件 | 89 条 0 diff、串口零变化 |
+| P8c | lvgl_queue 插件 | 两 peer 各收各的回执 |
+| P8d | scan 事件化 + wtarget | NET 进事件流，句柄化目标 |
+| P9 | LVGL/GUI 数据驱动 + wbus_client.py | 触屏逐屏 + GUI 全回归 |
+| P10 | 首个非串口插件（BLE NUS 或桥接板） | 插件验收清单 + coex 标定 |
+
+### 四条运行时纪律（P0 起生效，review 逐条查）
+
+1. `wbus_call` 仅主循环（transport_drain）发起；`wbus_emit` 任务安全、只入队。
+2. 主循环固定顺序：`transport_poll → transport_drain → attacks_tick → ui_tick`；drain 每轮有预算（≤4 条或 ≤2 ms）。
+3. 状态变更必发事件；异步结果一律走事件，同步完成才走回执。
+4. `0x101 → esp_restart` 只存在于 hal_tx 一条路径，模块层见不到该错误码。
+
+三条协议纪律（P8a 起）：值语法（双引号仅保护空格、无转义、未引号值吃到行尾）；
+legacy 89 条的文本模板只存在于 `serial_text.cpp`；`wbus_emit` 只发 kv，文本渲染归插件。
+
+### 未实测项（动手前先看）
+
+- BLE NUS 与 WiFi 共存对 45 ms 节拍的影响（P10 前置台架标定）。
+- `hal_rx` 回调跑在 WiFi 任务上下文，业务处理必须只入队，P5b 逐模块审查。
+
+### 当前状态
+
+- [~] P0（**骨架已建**：`firmware-v2/` 目录 + 11 个空组件 + REQUIRES 白名单 + 可编译 `app_main`，
+      离线 `idf.py build` 通过 `0x22470`；待做：`wbus` 重写、`tools/check_layers.py`、`main` 四步编排）
+- [ ] P5
+- [ ] P5b
+- [ ] P6
+- [ ] P6.5
+- [ ] P7
+- [ ] P8a
+- [ ] P8b
+- [ ] P8c
+- [ ] P8d
+- [ ] P9
+- [ ] P10
+
+## 6. 架构重构：wbus 总线（P1–P4 已完成）
 
 **问题**：攻击模块本身是自包含的，耦合全在"注册表"这一层，而且硬编码在模块**之外**，一共六处：
 
-| 注册表 | 位置 | 加一个攻击要改 |
+| 注册表 | 位置（P1–P4 之后） | 加一个攻击要改 |
 | --- | --- | --- |
-| 命令分发 | `firmware/src/serial_console.cpp:1488` 起 63 处 `strcmp` + 52 处 `strtok` | 加分支、加 include |
-| 计数器聚合 | `do_status()`（`serial_console.cpp:311`）手工 print 每个模块 | 加 8 个 `Serial.print` |
-| 能力串 | `capabilities()`（`serial_console.cpp:75`）硬编码字符串 | 手改字符串 |
-| LVGL 屏表 | `components/wireless_ui/src/ui.c` 的 kind 表 | 加一页 |
-| GUI 菜单 | `gui/main.py` 18 个手写 `_build_*` 页面 | 加一页 |
-| 混杂回调 | `firmware/src/deauth.cpp:475-482` 八个 `X_on_rx()` | 加一行 |
+| 命令分发 | `serial_console.cpp:1021` 的 25 处 `strcmp`（攻击命令已走别名表 `:952`） | 攻击**不用改**；只剩管道命令（P8） |
+| 计数器聚合 | `do_status()`（`serial_console.cpp:307`）手工 print 每个模块 | 加若干 `Serial.print`（P8 对象化） |
+| 能力串 | `capabilities()`（`serial_console.cpp:80`）硬编码字符串 | 手改字符串（P7 改为对象表生成） |
+| LVGL 屏表 | `components/wireless_ui/src/ui.c` 的 kind 表（`show_by_name` `:1520`） | 加一页（P9 数据驱动） |
+| GUI 菜单 | `gui/main.py` 18 个手写 `_build_*` 页面 | 加一页（P9 数据驱动） |
+| 混杂回调 | `deauth.cpp:487` 遍历 `attack_module_t` 驱动表 | 表里一行 ✓（P2 已完成） |
 
 PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3 个 hook、`CMakeLists`、
 `ui.c`、`gui/main.py`、`tests/`。
 
-**目标**：把这几张表变成数据。运输层（串口 / LVGL / GUI）只认 `<obj>.<method> k=v` 与
-`EVT <topic> k=v` 两种句子，不知道攻击的存在；新增攻击 = 一个 `.cpp`（描述表 + handler）
-+ 注册表一行。
+**目标（分两步走）**：P1–P4 已把"命令与模块"这两张表变成数据——运输层只认
+`<obj>.<method> k=v` 与 `EVT <topic> k=v`，新增攻击 = 一个 `.cpp` + 注册表一行。P5 起再往里切两层：
+**驱动收口到 `hal_wifi`**（全仓唯一出现 `esp_wifi_*` 的地方）、**上层接口收口到 transport 插件**
+（新增一种客户端 = 一个 `.cpp` + 表里一行）。详见下面的「P5–P10 演进方案」。
 
-**四条兼容铁律**（每一步都要守）：
+**四条兼容铁律**（P1–P7 期间守；第 2 条已废止）：
 
-1. 回执文案字节级保持——`firmware/tests/` 51 项与 `lab/*.py` 全靠它解析，所以参数策略表带
+1. 回执文案字节级保持——`firmware/tests/` 56 项与 `lab/*.py` 全靠它解析，所以参数策略表带
    `err` 字段，把错误文案也数据化（例：`ERR reason must be 1..65535, or 'random'`）。
-2. 策略校验不得比旧 handler 更严，否则"旧代码能跑的命令"开始报错：`CSA 3 auto 99` 旧代码静默
-   把 count 强制成 5、`CSA 3 -5` 旧代码当 auto、`DEAUTH 3x` 前缀解析得 3。`INT` 沿用前缀数字
-   语义，范围检查留给 handler。
+2. ~~策略校验不得比旧 handler 更严~~ **已废止（`cebb62e`）**：不再为旧语义做兼容——`INT` 要求
+   整个 token 是数字（`DEAUTH 3x` 报错而不是取 3）、`REASON` 拒绝 `uint16` 回绕、`ENUM` 只认字面量。
+   回执矩阵基线已按新契约重抓。
 3. 换行不能混：`Serial.println` 出 `\r\n`，`Serial.printf("...\n")` 只出 `\n`，回复层必须区分
    line / raw 两种写法。
 4. 未迁移的命令原样落回旧 `strcmp` 链：`dispatch()` 只把行复制到本地 `work[128]` 再 `strtok`，
@@ -209,26 +266,33 @@ bus_objects.cpp      0 → 约 1300 行（13 个对象，回执与旧实现逐�
 - [ ] 验收：每搬一个跑全量测试 + `compat_matrix.py check` 零差异；`HELP` / `STATUS` 行不变；
       两个 target（`esp32` / `esp32-c5`）都编过
 
+### 后续演进
+
+P5–P10 的完整方案（分层红线、transport 插件框架、wtarget、tx_profile、编译期 REQUIRES 白名单、
+协议纪律）已独立成文：[架构与路线图-v2.md](架构与路线图-v2.md)；执行清单与验收闸门在本文件第 5 节。
+
 ### 明确不做
 
 - **链接器 section 自动注册**：ESP-IDF 链接脚本没有该 section，要 `KEEP()` 才不被 `--gc-sections`
   吃掉，失败方式是运行期"对象静默消失"。用显式指针数组，编译期就能查重名。
-- **JSON + TCP 传输**：CYD 无 PSRAM、空闲堆实测 ~107 KB，lwIP + cJSON 会吃掉一半余量；
-  要做得先论证 PSRAM 板型并做成 Kconfig 开关。
-- **`attack_step()` 迁到 `wb_tick()`**：它持有跳信道 / 探针 / STA 发现的共享射频状态，
-  必须等 P2 的仲裁落地，否则双板时序回归成本远超收益。
-- **严格化参数校验**：见铁律 2。
+- **板载 TCP 传输**：见 [架构与路线图-v2.md §6](架构与路线图-v2.md)——它和静默 STA / 跳信道注入互斥。
+  编解码做成 L2 插件的属性，网络控制走桥接板，板载无线走 BLE NUS。
+- ~~`attack_step()` 迁到 `wb_tick()`~~：已并入 P6（`attacks_tick()`）；P2 的信道仲裁就是它需要的前置。
+- ~~严格化参数校验~~：**已完成**（`cebb62e`）。
 
 ### 风险
 
-- 51 项测试走真串口（`DEAUTHER_PORT=COM5`），**回归必须占用物理板子**，这是主要成本，且空口复测还要一台 AP。
+- 56 项测试走真串口（`DEAUTHER_PORT=COM5`），**回归必须占用物理板子**，空口复测还要一台 AP。
 - 别名表必须覆盖动词变体（`DEAUTH_ONLY` / `DEAUTH_EXCEPT` / `BAATTACK` / `BAPLANT` / `BARPUSH` 一族），
   漏一个测试立刻抓出来——这是好事，也是必须每个阶段都跑全量的原因。
-- 事件与回复缓冲一律静态分配，不能进 LVGL 任务里 `malloc`。
+- P5 收口会触碰 24 处驱动调用：回执文本不受影响，但**空口时序可能变**（多一层函数调用），
+  必须跑 `lab/soak.py` 与 `lab/pool_limit.py` 与 P4 前的数字对比。
+- 多客户端后事件与回执缓冲一律静态分配，慢客户端不能拖住主循环（丢弃最旧 + 计数）；CYD 无 PSRAM、
+  空闲堆约 107 KB，每路插件按 ~4–6 KB 预算，Kconfig 默认只开串口。
 
 ---
 
-## 6. 已完成的修复
+## 7. 已完成的修复
 
 | 状态 | 条目 | 说明 |
 | --- | --- | --- |
@@ -236,7 +300,7 @@ bus_objects.cpp      0 → 约 1300 行（13 个对象，回执与旧实现逐�
 | `[x]` | 目标选择弹窗（LVGL + Windows GUI） | 模态卡片/窗口，过滤、全选/反选、快照撤销 |
 | `[x]` | UART RX 缓冲 256 B → 4 KB | 300 条 PING 洪泛从 233–255 提升到 300/300 |
 
-## 7. 建议顺序
+## 8. 建议顺序
 
 1. **PMKID 抓 + 导出**（第 1 节前两条）——唯一能离线闭环验证的一条，先把它跑通：
    抓到的 `.22000` 用已知密码喂 hashcat，命中即证明"帧解析 → 去重 → 导出格式"全对。
@@ -244,8 +308,8 @@ bus_objects.cpp      0 → 约 1300 行（13 个对象，回执与旧实现逐�
 3. **Android 上位机**——协议层无风险，可以并行。
 4. **BLE 广播泛洪**——最后做，它会影响 Wi-Fi 侧帧率，要在共存评估之后调参数。
 
-> 第 5 节的架构重构与上面四条互不阻塞，但 **P1 应先于任何新增攻击模块**：
-> 否则新模块又要按老办法接七处线，重构的收益被抵消一次。
+> 第 5 节的路线图、第 6 节的记录同上面四条互不阻塞，但 **P5（驱动收口）应先于任何新增攻击模块**：
+> 否则新模块又要自己碰 `esp_wifi_*`，hal 层的收口就白做一次。
 
 ---
 

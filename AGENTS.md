@@ -89,20 +89,54 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 
 `lab/rf_throughput/` 是同样方式构建的独立工程（自己的 `build/`、`build_c5/`，`sdkconfig.c5` 不入库）。
 
-## 4. 运行时架构
+## 4. 分层红线与运行时契约
+
+### 4.1 目标分层红线（P0 骨架已建；P5–P10 未落地；完整方案见 `架构与路线图-v2.md`）
+
+依赖方向唯一：`客户端 → transport 插件 → transport_core → wbus → (services | attacks) → wifi_frame / hal_wifi`。
+越层 include 由组件 CMakeLists 的 REQUIRES 白名单在编译期拦截；`tools/check_layers.py` 只查漏（`Serial.printf`、预格式化字符串）。
+
+实现落点：**`firmware-v2/` 新工程**（纯 ESP-IDF，无 Arduino、无 managed components，断网可编）；
+`firmware/` 只作行为基准（回执/帧字节/计数），代码不迁移、不复用。骨架已建，白名单已写进各组件的 `CMakeLists.txt`。
+
+| 组件 | 允许 REQUIRES | 禁止出现 |
+| --- | --- | --- |
+| transport 插件（serial_text/lvgl_queue/ble_nus/tcp_json） | 只许 `transport` | `wbus.h`、attacks、`esp_wifi_*` |
+| transport_core | `wbus` | 攻击内部头 |
+| wbus | 无 Arduino、无 esp_* | 任何 wifi / 802.11 / MAC 字样（grep 为 0 是硬指标） |
+| services | wbus、hal_wifi、wtarget、platform | `Serial` |
+| attacks | wifi_frame、hal_wifi、wtarget、wbus、platform | `esp_wifi_*`、`Serial`、printf 格式化 |
+| wifi_frame | 无 | `Arduino.h`、esp_* |
+| hal_wifi | esp_wifi / Arduino WiFi | 全仓唯一允许处 |
+| wireless_ui | transport 客户端 API | 直连 wbus、手写命令文本 |
+
+四条运行时纪律：
+
+1. `wbus_call*` 只能从主循环 `transport_drain` 发起；`wbus_emit` 任务安全（只入队）。
+2. 主循环固定顺序：`transport_poll → transport_drain → attacks_tick → ui_tick`；drain 每轮有预算（≤4 条或 ≤2 ms）。
+3. 状态变更必发事件；异步结果一律事件，回执只用于同步完成的方法。
+4. `0x101 → esp_restart` 只存在于 hal_tx 一条路径；模块层见不到该错误码。
+
+扩展成本基线（超出即说明分层退化，需先停下来复盘）：
+
+- 新增一种上层接口 = 1 个 `.cpp` + 插件表 1 行 + Kconfig 开关。
+- 新增一种攻击 ≤ 2 个新文件 + 0 处修改，legacy 命令自动可用。
+
+### 4.2 当前实现（P4；与 4.1 不一致处一律以此为准）
+
+现状（P4 完成；目标分层见 4.1 与 `架构与路线图-v2.md`，执行清单见 `TODO.md §5`）：
 
 ```
-串口字节 → 行缓冲 → dispatch() ─┬→ 别名表（DEAUTH/CSA…）→ wbus_call() → 对象 handler
-                                └→ 旧 strcmp 链 → do_scan / do_probe / …
-                                        │                 │
-LVGL 按钮 → 命令队列 → wireless_console_execute()          └→ 计数器 + 状态（不打印）
-                                                              │
-                                             wb_reply_t sink（serial_console.cpp 注入）统一打印
+串口字节 → 行缓冲 → dispatch() ─┬→ 别名表（40 条）→ wbus_call() → 对象 handler（13 个对象）
+                                └→ 旧 strcmp 链（25 条管道命令）
+LVGL 按钮 → 命令队列 → wireless_console_execute()
+                                     wb_reply_t sink（serial_console.cpp 注入）统一打印
 ```
 
 - wbus（`components/wbus/`）是对象注册表 + 参数策略 + 事件的最小总线，**一个命令搬到对象表后，
-  回执文本必须与旧 `strcmp` 分支逐字节一致**（测试与 `lab/*.py` 都靠它解析）。当前已迁移：
-  `DEAUTH`、`CSA`、`CSASTOP`、`CSATEST`。新增/迁移命令时，回执一律走 `wb_reply_*()`，
+  回执文本必须与旧 `strcmp` 分支逐字节一致**（测试与 `lab/*.py` 都靠它解析）。当前已迁移
+  **13 个对象 / 40 条别名**：`deauth` / `csa` / `delba` / `ba` / `wnm` / `tim` / `eapol` / `pspoll` /
+  `sae` / `authflood` / `probe` / `evil` / `radio`。新增/迁移命令时，回执一律走 `wb_reply_*()`，
   不要在新对象里直接 `Serial.print`。
 
 - `src/main.cpp` 的 `setup()`：初始化串口 → STA 静默 → `init_evil_twin()` → 可选 LVGL 初始化（失败则打印 `WARN` 并回到纯串口形态）。
@@ -112,14 +146,15 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()          └→ 计�
   LVGL 任务（`esp_lvgl_port`，prio 4）、Wi-Fi 任务的混杂回调 `sniffer()`（`IRAM_ATTR`，只判断 + 入队，不打印、不发包）。
 - **注入不在混杂回调里做**：回调只把"该打谁"塞进队列，主循环 `attack_step()` → `drain_tx_queue()` 按 1 ms 节奏出队，
   驱动拒收（`ESP_ERR_NO_MEM`）时退避 5 ms 重试。这条约束修掉过"计数在涨但帧没出去"的缺陷，别改回去。
-- **新模块统一走 `tx_guard_send()`**（`src/tx_guard.cpp`）：第一次 `0x101` 立即 `esp_restart()`，
-  重启前打 `FATAL tx 0x101 ... -> restart`。老模块（deauth/csa/delba）仍用自己的 `esp_wifi_80211_tx`
-  封装，`BARSEQ` 这类"故意要把池打空"的诊断探针**必须**留在守卫之外，否则测不到它要测的东西。
-  单播注入的节拍上限约 20 帧/s（§11 第 10 条），新模块的 step 里都按这个定过间隔——
-  唯一例外是 `pspoll.cpp`：PM 位帧在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s（§11 第 8 条）。
+- **所有注入走 `tx_guard_send()` / `tx_guard_send_as()`**（`src/tx_guard.cpp`，两个策略）：
+  `kTxPolicyGuard`（45 ms 节拍，首个 `0x101` 打 `FATAL tx 0x101 ... policy=…` 后 `esp_restart()`）覆盖
+  CSA 与六个帧级模块；`kTxPolicyBurst`（不节拍，`0x101` 只计错退避）覆盖 deauth 与 DELBA/BA
+  （它们的多帧序列必须连发）。`BARSEQ` / `BATX` / `CTRLTEST` 这类"故意把池打空"的探针**必须**留在
+  守卫之外，否则测不到它要测的东西。单播注入节拍上限约 20 帧/s（§11 第 7 条）——唯一例外是
+  `pspoll.cpp`：PM 位帧在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s。
 - **攻击模块只在一张表里注册**（`attack_module_t`，`include/deauth.h`）：`attack_modules_register_defaults()`
   在 `main.cpp` 的 `setup()` 里调用一次，之后混杂回调扇出、`attack_step()`、`attack_stop()` 全部遍历这张表。
-  加模块 = 表里加一行，不要再往那三处手写调用。
+  加模块 = 表里加一行，不要再往那三处手写调用。P6 计划把这张表搬到 `attacks/include/attack.h`。
 - 界面与固件解耦：`components/wireless_ui/` 只暴露纯 C 的 `wireless_ui.h`，按钮通过 `wireless_ui_set_command_cb()`
   注入的回调发协议行；固件 → UI 方向只调 `wireless_ui_scan_begin/add_network/scan_end/status/log` 置标志，
   UI 更新由 `wireless_ui_tick()` 在主循环里加锁应用（不要跨任务直接调 LVGL）。
@@ -266,6 +301,9 @@ python main.py --self-test
 - 串口连接**不要拉低 DTR/RTS**：CH340 会把板子按进复位/下载模式（GUI 与测试客户端都已显式关闭）。
 - 不要提交任何真实 SSID/密码/抓包、个人串口或本机路径配置；`firmware/.vscode/settings.json` 含本机 IDF 路径，已被 `.gitignore` 排除。
 - 许可是 GPLv3：二次分发保留 `LICENSE` 与致谢章节；新增文件沿用仓库现有版权头风格（本仓库文件普遍没有版权头，按现状）。
+  **例外**：`firmware-v2/` 是独立重写、按 Apache-2.0 发布（`firmware-v2/LICENSE` + `NOTICE`），
+  新文件首行带 `SPDX-License-Identifier: Apache-2.0` 与 `SPDX-FileCopyrightText`；
+  不得把本仓库其余 GPLv3 代码拷进 `firmware-v2/`，否则该目录的许可声明就失效了。
 
 ## 11. 已知坑与文档漂移
 
