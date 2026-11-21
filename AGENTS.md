@@ -260,7 +260,8 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 ```sh
 cd firmware-v2
 sh host_tests/run.sh                       # 脱机：wbus 70 + wifi_frame 36 项，用系统 gcc，不需要板子
-python tools/selftest.py COM5              # 板端：44 项，复位后逐条校验回执
+python tools/selftest.py COM5              # 板端：47 项，复位后逐条校验回执
+python tools/aircheck.py COM5 COM6         # 跨板：22 项，一块注入一块嗅探，两块板同一份固件
 ```
 
 板端脚本覆盖启动横幅、每个对象方法、参数校验报错文案、超长行、突发 40 条背压、
