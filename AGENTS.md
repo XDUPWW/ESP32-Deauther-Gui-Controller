@@ -111,13 +111,16 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | wireless_ui | transport 客户端 API | 直连 wbus、手写命令文本 |
 | platform | `nvs_flash`、`esp_driver_uart/gpio/spi`、`esp_timer`、`esp_lcd`、`esp_lcd_ili9341` | 任何无线 / 帧 / 总线概念 |
 
-P0 已落地的实际白名单与两条实测踩坑（组件清单见 `firmware-v2/README.md`）：
+P0/P1 已落地的实际白名单与三条实测踩坑（组件清单见 `firmware-v2/README.md`）：
 
+- `wbus` 已可用：对象注册表 + `obj.method key=value` 调用 + 参数策略校验 + 回执 + 事件；组件本身不依赖任何 esp_* 组件。
+- `transport` 已是插件表（串口插件 + 界面插件），输入行进 `wb_call_line`，回执广播给所有插件；
+  `services` 只提供对象，界面能力由 `main` 通过 `services_ui_bind` 注入，界面不直连总线。
+- `hal_wifi` / `wifi_frame` / `wtarget` 目前是契约占位（返回 `ESP_ERR_NOT_SUPPORTED` / `-1`），签名已固定。
 - `idf_component_register` 不能放进 `if(...)`：条件分支里的 `REQUIRES` 不生效（只登记 `SRCS`/`INCLUDE_DIRS`），
   条件只能作用于源文件列表。踩过：屏幕组件整块 REQUIRES 丢失。
 - 渲染（`lv_refr_now`、全屏刷）只能在 LVGL 任务里做。踩过：在 `console` 任务（栈 4 KB）里刷全屏 → 栈溢出重启。
-- `transport` 目前尚未 REQUIRE `wbus`：总线还没写，命令由 `transport` 自带表 + 外部注册回调处理，
-  接入 wbus 时这批命令改成对象方法。
+- 方法名在 `wb_method_t` 里写**裸名**（`ping`），对象名只在 `wb_object_t`；写成 `system.ping` 会变成 unknown method。
 
 四条运行时纪律：
 
