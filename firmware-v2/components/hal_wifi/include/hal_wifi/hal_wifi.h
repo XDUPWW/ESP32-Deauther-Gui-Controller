@@ -182,7 +182,7 @@ typedef struct {
 //                                发过管理帧或数据帧"，不要求它连在我们身上。还没起
 //                                softAP、或者想扫别人 BSS 的客户端时用它。
 //   hal_wifi_sta_list_ap()       softAP 当前已关联的 STA，来自驱动，带真实 RSSI。
-//                                evil twin 问"谁连上来了"必须用这个，别用被动表。
+//                                问"谁连上来了"必须用这个，别用被动表。
 //   hal_wifi_sta_list()          按当前模式自动选：起过 softAP 就用 AP 表，否则用
 //                                被动表。没起过 AP 时的默认行为就是被动表。
 //
