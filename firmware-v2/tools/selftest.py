@@ -258,10 +258,37 @@ def main():
     expect(report, device, "radio diag", "radio.diag", must=("promisc=", "filter=0x", "cc=CN"))
 
     print("== monitor ==")
-    expect(report, device, "monitor open", "monitor.start kind=ctrl",
-           must=("monitor on kind=ctrl",), timeout=5)
-    expect(report, device, "monitor status", "monitor.status", must=("on=1", "total=", "rx="))
+    expect(report, device, "monitor open", "monitor.start kind=ctrl max=5",
+           must=("monitor on kind=ctrl", "max=5"), timeout=5)
+    expect(report, device, "monitor status", "monitor.status",
+           must=("on=1", "max=5", "total=", "skipped=", "rx="))
     expect(report, device, "monitor close", "monitor.stop", must=("monitor off",))
+
+    print("== 注入性能 ==")
+    out = expect(report, device, "bench broadcast 30ms", "radio.tx_bench count=30 gap=30",
+                 must=("fps=", "ok=30", "throttled=0", "err=0"), timeout=10)
+    fps = 0.0
+    for line in out:
+        for token in line.split():
+            if token.startswith("fps="):
+                try:
+                    fps = float(token.split("=", 1)[1])
+                except ValueError:
+                    fps = 0.0
+    report.check("广播 30ms 间隔约 33 fps", 30.0 <= fps <= 36.0, "fps=%.1f" % fps)
+
+    out = expect(report, device, "bench unicast tight loop", "radio.tx_bench count=50 gap=0 unicast=1",
+                 must=("throttled=",), timeout=10)
+    throttled = -1
+    for line in out:
+        for token in line.split():
+            if token.startswith("throttled="):
+                try:
+                    throttled = int(token.split("=", 1)[1])
+                except ValueError:
+                    throttled = -1
+    report.check("单播紧排时被节流挡下", throttled >= 40, "throttled=%d" % throttled)
+    report.check("节流不算错误", any("err=0" in l for l in out), repr(out[:3]))
 
     print("== screen flush path ==")
 

@@ -27,8 +27,7 @@ static const char *TAG = "hal_wifi";
 
 typedef struct {
     uint16_t len;
-    int8_t rssi;
-    uint8_t channel;
+    hal_wifi_rx_meta_t meta;
     uint8_t data[RX_FRAME_MAX];
 } rx_item_t;
 
@@ -99,8 +98,16 @@ static void sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     }
     rx_item_t item = {
         .len = len,
-        .rssi = pkt->rx_ctrl.rssi,
-        .channel = pkt->rx_ctrl.channel,
+        .meta =
+            {
+                .rssi = pkt->rx_ctrl.rssi,
+                .channel = pkt->rx_ctrl.channel,
+                .rate_code = (uint8_t)pkt->rx_ctrl.rate,
+                .sig_mode = (uint8_t)pkt->rx_ctrl.sig_mode,
+                .mcs = (uint8_t)pkt->rx_ctrl.mcs,
+                .sgi = (uint8_t)pkt->rx_ctrl.sgi,
+                .timestamp = pkt->rx_ctrl.timestamp,
+            },
     };
     memcpy(item.data, pkt->payload, len);
     s_rx_frames++;
@@ -118,13 +125,13 @@ static void rx_task(void *arg) {
         }
         for (size_t i = 0; i < s_sub_count; i++) {
             if (s_subs[i].fn != NULL) {
-                s_subs[i].fn(item.data, item.len, item.rssi, item.channel, s_subs[i].ctx);
+                s_subs[i].fn(item.data, item.len, &item.meta, s_subs[i].ctx);
             }
         }
     }
 }
 
-esp_err_t hal_wifi_init(void) {
+esp_err_t hal_wifi_init(hal_rate_t startup_rate) {
     ESP_RETURN_ON_FALSE(esp_netif_init() == ESP_OK, ESP_FAIL, TAG, "netif init");
     const esp_err_t loop_err = esp_event_loop_create_default();
     if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) {
@@ -138,6 +145,10 @@ esp_err_t hal_wifi_init(void) {
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init_cfg), TAG, "wifi init");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "storage");
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "mode");
+    if (startup_rate != HAL_RATE_DEFAULT) {
+        // 文档要求：必须在 start 之前设，否则 OFDM 档位不生效
+        ESP_RETURN_ON_ERROR(hal_wifi_set_tx_rate(startup_rate), TAG, "startup rate");
+    }
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start");
     esp_wifi_disconnect();
     esp_wifi_set_ps(WIFI_PS_NONE);
@@ -209,6 +220,22 @@ static wifi_phy_rate_t to_phy_rate(hal_rate_t rate) {
             return WIFI_PHY_RATE_48M;
         case HAL_RATE_54M:
             return WIFI_PHY_RATE_54M;
+        case HAL_RATE_MCS0:
+            return WIFI_PHY_RATE_MCS0_LGI;
+        case HAL_RATE_MCS1:
+            return WIFI_PHY_RATE_MCS1_LGI;
+        case HAL_RATE_MCS2:
+            return WIFI_PHY_RATE_MCS2_LGI;
+        case HAL_RATE_MCS3:
+            return WIFI_PHY_RATE_MCS3_LGI;
+        case HAL_RATE_MCS4:
+            return WIFI_PHY_RATE_MCS4_LGI;
+        case HAL_RATE_MCS5:
+            return WIFI_PHY_RATE_MCS5_LGI;
+        case HAL_RATE_MCS6:
+            return WIFI_PHY_RATE_MCS6_LGI;
+        case HAL_RATE_MCS7:
+            return WIFI_PHY_RATE_MCS7_LGI;
         default:
             return WIFI_PHY_RATE_1M_L;
     }
@@ -227,6 +254,21 @@ esp_err_t hal_wifi_set_tx_rate(hal_rate_t rate) {
 
 hal_rate_t hal_wifi_tx_rate(void) {
     return s_rate;
+}
+
+float hal_wifi_rx_mbps(const hal_wifi_rx_meta_t *meta) {
+    static const float kLegacy[12] = {1.0f, 2.0f, 5.5f, 11.0f, 6.0f, 9.0f,
+                                      12.0f, 18.0f, 24.0f, 36.0f, 48.0f, 54.0f};
+    if (meta == NULL) {
+        return 0.0f;
+    }
+    if (meta->sig_mode == 0) {
+        return (meta->rate_code < 12) ? kLegacy[meta->rate_code] : 0.0f;
+    }
+    // HT20：每档 MCS 差 6.5 Mbps，短 GI 乘 7.2/6.5
+    const uint8_t mcs = (meta->mcs > 7) ? 7 : meta->mcs;
+    const float base = 6.5f * (float)(mcs + 1);
+    return base * (meta->sgi ? (7.2f / 6.5f) : 1.0f);
 }
 
 const char *hal_wifi_rate_name(hal_rate_t rate) {
@@ -255,6 +297,22 @@ const char *hal_wifi_rate_name(hal_rate_t rate) {
             return "48m";
         case HAL_RATE_54M:
             return "54m";
+        case HAL_RATE_MCS0:
+            return "mcs0";
+        case HAL_RATE_MCS1:
+            return "mcs1";
+        case HAL_RATE_MCS2:
+            return "mcs2";
+        case HAL_RATE_MCS3:
+            return "mcs3";
+        case HAL_RATE_MCS4:
+            return "mcs4";
+        case HAL_RATE_MCS5:
+            return "mcs5";
+        case HAL_RATE_MCS6:
+            return "mcs6";
+        case HAL_RATE_MCS7:
+            return "mcs7";
         default:
             return "default";
     }

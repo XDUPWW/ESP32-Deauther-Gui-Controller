@@ -5,14 +5,20 @@
 #include <string.h>
 
 #include "hal_wifi/hal_wifi.h"
+#include "platform/plat_storage.h"
 #include "services_private.h"
 #include "wbus/wbus.h"
 #include "esp_random.h"
+#include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "wifi_frame/frame_build.h"
 #include "wifi_frame/frames.h"
 #include "wifi_frame/mac.h"
 
 #define RADIO_OWNER "radio"
+
+static hal_rate_t parse_rate(const char *text);
 
 static esp_err_t radio_info(wb_args_t *args, wb_reply_t *reply) {
     (void)args;
@@ -61,6 +67,26 @@ static esp_err_t radio_release(wb_args_t *args, wb_reply_t *reply) {
     (void)args;
     hal_wifi_channel_release(RADIO_OWNER);
     wb_reply_line(reply, "released");
+    return ESP_OK;
+}
+
+static esp_err_t radio_rate(wb_args_t *args, wb_reply_t *reply) {
+    const char *text = wb_args_str(args, "rate");
+    const hal_rate_t rate = parse_rate(text);
+    if (rate == HAL_RATE_DEFAULT) {
+        plat_storage_erase("tx_rate");
+        wb_reply_line(reply, "rate=default（下次开机会清掉）");
+        return ESP_OK;
+    }
+    const uint8_t stored = (uint8_t)rate;
+    const esp_err_t err = plat_storage_set("tx_rate", &stored, sizeof(stored));
+    if (err != ESP_OK) {
+        wb_reply_fail(reply, "存 NVS 失败 (%s)", esp_err_to_name(err));
+        return err;
+    }
+    // 官方只支持"init 之后、start 之前"设速率，运行期改不保证生效，这里不做
+    wb_reply_line(reply, "saved rate=%s（重启后生效：esp_wifi_start() 之前应用）",
+                  hal_wifi_rate_name(rate));
     return ESP_OK;
 }
 
@@ -127,22 +153,24 @@ static esp_err_t radio_tx_test(wb_args_t *args, wb_reply_t *reply) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    const char *rate_text = wb_args_str(args, "rate");
-    if (strcmp(rate_text, "keep") != 0) {
-        const hal_rate_t rate = parse_rate(rate_text);
-        err = hal_wifi_set_tx_rate((rate == HAL_RATE_DEFAULT) ? HAL_RATE_1M : rate);
-        if (err != ESP_OK) {
-            wb_reply_fail(reply, "rate not accepted (%s)", esp_err_to_name(err));
-            return err;
-        }
-    }
-
     uint8_t frame[WF_FRAME_CAP];
     int len = 0;
     const char *kind = wb_args_str(args, "kind");
     if (strcmp(kind, "bar") == 0) {
         len = wf_build_bar(frame, sizeof(frame), ra, ta, (uint8_t)wb_args_u32(args, "tid"),
                            (uint16_t)wb_args_u32(args, "ssn"));
+    } else if (strcmp(kind, "data") == 0) {
+        // ToDS 的 QoS data + LLC/SNAP(EAPOL)：数据帧不受管理帧的基本速率钳制
+        uint8_t payload[32];
+        const uint8_t eapol[4] = {0x02, 0x01, 0x00, 0x00};
+        const int payload_len = wf_build_llc_snap(payload, sizeof(payload), 0x888E, eapol,
+                                                  sizeof(eapol));
+        if (payload_len <= 0) {
+            wb_reply_fail(reply, "llc/snap build failed");
+            return ESP_FAIL;
+        }
+        len = wf_build_data(frame, sizeof(frame), ta, ta, ta, true, false, true,
+                            (uint8_t)wb_args_u32(args, "tid"), payload, (size_t)payload_len);
     } else {
         const char *ssid = wb_args_str(args, "ssid");
         len = wf_build_probe_req(frame, sizeof(frame), ra, ta, ssid, strlen(ssid));
@@ -168,9 +196,110 @@ static esp_err_t radio_tx_test(wb_args_t *args, wb_reply_t *reply) {
     return ESP_OK;
 }
 
+// bench 要能把帧撑到 1000 字节以上，WF_FRAME_CAP 只有 512，用静态缓冲避免压栈
+#define BENCH_FRAME_MAX 1600
+static uint8_t s_bench_frame[BENCH_FRAME_MAX];
+static uint8_t s_bench_scratch[BENCH_FRAME_MAX];
+static uint8_t s_bench_body[BENCH_FRAME_MAX];
+static uint8_t s_bench_payload[BENCH_FRAME_MAX];
+
+static esp_err_t radio_tx_bench(wb_args_t *args, wb_reply_t *reply) {
+    static const uint8_t kBroadcast[6] = WF_BROADCAST_ADDR_INIT;
+    const uint32_t count = wb_args_u32(args, "count");
+    const uint32_t gap_ms = wb_args_u32(args, "gap");
+    const uint32_t pad = wb_args_u32(args, "pad");
+    const bool unicast = wb_args_bool(args, "unicast");
+    const char *kind = wb_args_str(args, "kind");
+
+    uint8_t ours[6] = {0};
+    esp_err_t err = hal_wifi_mac(ours);
+    if (err != ESP_OK) {
+        wb_reply_fail(reply, "no mac (%s)", esp_err_to_name(err));
+        return err;
+    }
+
+    uint8_t *frame = s_bench_frame;
+    int len = 0;
+    if (strcmp(kind, "bar") == 0) {
+        len = wf_build_bar(frame, BENCH_FRAME_MAX, unicast ? ours : kBroadcast, ours, 0, 0);
+    } else if (strcmp(kind, "data") == 0) {
+        // pad 用来把帧撑大：帧越长，空中时长差异越能反推实际速率
+        const uint8_t eapol[4] = {0x02, 0x01, 0x00, 0x00};
+        memcpy(s_bench_body, eapol, sizeof(eapol));
+        memset(s_bench_body + sizeof(eapol), 0xAB, pad);
+        const int payload_len = wf_build_llc_snap(s_bench_payload, BENCH_FRAME_MAX, 0x888E,
+                                                  s_bench_body, sizeof(eapol) + pad);
+        // ToDS 时 addr1 = 后一个参数（BSSID），传广播就不会等 ACK、也不触发单播节流
+        const uint8_t *ra_mac = unicast ? ours : kBroadcast;
+        len = wf_build_data(frame, BENCH_FRAME_MAX, ours, ours, ra_mac, true, false, true, 0,
+                            s_bench_payload, (size_t)payload_len);
+    } else {
+        len = wf_build_probe_req(frame, BENCH_FRAME_MAX, unicast ? ours : kBroadcast, ours, "", 0);
+    }
+    if (len <= 0) {
+        wb_reply_fail(reply, "build failed");
+        return ESP_FAIL;
+    }
+
+    // 先单独量构建耗时，用独立的 scratch，别把要发的帧覆盖掉
+    uint8_t *scratch = s_bench_scratch;
+    const uint32_t build_start = (uint32_t)(esp_timer_get_time() / 1000);
+    volatile int sink = 0;
+    for (uint32_t i = 0; i < count; i++) {
+        sink += wf_build_probe_req(scratch, BENCH_FRAME_MAX, kBroadcast, ours, "bench", 5);
+    }
+    const uint32_t build_ms = (uint32_t)(esp_timer_get_time() / 1000) - build_start;
+    (void)sink;
+
+    uint32_t ok = 0;
+    uint32_t throttled = 0;
+    uint32_t failed = 0;
+    const uint32_t start = (uint32_t)(esp_timer_get_time() / 1000);
+    for (uint32_t i = 0; i < count; i++) {
+        const esp_err_t tx = hal_wifi_tx(frame, (uint16_t)len);
+        if (tx == ESP_OK) {
+            ok++;
+        } else if (tx == ESP_ERR_INVALID_STATE) {
+            throttled++;
+        } else {
+            failed++;
+        }
+        if (gap_ms > 0) {
+            vTaskDelay(pdMS_TO_TICKS(gap_ms));
+        }
+    }
+    const uint32_t elapsed = (uint32_t)(esp_timer_get_time() / 1000) - start;
+    if (elapsed == 0) {
+        wb_reply_fail(reply, "elapsed too short");
+        return ESP_FAIL;
+    }
+
+    wb_reply_line(reply, "bench kind=%s len=%d count=%u gap=%ums unicast=%d rate=%s", kind, len,
+                  (unsigned)count, (unsigned)gap_ms, unicast ? 1 : 0,
+                  hal_wifi_rate_name(hal_wifi_tx_rate()));
+    wb_reply_line(reply, "inject_ms=%u fps=%u.%u ok=%u throttled=%u err=%u", (unsigned)elapsed,
+                  (unsigned)(ok * 1000u / elapsed), (unsigned)((ok * 10000u / elapsed) % 10u),
+                  (unsigned)ok, (unsigned)throttled, (unsigned)failed);
+    wb_reply_line(reply, "build_us_each=%u.%u", (unsigned)(build_ms * 1000u / count),
+                  (unsigned)((build_ms * 10000u / count) % 10u));
+    return ESP_OK;
+}
+
 static const wb_policy_t kChanPolicy[] = {
     {.name = "ch", .type = WB_T_U32, .required = true, .min = 1, .max = HAL_WIFI_CHANNEL_MAX},
     {.name = "hold", .type = WB_T_U32, .required = false, .min = 0, .max = 600000, .def = 30000},
+};
+
+static const wb_policy_t kRatePolicy[] = {
+    {.name = "rate", .type = WB_T_STR, .required = true, .def_str = "default"},
+};
+
+static const wb_policy_t kBenchPolicy[] = {
+    {.name = "count", .type = WB_T_U32, .required = false, .min = 1, .max = 2000, .def = 100},
+    {.name = "gap", .type = WB_T_U32, .required = false, .min = 0, .max = 500, .def = 30},
+    {.name = "kind", .type = WB_T_STR, .required = false, .def_str = "probe"},
+    {.name = "unicast", .type = WB_T_BOOL, .required = false, .def = 0},
+    {.name = "pad", .type = WB_T_U32, .required = false, .min = 0, .max = 1000, .def = 0},
 };
 
 static const wb_policy_t kTxTestPolicy[] = {
@@ -178,7 +307,6 @@ static const wb_policy_t kTxTestPolicy[] = {
     {.name = "ssid", .type = WB_T_STR, .required = false, .def_str = ""},
     {.name = "ta", .type = WB_T_STR, .required = false, .def_str = ""},
     {.name = "ra", .type = WB_T_STR, .required = false, .def_str = ""},
-    {.name = "rate", .type = WB_T_STR, .required = false, .def_str = "keep"},
     {.name = "tid", .type = WB_T_U32, .required = false, .min = 0, .max = 15, .def = 0},
     {.name = "ssn", .type = WB_T_U32, .required = false, .min = 0, .max = 4095, .def = 0},
 };
@@ -187,9 +315,12 @@ static const wb_method_t kRadioMethods[] = {
     {"info", radio_info, "", NULL, 0},
     {"chan", radio_chan, "ch=1..196 [hold=0..600000]", kChanPolicy, 2},
     {"release", radio_release, "", NULL, 0},
+    {"rate", radio_rate, "rate=default|1m|2m|5m5|11m|6m..54m（重启生效）", kRatePolicy, 1},
     {"diag", radio_diag, "", NULL, 0},
-    {"tx_test", radio_tx_test, "[kind=probe|bar] [ta=mac|random] [ra=mac] [rate=1m..54m|keep]",
-     kTxTestPolicy, 7},
+    {"tx_bench", radio_tx_bench, "[count=1..2000] [gap=0..500] [kind=probe|bar|data] [unicast=bool] [pad=0..1000]",
+     kBenchPolicy, 5},
+    {"tx_test", radio_tx_test, "[kind=probe|bar|data] [ta=mac|random] [ra=mac] [tid] [ssn]",
+     kTxTestPolicy, 6},
 };
 
 static const wb_object_t kRadioObject = {

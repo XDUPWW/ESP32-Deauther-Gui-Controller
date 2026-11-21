@@ -37,7 +37,12 @@ void app_main(void) {
     }
 
     services_start();
-    if (hal_wifi_init() != ESP_OK) {
+    hal_rate_t startup_rate = HAL_RATE_DEFAULT;
+    uint8_t stored_rate = 0;
+    if (plat_storage_get("tx_rate", &stored_rate, sizeof(stored_rate))) {
+        startup_rate = (hal_rate_t)stored_rate;
+    }
+    if (hal_wifi_init(startup_rate) != ESP_OK) {
         ESP_LOGW(TAG, "radio layer not wired yet");
     }
     attacks_start();

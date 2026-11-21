@@ -35,6 +35,7 @@
 #define WF_LLC_SNAP_LEN 8
 
 #define WF_IE_SSID 0
+#define WF_IE_SUPPORTED_RATES 1
 #define WF_IE_DS_PARAMS 3
 #define WF_IE_TIM 5
 #define WF_IE_CSA 37

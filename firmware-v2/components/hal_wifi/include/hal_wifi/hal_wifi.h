@@ -21,8 +21,10 @@ typedef enum {
     HAL_CH_ROAMING = 1,  // 自己决定跳哪条（deauth 跳信道、被动扫描）
 } hal_ch_mode_t;
 
-// 注入速率。esp_wifi_config_80211_tx_rate() 是按接口全局生效的，
-// 设了以后我们自己 STA 侧的管理帧也一起变。
+// 注入速率。802.11g 的 6~54 Mbps 在 ESP32 2.4G 上是支持的，但
+// esp_wifi_config_80211_tx_rate() 是按接口全局生效、且官方只承诺在
+// esp_wifi_init() 之后、esp_wifi_start() 之前调用；运行期切换没有受支持的接口。
+// 所以它是一份启动期配置，不是每帧策略。
 typedef enum {
     HAL_RATE_DEFAULT = 0,
     HAL_RATE_1M,
@@ -37,6 +39,14 @@ typedef enum {
     HAL_RATE_36M,
     HAL_RATE_48M,
     HAL_RATE_54M,
+    HAL_RATE_MCS0,
+    HAL_RATE_MCS1,
+    HAL_RATE_MCS2,
+    HAL_RATE_MCS3,
+    HAL_RATE_MCS4,
+    HAL_RATE_MCS5,
+    HAL_RATE_MCS6,
+    HAL_RATE_MCS7,
 } hal_rate_t;
 
 typedef struct {
@@ -71,10 +81,27 @@ typedef struct {
 
 // len 是驱动给的 sig_len，含 4 字节 FCS（IDF 6.1 头文件明确写了），
 // 需要真实帧长自己减 4。
-typedef void (*hal_wifi_rx_fn)(const uint8_t *frame, uint16_t len, int8_t rssi, uint8_t channel,
+// 混杂回调的元数据。速率不在帧里（PHY header 的信息，收包时被剥掉了），
+// 只有这条路径能拿到。
+typedef struct {
+    int8_t rssi;
+    uint8_t channel;
+    uint8_t rate_code;   // 仅 11b/g 帧有效：0..11 -> 1/2/5.5/11/6/9/12/18/24/36/48/54 Mbps
+    uint8_t sig_mode;    // 0 = 11b/g legacy, 1 = 11n HT
+    uint8_t mcs;         // sig_mode == 1 时有效，0..7 对应 HT20
+    uint8_t sgi;
+    uint32_t timestamp;  // 收包时刻，µs
+} hal_wifi_rx_meta_t;
+
+typedef void (*hal_wifi_rx_fn)(const uint8_t *frame, uint16_t len, const hal_wifi_rx_meta_t *meta,
                                void *ctx);
 
-esp_err_t hal_wifi_init(void);
+// 换算成 Mbps；HT 帧按 MCS + 20MHz + 长/短 GI 算
+float hal_wifi_rx_mbps(const hal_wifi_rx_meta_t *meta);
+
+// esp_wifi_config_80211_tx_rate() 必须在 esp_wifi_init() 之后、esp_wifi_start() 之前调用，
+// 所以注入速率是开机时定死的，运行期改不了（改了也只影响 CCK 那几档）。
+esp_err_t hal_wifi_init(hal_rate_t startup_rate);
 
 esp_err_t hal_wifi_set_country(const char *cc, uint8_t nchan, int8_t max_dbm, bool manual);
 
@@ -82,6 +109,7 @@ esp_err_t hal_wifi_set_band_auto(bool enable);
 
 esp_err_t hal_wifi_mac(uint8_t out[6]);
 
+// 只应在 start 之前调用（启动期配置由 hal_wifi_init 传入）
 esp_err_t hal_wifi_set_tx_rate(hal_rate_t rate);
 
 hal_rate_t hal_wifi_tx_rate(void);

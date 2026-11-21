@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_timer.h"
 #include "hal_wifi/hal_wifi.h"
 #include "services_private.h"
 #include "wbus/wbus.h"
@@ -26,6 +27,10 @@ static uint8_t s_ta[6];
 static uint32_t s_printed;
 static uint32_t s_matched;
 static uint32_t s_total;
+static uint32_t s_skipped;
+static uint32_t s_max_per_s = 20;
+static uint32_t s_window_ms;
+static uint32_t s_window_count;
 
 static const char *type_name(uint8_t type) {
     switch (type) {
@@ -53,11 +58,13 @@ static bool passes(uint8_t type) {
     }
 }
 
-static void on_rx(const uint8_t *frame, uint16_t len, int8_t rssi, uint8_t channel, void *ctx) {
+static void on_rx(const uint8_t *frame, uint16_t len, const hal_wifi_rx_meta_t *meta, void *ctx) {
     (void)ctx;
-    if (!s_on || len < 10) {
+    if (!s_on || meta == NULL || len < 10) {
         return;
     }
+    const int8_t rssi = meta->rssi;
+    const uint8_t channel = meta->channel;
     s_total++;
     const uint8_t type = (uint8_t)((frame[0] >> 2) & 0x03);
     const uint8_t subtype = (uint8_t)((frame[0] >> 4) & 0x0F);
@@ -68,6 +75,19 @@ static void on_rx(const uint8_t *frame, uint16_t len, int8_t rssi, uint8_t chann
         return;
     }
     s_matched++;
+    // 打印是 UART 上最慢的一环（一行 ~100 字节 ≈ 8.7 ms @115200），
+    // 超过每秒上限就只计数不打印，否则 RX 队列会被拖垮
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    if (now - s_window_ms >= 1000) {
+        s_window_ms = now;
+        s_window_count = 0;
+    }
+    if (s_window_count >= s_max_per_s) {
+        s_skipped++;
+        return;
+    }
+    s_window_count++;
+
     // 驱动给的 len 含 4 字节 FCS，这里按真实帧长算
     const uint16_t payload_len = (len >= 4) ? (uint16_t)(len - 4) : len;
 
@@ -80,9 +100,17 @@ static void on_rx(const uint8_t *frame, uint16_t len, int8_t rssi, uint8_t chann
     if (payload_len >= 24) {
         wf_mac_format(a3, frame + 16);
     }
-    wb_emit("monitor", "rx", "t=%s s=%u len=%u ch=%u rssi=%d a1=%s a2=%s a3=%s",
+    // 速率只有混杂回调的元数据里有：legacy 帧看 rate 索引，HT 帧看 mcs
+    char rate_text[24];
+    if (meta->sig_mode == 0) {
+        snprintf(rate_text, sizeof(rate_text), "%.1fM", (double)hal_wifi_rx_mbps(meta));
+    } else {
+        snprintf(rate_text, sizeof(rate_text), "mcs%u%s", (unsigned)meta->mcs,
+                 meta->sgi ? "/sgi" : "");
+    }
+    wb_emit("monitor", "rx", "t=%s s=%u len=%u ch=%u rssi=%d rate=%s a1=%s a2=%s a3=%s",
             type_name(type), (unsigned)subtype, (unsigned)payload_len, (unsigned)channel, (int)rssi,
-            a1, a2, a3);
+            rate_text, a1, a2, a3);
     s_printed++;
 }
 
@@ -113,6 +141,10 @@ static esp_err_t monitor_start(wb_args_t *args, wb_reply_t *reply) {
     s_printed = 0;
     s_matched = 0;
     s_total = 0;
+    s_skipped = 0;
+    s_max_per_s = wb_args_u32(args, "max");
+    s_window_ms = (uint32_t)(esp_timer_get_time() / 1000);
+    s_window_count = 0;
 
     hal_wifi_rx_set_filter(true, true, true);
     const esp_err_t err = hal_wifi_sniffer_enable(true);
@@ -131,8 +163,9 @@ static esp_err_t monitor_stop(wb_args_t *args, wb_reply_t *reply) {
     s_on = false;
     hal_wifi_sniffer_enable(false);
     hal_wifi_channel_release(MONITOR_OWNER);
-    wb_reply_line(reply, "monitor off total=%u matched=%u printed=%u", (unsigned)s_total,
-                  (unsigned)s_matched, (unsigned)s_printed);
+    wb_reply_line(reply, "monitor off total=%u matched=%u printed=%u skipped=%u",
+                  (unsigned)s_total, (unsigned)s_matched, (unsigned)s_printed,
+                  (unsigned)s_skipped);
     return ESP_OK;
 }
 
@@ -140,9 +173,10 @@ static esp_err_t monitor_status(wb_args_t *args, wb_reply_t *reply) {
     (void)args;
     hal_wifi_stats_t stats;
     hal_wifi_stats(&stats);
-    wb_reply_line(reply, "on=%d ch=%u owner=%s total=%u matched=%u printed=%u", s_on ? 1 : 0,
-                  (unsigned)hal_wifi_channel(), hal_wifi_channel_owner(), (unsigned)s_total,
-                  (unsigned)s_matched, (unsigned)s_printed);
+    wb_reply_line(reply, "on=%d ch=%u owner=%s max=%u total=%u matched=%u printed=%u skipped=%u",
+                  s_on ? 1 : 0, (unsigned)hal_wifi_channel(), hal_wifi_channel_owner(),
+                  (unsigned)s_max_per_s, (unsigned)s_total, (unsigned)s_matched,
+                  (unsigned)s_printed, (unsigned)s_skipped);
     wb_reply_line(reply, "rx=%u dropped=%u too_long=%u", (unsigned)stats.rx_frames,
                   (unsigned)stats.rx_dropped, (unsigned)stats.rx_too_long);
     return ESP_OK;
@@ -166,6 +200,7 @@ static esp_err_t monitor_chan(wb_args_t *args, wb_reply_t *reply) {
 static const wb_policy_t kStartPolicy[] = {
     {.name = "kind", .type = WB_T_STR, .required = false, .def_str = "all"},
     {.name = "ta", .type = WB_T_STR, .required = false, .def_str = ""},
+    {.name = "max", .type = WB_T_U32, .required = false, .min = 1, .max = 1000, .def = 20},
 };
 
 static const wb_policy_t kChanPolicy[] = {
@@ -173,7 +208,8 @@ static const wb_policy_t kChanPolicy[] = {
 };
 
 static const wb_method_t kMonitorMethods[] = {
-    {"start", monitor_start, "[kind=all|mgmt|ctrl|data] [ta=aa:..]", kStartPolicy, 2},
+    {"start", monitor_start, "[kind=all|mgmt|ctrl|data] [ta=aa:..] [max=1..1000]",
+     kStartPolicy, 3},
     {"stop", monitor_stop, "", NULL, 0},
     {"status", monitor_status, "", NULL, 0},
     {"chan", monitor_chan, "ch=1..196", kChanPolicy, 1},

@@ -108,11 +108,13 @@ static void record_sta(const uint8_t mac[6], const uint8_t bssid[6], int8_t rssi
     }
 }
 
-static void on_rx(const uint8_t *frame, uint16_t len, int8_t rssi, uint8_t channel, void *ctx) {
+static void on_rx(const uint8_t *frame, uint16_t len, const hal_wifi_rx_meta_t *meta, void *ctx) {
     (void)ctx;
-    if (!s_listening || len < WF_MGMT_HDR_LEN) {
+    if (!s_listening || meta == NULL || len < WF_MGMT_HDR_LEN) {
         return;
     }
+    const int8_t rssi = meta->rssi;
+    const uint8_t channel = meta->channel;
     s_frames++;
 
     const uint8_t fc = frame[0];

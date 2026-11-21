@@ -199,10 +199,117 @@ static void test_bar(void) {
     CHECK(wf_build_bar(small, sizeof(small), kRa, kTa, 0, 0) < 0, "cap too small");
 }
 
+
+static void test_mgmt_builders(void) {
+    printf("management builders\n");
+    static const uint8_t kBcast[6] = WF_BROADCAST_ADDR_INIT;
+    uint8_t frame[WF_FRAME_CAP];
+
+    int len = wf_build_deauth(frame, sizeof(frame), kSta, kAp, kAp, 7);
+    CHECK(len == 26, "deauth is 26 bytes");
+    CHECK(frame[0] == WF_ST_DEAUTH, "deauth subtype");
+    CHECK(memcmp(frame + 4, kSta, 6) == 0, "deauth addr1 is the station");
+    CHECK(memcmp(frame + 10, kAp, 6) == 0, "deauth addr2 is the ap");
+    CHECK(wf_le16(frame + 24) == 7, "deauth reason");
+
+    len = wf_build_disassoc(frame, sizeof(frame), kSta, kAp, kAp, 8);
+    CHECK(len == 26 && frame[0] == WF_ST_DISASSOC, "disassoc frame");
+    CHECK(wf_le16(frame + 24) == 8, "disassoc reason");
+
+    len = wf_build_auth(frame, sizeof(frame), kAp, kSta, kAp, 3, 1, 0);
+    CHECK(len == 30, "auth is 30 bytes");
+    CHECK(frame[0] == WF_ST_AUTH, "auth subtype");
+    CHECK(wf_le16(frame + 24) == 3, "auth algorithm");
+    CHECK(wf_le16(frame + 26) == 1, "auth sequence");
+    CHECK(wf_le16(frame + 28) == 0, "auth status");
+
+    const uint8_t ies[] = {WF_IE_SSID, 3, 'l', 'a', 'b'};
+    len = wf_build_assoc_req(frame, sizeof(frame), kAp, kSta, kAp, 0x0411, 10, ies, sizeof(ies));
+    CHECK(len == 33, "assoc request length");
+    CHECK(frame[0] == WF_ST_ASSOC_REQ, "assoc subtype");
+    CHECK(wf_le16(frame + 24) == 0x0411, "assoc capability");
+    CHECK(wf_le16(frame + 26) == 10, "assoc listen interval");
+    CHECK(memcmp(frame + 28, ies, sizeof(ies)) == 0, "assoc ies copied");
+
+    len = wf_build_beacon(frame, sizeof(frame), kAp, 0x1122334455667788ULL, 100, 0x0401, ies,
+                          sizeof(ies));
+    CHECK(len == 41, "beacon length");
+    CHECK(frame[0] == WF_ST_BEACON, "beacon subtype");
+    CHECK(memcmp(frame + 4, kBcast, 6) == 0, "beacon addr1 broadcast");
+    CHECK(memcmp(frame + 10, kAp, 6) == 0 && memcmp(frame + 16, kAp, 6) == 0, "beacon bssid");
+    CHECK(frame[24] == 0x88 && frame[31] == 0x11, "beacon timestamp little endian");
+    CHECK(wf_le16(frame + 32) == 100, "beacon interval");
+    CHECK(wf_le16(frame + 34) == 0x0401, "beacon capability");
+    CHECK(memcmp(frame + 36, ies, sizeof(ies)) == 0, "beacon ies copied");
+
+    const uint8_t btm[] = {7, 1, 0};
+    len = wf_build_action(frame, sizeof(frame), kSta, kAp, kAp, 10, btm, sizeof(btm));
+    CHECK(len == 28, "action length");
+    CHECK(frame[0] == WF_ST_ACTION, "action subtype");
+    CHECK(frame[24] == 10, "action category");
+    CHECK(memcmp(frame + 25, btm, sizeof(btm)) == 0, "action body copied");
+}
+
+static void test_data_builders(void) {
+    printf("data builders\n");
+    uint8_t frame[WF_FRAME_CAP];
+    uint8_t eapol[4] = {0x02, 0x01, 0x00, 0x00};
+
+    int len = wf_build_data(frame, sizeof(frame), kAp, kSta, kAp, true, false, true, 5, eapol, 4);
+    CHECK(len == 30, "qos data length");
+    CHECK(frame[0] == WF_ST_QOS_DATA, "qos data subtype");
+    CHECK(frame[1] == 0x01, "toDS bit");
+    CHECK(memcmp(frame + 4, kAp, 6) == 0, "toDS addr1 is the ap");
+    CHECK(memcmp(frame + 10, kSta, 6) == 0, "toDS addr2 is the station");
+    CHECK(memcmp(frame + 16, kAp, 6) == 0, "toDS addr3 is the destination");
+    CHECK(wf_le16(frame + 24) == 5, "qos tid");
+    CHECK(memcmp(frame + 26, eapol, 4) == 0, "payload copied");
+
+    len = wf_build_data(frame, sizeof(frame), kSta, kAp, kAp, false, true, false, 0, eapol, 4);
+    CHECK(len == 28, "plain data length");
+    CHECK(frame[0] == 0x08, "plain data subtype");
+    CHECK(frame[1] == 0x02, "fromDS bit");
+    CHECK(memcmp(frame + 4, kSta, 6) == 0, "fromDS addr1 is the station");
+    CHECK(memcmp(frame + 10, kAp, 6) == 0, "fromDS addr2 is the ap");
+    CHECK(memcmp(frame + 16, kAp, 6) == 0, "fromDS addr3 is the source");
+
+    CHECK(wf_build_data(frame, sizeof(frame), kSta, kAp, kAp, true, true, false, 0, eapol, 4) < 0,
+          "WDS rejected");
+
+    len = wf_build_null_data(frame, sizeof(frame), kAp, kSta, kAp, false, true);
+    CHECK(len == 24, "null data length");
+    CHECK(frame[0] == 0x48, "null data subtype");
+    CHECK((frame[1] & 0x10) != 0, "power management bit");
+    len = wf_build_null_data(frame, sizeof(frame), kAp, kSta, kAp, true, false);
+    CHECK(len == 26 && frame[0] == WF_ST_QOS_NULL, "qos null length");
+    CHECK((frame[1] & 0x10) == 0, "pm bit clear");
+
+    len = wf_build_llc_snap(frame, sizeof(frame), 0x888E, eapol, 4);
+    CHECK(len == 12, "llc/snap length");
+    CHECK(frame[0] == 0xAA && frame[1] == 0xAA && frame[2] == 0x03, "llc/snap prefix");
+    CHECK(frame[6] == 0x88 && frame[7] == 0x8E, "eapol ethertype big endian");
+    CHECK(memcmp(frame + 8, eapol, 4) == 0, "llc/snap payload");
+}
+
+static void test_ctrl_builders(void) {
+    printf("control builders\n");
+    uint8_t frame[WF_FRAME_CAP];
+    static const uint8_t kRa[6] = {0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f};
+    int len = wf_build_rts(frame, sizeof(frame), kRa, kSta, 320);
+    CHECK(len == 16, "rts is 16 bytes");
+    CHECK(frame[0] == WF_ST_RTS, "rts subtype");
+    CHECK(wf_le16(frame + 2) == 320, "rts duration");
+    CHECK(memcmp(frame + 4, kRa, 6) == 0, "rts ra");
+    CHECK(memcmp(frame + 10, kSta, 6) == 0, "rts ta");
+}
+
 int main(void) {
     printf("wifi_frame host tests\n");
     test_mac();
     test_bar();
+    test_mgmt_builders();
+    test_data_builders();
+    test_ctrl_builders();
     test_probe_req();
     test_beacon();
     test_ie_helpers();
