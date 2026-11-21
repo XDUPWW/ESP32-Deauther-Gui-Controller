@@ -17,6 +17,7 @@ typedef struct {
     char line[LINE_CAP];
     size_t len;
     bool overflow;
+    bool has_pending;
 } serial_text_t;
 
 static serial_text_t s_serial;
@@ -35,6 +36,16 @@ static void serial_line_out(transport_plugin_t *self, const char *line) {
 static void serial_poll(transport_plugin_t *self, uint32_t now_ms) {
     (void)now_ms;
     serial_text_t *s = (serial_text_t *)self;
+
+    // 队列满时不读新字节：一次只压一行，未送达的行留在插件里，下一轮重试。
+    if (s->has_pending) {
+        if (transport_submit(s->line) != ESP_OK) {
+            return;
+        }
+        s->has_pending = false;
+        s->len = 0;
+    }
+
     uint8_t chunk[64];
     const int n = plat_console_read(chunk, sizeof(chunk), 10);
     for (int i = 0; i < n; i++) {
@@ -51,7 +62,10 @@ static void serial_poll(transport_plugin_t *self, uint32_t now_ms) {
             }
             s->line[s->len] = '\0';
             s->len = 0;
-            transport_submit(s->line);
+            if (transport_submit(s->line) != ESP_OK) {
+                s->has_pending = true;
+                return;
+            }
             continue;
         }
         if (c == '\b' || c == 0x7F) {

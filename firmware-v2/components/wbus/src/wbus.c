@@ -250,8 +250,9 @@ static bool fill_default(wb_args_t *args, const wb_policy_t *policy) {
     strncpy(slot->key, policy->name, sizeof(slot->key) - 1);
     switch (policy->type) {
         case WB_T_STR:
+        case WB_T_MAC:
             if (policy->def_str == NULL) {
-                return false;
+                return true;
             }
             strncpy(slot->val, policy->def_str, sizeof(slot->val) - 1);
             break;
@@ -318,7 +319,7 @@ static bool validate_args(const wb_method_t *method, wb_args_t *args, char *msg,
             }
             return false;
         }
-        if (policy->type != WB_T_STR && policy->type != WB_T_MAC) {
+        if (policy->type != WB_T_STR && policy->type != WB_T_MAC && policy->type != WB_T_BOOL) {
             if (value < policy->min || value > policy->max) {
                 snprintf(msg, cap, "%s must be %u..%u", policy->name, (unsigned)policy->min,
                          (unsigned)policy->max);
@@ -416,30 +417,33 @@ esp_err_t wb_call(const char *object, const char *method, int argc, char *const 
 
 static int split_tokens(char *line, char *tokens[], int max) {
     int count = 0;
-    char *p = line;
-    while (*p != '\0' && count < max) {
-        while (*p == ' ' || *p == '\t') {
-            p++;
+    char *out = line;
+    char *rd = line;
+    while (*rd != '\0' && count < max) {
+        while (*rd == ' ' || *rd == '\t') {
+            rd++;
         }
-        if (*p == '\0') {
+        if (*rd == '\0') {
             break;
         }
-        if (*p == '"') {
-            p++;
-            tokens[count++] = p;
-            while (*p != '\0' && *p != '"') {
-                p++;
-            }
-        } else {
-            tokens[count++] = p;
-            while (*p != '\0' && *p != ' ' && *p != '\t') {
-                p++;
+        tokens[count++] = out;
+        while (*rd != '\0' && *rd != ' ' && *rd != '\t') {
+            if (*rd == '"') {
+                rd++;
+                while (*rd != '\0' && *rd != '"') {
+                    *out++ = *rd++;
+                }
+                if (*rd == '"') {
+                    rd++;
+                }
+            } else {
+                *out++ = *rd++;
             }
         }
-        if (*p != '\0') {
-            *p = '\0';
-            p++;
+        if (*rd == ' ' || *rd == '\t') {
+            rd++;
         }
+        *out++ = '\0';
     }
     return count;
 }
