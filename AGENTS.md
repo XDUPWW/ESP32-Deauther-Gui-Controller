@@ -250,7 +250,18 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 
 ## 8. 测试
 
-固件测试套件 `firmware/tests/test_wireless_attack.py`（50 个用例，unittest）：
+`firmware-v2/` 的自测（不依赖人工点击，失败返回非 0）：
+
+```sh
+cd firmware-v2
+sh host_tests/run.sh                       # 脱机：wbus 70 项，用系统 gcc，不需要板子
+python tools/selftest.py COM5              # 板端：29 项，复位后逐条校验回执
+```
+
+板端脚本覆盖启动横幅、每个对象方法、参数校验报错文案、超长行、突发 40 条背压、
+界面日志镜像（`ui.status` 的 `flush` 增长）、刷屏增量与运行期稳定性。
+
+固件旧套件 `firmware/tests/test_wireless_attack.py`（50 个用例，unittest）：
 
 ```powershell
 cd firmware

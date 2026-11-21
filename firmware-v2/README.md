@@ -83,6 +83,17 @@ idf.py -B build -p COM5 flash
 由 `components/wireless_ui/idf_component.yml` 声明，首次构建需要组件本地缓存或网络；
 解析结果记在 `dependencies.lock`，`managed_components/` 不入库。
 
+## 自测
+
+两层，都不依赖人工点击：
+
+| 入口 | 依赖 | 覆盖 |
+| --- | --- | --- |
+| `sh host_tests/run.sh` | 系统 gcc | `wbus` 70 项：注册表、调用、参数策略、回执、事件、边界 |
+| `python tools/selftest.py COM5` | pyserial + 板子 | 29 项：启动、每个对象方法、参数校验报错、超长行、突发 40 条背压、界面日志镜像、刷屏增量、稳定性 |
+
+板端自测会复位开发板并逐条校验回执，失败返回非 0。最近一次结果：主机 70/70、板端 29/29。
+
 ## 状态
 
 - [x] 目录骨架、空组件、`REQUIRES` 白名单、可编译入口
