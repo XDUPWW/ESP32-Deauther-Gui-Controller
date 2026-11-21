@@ -146,6 +146,12 @@ idf.py -B build -p COM5 flash
   C5 是 WiFi 6 芯片，`rx_ctrl` 换成 HE 结构（没有 `sig_mode`/`mcs`），只能用
   `cur_bb_format` 加 L-SIG 的 RATE 字段判读——11b/11g 帧能给出确切 Mbps，HT/HE 帧的
   L-SIG 只描述前导，因此只报格式名而不假装报速率。
+- `rate_code` 里混着两套编码：11b 用 0..3 的索引，11g 用 L-SIG 的 RATE 字段，而后者是
+  **LSB-first 解释**的（6M=0xB、12M=0xA、54M=0xC）。照标准表正序查会把 6M 报成 54M，
+  这个坑踩过一次：修正前 C5 把华为 AP 的 6M beacon 报成 36M。
+- 注入速率实测（`tools/ratecheck.py`，COM5 注入 / COM6 嗅探）：legacy 12 档
+  1/2/5.5/11/6/9/12/18/24/36/48/54 Mbps **全部生效且能读回**。MCS0~7 写入返回成功但
+  空口仍是 1M，推测是未关联 AP 时 HT 速率不可用（未验证，需要连上 HT AP 再测）。
 - 驱动文档写 `esp_wifi_80211_tx` 只支持 len >= 24，但实测 20 字节的 BAR 能发出去并被抓到。
   C5 侧收到时 `sig_len` 含 4 字节 FCS，同一个 BAR 报成 24。
 - WiFi 起来后剩余堆约 80 KB（LVGL 池 80 KB + WiFi 栈 + RX 队列 8 KB），后续攻击模块要按这个预算分配缓冲。

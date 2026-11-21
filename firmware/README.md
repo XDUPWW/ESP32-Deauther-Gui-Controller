@@ -127,6 +127,9 @@ C5 上 `RXLOG` 的 `fmt=` 直接是驱动的 `cur_bb_format`：0=11b、1=11g、2
 放的是 L-SIG 的 RATE，只描述前导。经典 ESP32 上 `fmt=` 只有 0（11b/g）和 2（HT），
 HT 帧还要连 `mcs` 一起看。
 
+`rate=` 的编码要注意：11b 是 0..3 的索引，11g 是 L-SIG 的 RATE 字段且按 LSB-first
+解释（6M=0xB、12M=0xA、54M=0xC）。照标准表正序查会把 6M 读成 54M。
+
 之后切回 ESP32 用普通 `idf.py build` 即可；两套互不覆盖。
 （首次切换 target 时组件管理器会重新下载非当前目标的 `managed_components`，属正常现象。）
 
