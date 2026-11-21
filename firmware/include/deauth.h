@@ -118,6 +118,22 @@ bool attack_rx_log_at(int i, uint8_t dest[6], uint8_t src[6], uint8_t bssid[6],
                       uint8_t* type, uint8_t* subtype, uint16_t* len);
 // Extra detail decoded for the log sample: action category/action, CSA channel/count.
 void attack_rx_log_info(int i, uint8_t* cat, uint8_t* act, uint8_t* nch, uint8_t* cnt);
+// Radio metadata that came up with the frame. The driver reports a different
+// set on the two targets, so `fmt` decides how `rate`/`mcs` must be read.
+struct rx_radio_t {
+  int16_t rssi;
+  uint8_t channel;
+  uint16_t duration;  // Duration/ID, straight from the MAC header
+  uint8_t fmt;        // 0 = 11b, 1 = 11g/a, 2 = HT, 3 = VHT, 4..7 = HE
+  uint8_t rate;       // raw driver code (see rx_rate_text)
+  uint8_t mcs;
+  uint8_t sgi;
+};
+bool attack_rx_log_radio(int i, rx_radio_t* out);
+// Formats the rate for a log line: "54M", "1M", "mcs7/sgi" or "-" when the
+// driver value cannot be trusted. buf must hold at least 12 bytes.
+const char* rx_rate_text(uint8_t fmt, uint8_t rate, uint8_t mcs, uint8_t sgi, char* buf,
+                         int buf_len);
 uint32_t attack_probe_frames(void);
 
 int attack_ap_count(void);

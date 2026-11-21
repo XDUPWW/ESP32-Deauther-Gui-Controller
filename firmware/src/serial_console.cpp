@@ -721,6 +721,14 @@ void do_rxlog() {
     Serial.print(s);
     Serial.print(" bssid=");
     Serial.print(b);
+    rx_radio_t radio = {};
+    if (attack_rx_log_radio(i, &radio)) {
+      char rate_text[12];
+      Serial.printf(" rssi=%d ch=%u dur=%u fmt=%u rate=%s", (int)radio.rssi,
+                    (unsigned)radio.channel, (unsigned)radio.duration, (unsigned)radio.fmt,
+                    rx_rate_text(radio.fmt, radio.rate, radio.mcs, radio.sgi, rate_text,
+                                 (int)sizeof(rate_text)));
+    }
     uint8_t cat = 0;
     uint8_t act = 0;
     uint8_t nch = 0;

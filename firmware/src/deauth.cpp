@@ -63,9 +63,10 @@ struct rx_sample_t {
     uint8_t act;   // action: action code
     uint8_t nch;   // CSA: new channel
     uint8_t cnt;   // CSA: count
+    rx_radio_t radio;
 };
 
-const int kRxLogSize = 12;
+const int kRxLogSize = 256;
 
 attack_mode_t s_mode = ATTACK_IDLE;
 uint16_t s_reason = 1;
@@ -151,8 +152,11 @@ volatile uint32_t s_rx_delba = 0;       // action category 3, action 2 (DELBA)
 const int kCsaLogSize = 4;
 rx_sample_t s_csa_log[kCsaLogSize];
 int s_csa_log_count = 0;
+// Ring buffer: the monitor window is short, so the frames worth printing are
+// the newest ones. Filling an array and stopping at full loses exactly those.
 rx_sample_t s_rx_log[kRxLogSize];
-volatile int s_rx_log_count = 0;
+volatile int s_rx_log_head = 0;   // next slot to write
+volatile int s_rx_log_count = 0;  // valid entries, saturates at kRxLogSize
 
 bool s_mon_active = false;
 uint32_t s_mon_until = 0;
@@ -456,6 +460,27 @@ int find_ap(const uint8_t bssid[6]) {
 
 // ------------------------------------------------------------------ sniffer
 
+// The two targets report different rx_ctrl: the classic ESP32 has
+// sig_mode/mcs/sgi, the C5 has cur_bb_format plus a raw L-SIG rate field.
+// Normalising here keeps the printers free of target checks.
+IRAM_ATTR static void fill_radio_meta(const wifi_pkt_rx_ctrl_t* rc, rx_radio_t* out) {
+    out->rssi = (int16_t)rc->rssi;
+    out->channel = (uint8_t)(rc->channel);
+#if CONFIG_SOC_WIFI_HE_SUPPORT
+    out->fmt = (uint8_t)(rc->cur_bb_format);
+    out->rate = (uint8_t)(rc->rate);
+    // MCS sits in he_siga1, which Espressif leaves undocumented: 0 on purpose.
+    out->mcs = 0;
+    out->sgi = 0;
+#else
+    const uint8_t sig_mode = (uint8_t)(rc->sig_mode);
+    out->fmt = (sig_mode == 1) ? 2 : ((sig_mode == 0) ? 0 : 3);
+    out->rate = (uint8_t)(rc->rate);
+    out->mcs = (uint8_t)(rc->mcs);
+    out->sgi = (uint8_t)(rc->sgi);
+#endif
+}
+
 IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     const wifi_promiscuous_pkt_t* raw = (wifi_promiscuous_pkt_t*)buf;
     const wifi_packet_t* packet = (wifi_packet_t*)raw->payload;
@@ -480,7 +505,9 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         s_rx_data = s_rx_data + 1;
     }
 
-    if (sig_len <= sizeof(mac_hdr_t)) {
+    // RTS is 16 bytes and a broadcast Block Ack Request is 20, both well under
+    // sizeof(mac_hdr_t). Rejecting those here made every control frame invisible.
+    if (sig_len < 16) {
         return;
     }
     for (int i = 0; i < s_module_count; i++) {
@@ -549,11 +576,17 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     // busy BSS produces thousands per second: count them, but do not let them
     // flush the sample ring (RXLOG is meant to show interesting frames).
     const bool keep_sample = !(frame_type == 1 && (frame_subtype == 12 || frame_subtype == 13));
-    if (keep_sample && s_rx_log_count < kRxLogSize) {
-        rx_sample_t* sample = &s_rx_log[s_rx_log_count];
+    if (keep_sample) {
+        rx_sample_t* sample = &s_rx_log[s_rx_log_head];
         memcpy(sample->dest, hdr->dest, 6);
         memcpy(sample->src, hdr->src, 6);
-        memcpy(sample->bssid, hdr->bssid, 6);
+        // RTS stops at Addr2 and PS-Poll stops at Addr1, so Addr3 only exists
+        // from 22 bytes up. Reading it anyway pulled garbage out of the buffer.
+        if (sig_len >= 22) {
+            memcpy(sample->bssid, hdr->bssid, 6);
+        } else {
+            memset(sample->bssid, 0, 6);
+        }
         sample->type = frame_type;
         sample->subtype = frame_subtype;
         sample->len = sig_len;
@@ -561,7 +594,12 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
         sample->act = act;
         sample->nch = csa_ch;
         sample->cnt = csa_cnt;
-        s_rx_log_count = s_rx_log_count + 1;
+        fill_radio_meta(&raw->rx_ctrl, &sample->radio);
+        sample->radio.duration = hdr->duration;
+        s_rx_log_head = (s_rx_log_head + 1) % kRxLogSize;
+        if (s_rx_log_count < kRxLogSize) {
+            s_rx_log_count = s_rx_log_count + 1;
+        }
     }
 
     // Address fields present? Control frames are short: RTS / PS-Poll carry
@@ -683,6 +721,7 @@ void begin_multi(uint16_t reason) {
     s_deauth_frames = 0;
     s_rx_total = 0;
     s_rx_match = 0;
+    s_rx_log_head = 0;
     s_rx_log_count = 0;
     reset_diag_counters();
     apply_band_mode();
@@ -720,6 +759,7 @@ bool attack_deauth_single(int index, uint16_t reason) {
     s_deauth_frames = 0;
     s_rx_total = 0;
     s_rx_match = 0;
+    s_rx_log_head = 0;
     s_rx_log_count = 0;
     reset_diag_counters();
     s_ap_count = 0;
@@ -803,6 +843,7 @@ bool attack_probe_broadcast() {
 // clean counter slate so a second board can report exactly what it heard.
 void monitor_begin(uint8_t channel, uint16_t seconds) {
     reset_diag_counters();
+    s_rx_log_head = 0;
     s_rx_log_count = 0;
     s_mon_channel = channel;
     s_mon_hop = 1;
@@ -1117,17 +1158,24 @@ int attack_rx_log_count() {
     return s_rx_log_count;
 }
 
+// Index 0 is the oldest sample the ring still holds.
+static rx_sample_t* rx_log_slot(int i) {
+    const int start = (s_rx_log_head - s_rx_log_count + kRxLogSize) % kRxLogSize;
+    return &s_rx_log[(start + i) % kRxLogSize];
+}
+
 bool attack_rx_log_at(int i, uint8_t dest[6], uint8_t src[6], uint8_t bssid[6], uint8_t* type,
                       uint8_t* subtype, uint16_t* len) {
     if (i < 0 || i >= s_rx_log_count) {
         return false;
     }
-    memcpy(dest, s_rx_log[i].dest, 6);
-    memcpy(src, s_rx_log[i].src, 6);
-    memcpy(bssid, s_rx_log[i].bssid, 6);
-    if (type) *type = s_rx_log[i].type;
-    if (subtype) *subtype = s_rx_log[i].subtype;
-    if (len) *len = s_rx_log[i].len;
+    const rx_sample_t* sample = rx_log_slot(i);
+    memcpy(dest, sample->dest, 6);
+    memcpy(src, sample->src, 6);
+    memcpy(bssid, sample->bssid, 6);
+    if (type) *type = sample->type;
+    if (subtype) *subtype = sample->subtype;
+    if (len) *len = sample->len;
     return true;
 }
 
@@ -1135,10 +1183,94 @@ void attack_rx_log_info(int i, uint8_t* cat, uint8_t* act, uint8_t* nch, uint8_t
     if (i < 0 || i >= s_rx_log_count) {
         return;
     }
-    if (cat) *cat = s_rx_log[i].cat;
-    if (act) *act = s_rx_log[i].act;
-    if (nch) *nch = s_rx_log[i].nch;
-    if (cnt) *cnt = s_rx_log[i].cnt;
+    const rx_sample_t* sample = rx_log_slot(i);
+    if (cat) *cat = sample->cat;
+    if (act) *act = sample->act;
+    if (nch) *nch = sample->nch;
+    if (cnt) *cnt = sample->cnt;
+}
+
+bool attack_rx_log_radio(int i, rx_radio_t* out) {
+    if (out == nullptr || i < 0 || i >= s_rx_log_count) {
+        return false;
+    }
+    *out = rx_log_slot(i)->radio;
+    return true;
+}
+
+// Mbps doubled, so 5.5 does not need a float. Index is the driver's rate code,
+// not the L-SIG encoding.
+static const uint16_t kLegacyMbps2[12] = {2, 4, 11, 22, 12, 18, 24, 36, 48, 72, 96, 108};
+
+static void format_mbps2(uint16_t mbps2, char* buf, int buf_len) {
+    if (mbps2 % 2 == 0) {
+        snprintf(buf, buf_len, "%uM", (unsigned)(mbps2 / 2));
+    } else {
+        snprintf(buf, buf_len, "%u.5M", (unsigned)(mbps2 / 2));
+    }
+}
+
+const char* rx_rate_text(uint8_t fmt, uint8_t rate, uint8_t mcs, uint8_t sgi, char* buf,
+                         int buf_len) {
+    if (buf == nullptr || buf_len < 12) {
+        return "-";
+    }
+#if CONFIG_SOC_WIFI_HE_SUPPORT
+    // C5: an 11b frame carries the transmission rate; everything else only
+    // carries the 4-bit RATE field of L-SIG (802.11-2020 Table 17-4). For
+    // HT/VHT/HE that field describes the preamble, so calling it "the" rate
+    // would be wrong -- those get a format name instead.
+    if (fmt == 0) {
+        if (rate >= 4) {
+            return "-";
+        }
+        format_mbps2(kLegacyMbps2[rate], buf, buf_len);
+        return buf;
+    }
+    if (fmt == 1) {
+        uint16_t mbps2;
+        switch (rate & 0x0F) {
+            case 0x0D: mbps2 = 12; break;   // 6
+            case 0x0F: mbps2 = 18; break;   // 9
+            case 0x05: mbps2 = 24; break;   // 12
+            case 0x07: mbps2 = 36; break;   // 18
+            case 0x09: mbps2 = 48; break;   // 24
+            case 0x0B: mbps2 = 72; break;   // 36
+            case 0x01: mbps2 = 96; break;   // 48
+            case 0x03: mbps2 = 108; break;  // 54
+            default: return "-";
+        }
+        format_mbps2(mbps2, buf, buf_len);
+        return buf;
+    }
+    switch (fmt) {
+        case 2: return "ht";
+        case 3: return "vht";
+        case 4:
+        case 5:
+        case 6:
+        case 7: return "he";
+        default: return "-";
+    }
+#else
+    // Classic ESP32: sig_mode decides. 0 means the rate code is a PHY rate
+    // encoding, 1 means an 11n frame where only mcs/sgi carry information.
+    if (fmt == 0) {
+        if (rate >= 12) {
+            return "-";
+        }
+        format_mbps2(kLegacyMbps2[rate], buf, buf_len);
+        return buf;
+    }
+    if (fmt == 2) {
+        const uint8_t m = (mcs > 7) ? 7 : mcs;
+        const uint16_t mbps10 = (uint16_t)((sgi ? 72u : 65u) * (unsigned)(m + 1));
+        snprintf(buf, buf_len, "mcs%u/%u.%uM", (unsigned)m, (unsigned)(mbps10 / 10),
+                 (unsigned)(mbps10 % 10));
+        return buf;
+    }
+    return "-";
+#endif
 }
 
 int attack_csa_log_count(void) {
