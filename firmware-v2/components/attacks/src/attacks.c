@@ -51,7 +51,14 @@ size_t attack_count(void) {
 }
 
 void attacks_start(void) {
-    // 各攻击模块在此登记：attack_register(&something_attack);
+    attack_register(deauth_attack());
+    attack_register(probe_attack());
+    attack_register(delba_attack());
+    attack_register(ba_attack());
+    attack_register(eapol_attack());
+    attack_register(csa_attack());
+    attack_register(authflood_attack());
+    attack_register(sae_attack());
 }
 
 void attacks_stop_all(void) {
