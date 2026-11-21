@@ -19,8 +19,10 @@
 
 static const char *TAG = "hal_wifi";
 
-#define RX_QUEUE_DEPTH 16
-#define RX_FRAME_MAX 512
+// 上游注入上限是 1500，接收侧得比它更宽：sig_len 含 4 字节 FCS，AMPDU 还会更长。
+// 队列深度从 16 降到 8 换这个长度——16 x 1536 要吃 25 KB 堆，8 x 1536 约 12 KB。
+#define RX_QUEUE_DEPTH 8
+#define RX_FRAME_MAX 1536
 #define RX_TASK_STACK 4096
 #define RX_TASK_PRIO 6
 #define NEVER_EXPIRE 0xFFFFFFFFu
@@ -50,7 +52,9 @@ static size_t s_sub_count;
 static lease_t s_lease;
 static uint8_t s_channel;
 static uint32_t s_last_unicast_ms;
+static uint32_t s_last_bcast_ms;
 static bool s_ap_netif_done;
+static bool s_ap_running;
 
 static volatile uint32_t s_tx_ok;
 static volatile uint32_t s_tx_err;
@@ -116,6 +120,51 @@ static void sniffer_cb(void *buf, wifi_promiscuous_pkt_type_t type) {
     }
 }
 
+// ---- 被动 STA 表 ----
+// 只认管理帧和数据帧的 Addr2。控制帧不一定带 Addr2，而且 RTS/CTS 里的地址是
+// 一次收发关系，算不成"客户端"。
+static hal_wifi_sta_t s_sta_tab[HAL_WIFI_STA_MAX];
+static size_t s_sta_count;
+
+static void sta_observe(const rx_item_t *item) {
+    if (item->len < 16) {
+        return;
+    }
+    const uint8_t type = (uint8_t)((item->data[0] >> 2) & 0x03);
+    if (type == 1) {
+        return;
+    }
+    const uint8_t *addr2 = item->data + 10;
+    if ((addr2[0] & 0x01) != 0) {
+        return;
+    }
+    size_t slot = s_sta_count;
+    for (size_t i = 0; i < s_sta_count; i++) {
+        if (memcmp(s_sta_tab[i].mac, addr2, 6) == 0) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot == s_sta_count) {
+        if (s_sta_count < HAL_WIFI_STA_MAX) {
+            slot = s_sta_count++;
+        } else {
+            slot = 0;
+            for (size_t i = 1; i < s_sta_count; i++) {
+                if (s_sta_tab[i].last_seen_ms < s_sta_tab[slot].last_seen_ms) {
+                    slot = i;
+                }
+            }
+            memset(&s_sta_tab[slot], 0, sizeof(s_sta_tab[slot]));
+        }
+    }
+    memcpy(s_sta_tab[slot].mac, addr2, 6);
+    s_sta_tab[slot].rssi = item->meta.rssi;
+    s_sta_tab[slot].channel = item->meta.channel;
+    s_sta_tab[slot].frames++;
+    s_sta_tab[slot].last_seen_ms = now_ms();
+}
+
 static void rx_task(void *arg) {
     (void)arg;
     rx_item_t item;
@@ -123,6 +172,7 @@ static void rx_task(void *arg) {
         if (xQueueReceive(s_rxq, &item, portMAX_DELAY) != pdTRUE) {
             continue;
         }
+        sta_observe(&item);
         for (size_t i = 0; i < s_sub_count; i++) {
             if (s_subs[i].fn != NULL) {
                 s_subs[i].fn(item.data, item.len, &item.meta, s_subs[i].ctx);
@@ -428,18 +478,27 @@ const char *hal_wifi_channel_owner(void) {
 }
 
 esp_err_t hal_wifi_tx(const uint8_t *frame, uint16_t len) {
-    if (frame == NULL || len < 10) {
+    // 驱动上限 1500，超了当场挡下，别让调用方以为帧出去了
+    if (frame == NULL || len < 10 || len > HAL_WIFI_TX_MAX) {
         s_tx_err++;
         s_last_tx_err = ESP_ERR_INVALID_ARG;
         return ESP_ERR_INVALID_ARG;
     }
     const bool group = ra_is_group(frame);
     const uint32_t now = now_ms();
-    if (!group && s_last_unicast_ms != 0 && (now - s_last_unicast_ms) < HAL_WIFI_UNICAST_GAP_MS) {
-        s_tx_throttled++;
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (!group) {
+    // 广播和单播分开计时：广播不用等 ACK、池子回收快，但实测 gap=0 连排 132 帧
+    // 一样把帧池打穿。两条路都得有下限，否则哪个模块写激进一点就整板重启。
+    if (group) {
+        if (s_last_bcast_ms != 0 && (now - s_last_bcast_ms) < HAL_WIFI_BCAST_GAP_MS) {
+            s_tx_throttled++;
+            return ESP_ERR_INVALID_STATE;
+        }
+        s_last_bcast_ms = now;
+    } else {
+        if (s_last_unicast_ms != 0 && (now - s_last_unicast_ms) < HAL_WIFI_UNICAST_GAP_MS) {
+            s_tx_throttled++;
+            return ESP_ERR_INVALID_STATE;
+        }
         s_last_unicast_ms = now;
     }
 
@@ -588,10 +647,15 @@ esp_err_t hal_wifi_ap_start(const char *ssid, const char *password, uint8_t chan
     }
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "ap mode");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &cfg), TAG, "ap config");
-    return esp_wifi_start();
+    const esp_err_t err = esp_wifi_start();
+    if (err == ESP_OK) {
+        s_ap_running = true;
+    }
+    return err;
 }
 
 esp_err_t hal_wifi_ap_stop(void) {
+    s_ap_running = false;
     esp_wifi_stop();
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "sta mode");
     return esp_wifi_start();
@@ -645,4 +709,35 @@ void hal_wifi_diag(hal_wifi_diag_t *out) {
         out->country[2] = '\0';
         out->country_nchan = country.nchan;
     }
+}
+
+size_t hal_wifi_sta_list_passive(hal_wifi_sta_t *out, size_t cap) {
+    if (out == NULL) {
+        return s_sta_count;
+    }
+    const size_t n = (s_sta_count < cap) ? s_sta_count : cap;
+    memcpy(out, s_sta_tab, n * sizeof(hal_wifi_sta_t));
+    return n;
+}
+
+size_t hal_wifi_sta_list_ap(hal_wifi_sta_t *out, size_t cap) {
+    wifi_sta_list_t list;
+    memset(&list, 0, sizeof(list));
+    if (esp_wifi_ap_get_sta_list(&list) != ESP_OK || list.num <= 0) {
+        return 0;
+    }
+    const size_t n = ((size_t)list.num < cap) ? (size_t)list.num : cap;
+    if (out != NULL) {
+        for (size_t i = 0; i < n; i++) {
+            memset(&out[i], 0, sizeof(out[i]));
+            memcpy(out[i].mac, list.sta[i].mac, 6);
+            out[i].rssi = list.sta[i].rssi;
+            out[i].channel = s_channel;
+        }
+    }
+    return (size_t)list.num;
+}
+
+size_t hal_wifi_sta_list(hal_wifi_sta_t *out, size_t cap) {
+    return s_ap_running ? hal_wifi_sta_list_ap(out, cap) : hal_wifi_sta_list_passive(out, cap);
 }

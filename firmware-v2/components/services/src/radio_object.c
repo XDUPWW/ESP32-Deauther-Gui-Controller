@@ -90,6 +90,65 @@ static esp_err_t radio_rate(wb_args_t *args, wb_reply_t *reply) {
     return ESP_OK;
 }
 
+static const wb_policy_t kStaPolicy[] = {
+    {.name = "src", .type = WB_T_STR, .required = false, .def_str = "auto"},
+};
+
+static esp_err_t radio_sta_list(wb_args_t *args, wb_reply_t *reply) {
+    const char *src = wb_args_str(args, "src");
+    hal_wifi_sta_t list[HAL_WIFI_STA_MAX];
+    size_t n;
+    if (strcmp(src, "passive") == 0) {
+        n = hal_wifi_sta_list_passive(list, HAL_WIFI_STA_MAX);
+    } else if (strcmp(src, "ap") == 0) {
+        n = hal_wifi_sta_list_ap(list, HAL_WIFI_STA_MAX);
+    } else {
+        n = hal_wifi_sta_list(list, HAL_WIFI_STA_MAX);
+    }
+    if (n > HAL_WIFI_STA_MAX) {
+        n = HAL_WIFI_STA_MAX;
+    }
+    wb_reply_line(reply, "sta src=%s n=%u", src, (unsigned)n);
+    for (size_t i = 0; i < n; i++) {
+        char mac[18];
+        wf_mac_format(mac, list[i].mac);
+        wb_reply_line(reply, "%u %s rssi=%d ch=%u frames=%u", (unsigned)i, mac,
+                      (int)list[i].rssi, (unsigned)list[i].channel, (unsigned)list[i].frames);
+    }
+    return ESP_OK;
+}
+
+static const wb_policy_t kApPolicy[] = {
+    {.name = "ssid", .type = WB_T_STR, .required = false, .def_str = "v2-ap"},
+    {.name = "pass", .type = WB_T_STR, .required = false, .def_str = ""},
+    {.name = "ch", .type = WB_T_U32, .required = false, .min = 1, .max = 196, .def = 6},
+};
+
+static esp_err_t radio_ap(wb_args_t *args, wb_reply_t *reply) {
+    const char *ssid = wb_args_str(args, "ssid");
+    const char *pass = wb_args_str(args, "pass");
+    const uint8_t ch = (uint8_t)wb_args_u32(args, "ch");
+    const esp_err_t err = hal_wifi_ap_start(ssid, pass, ch);
+    if (err != ESP_OK) {
+        wb_reply_fail(reply, "ap start failed (%s)", esp_err_to_name(err));
+        return err;
+    }
+    // 切到 AP 模式会把混杂关掉，剩下的事得调用方自己重开
+    wb_reply_line(reply, "ap up ssid=%s ch=%u（混杂已关，sta_list 自动改用 AP 表）", ssid,
+                  (unsigned)ch);
+    return ESP_OK;
+}
+
+static esp_err_t radio_ap_stop(wb_args_t *args, wb_reply_t *reply) {
+    const esp_err_t err = hal_wifi_ap_stop();
+    if (err != ESP_OK) {
+        wb_reply_fail(reply, "ap stop failed (%s)", esp_err_to_name(err));
+        return err;
+    }
+    wb_reply_line(reply, "ap down（sta_list 回到被动表）");
+    return ESP_OK;
+}
+
 static esp_err_t radio_diag(wb_args_t *args, wb_reply_t *reply) {
     (void)args;
     hal_wifi_diag_t diag;
@@ -169,7 +228,10 @@ static esp_err_t radio_tx_test(wb_args_t *args, wb_reply_t *reply) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    uint8_t frame[WF_FRAME_CAP];
+    // 1500 字节压 console 任务那 4 KB 栈上太危险，用静态缓冲。wb 调用都在这一个
+    // 任务里，不会有并发。
+    static uint8_t s_tx_frame[WF_FRAME_CAP];
+    uint8_t *frame = s_tx_frame;
     int len = 0;
     const char *kind = wb_args_str(args, "kind");
     if (strcmp(kind, "bar") == 0) {
@@ -278,11 +340,18 @@ static esp_err_t radio_tx_bench(wb_args_t *args, wb_reply_t *reply) {
     uint32_t failed = 0;
     const uint32_t start = (uint32_t)(esp_timer_get_time() / 1000);
     for (uint32_t i = 0; i < count; i++) {
-        const esp_err_t tx = hal_wifi_tx(frame, (uint16_t)len);
+        // HAL 有最小帧间隔。被挡回来就等一会儿重试，否则 gap=0 时只能统计到第一帧，
+        // bench 就测不出真实吞吐了。throttled 记的是"被挡了几次"。
+        esp_err_t tx = hal_wifi_tx(frame, (uint16_t)len);
+        uint32_t retries = 0;
+        while (tx == ESP_ERR_INVALID_STATE && retries < 200) {
+            retries++;
+            vTaskDelay(pdMS_TO_TICKS(2));
+            tx = hal_wifi_tx(frame, (uint16_t)len);
+        }
+        throttled += retries;
         if (tx == ESP_OK) {
             ok++;
-        } else if (tx == ESP_ERR_INVALID_STATE) {
-            throttled++;
         } else {
             failed++;
         }
@@ -321,7 +390,7 @@ static const wb_policy_t kBenchPolicy[] = {
     {.name = "gap", .type = WB_T_U32, .required = false, .min = 0, .max = 500, .def = 30},
     {.name = "kind", .type = WB_T_STR, .required = false, .def_str = "probe"},
     {.name = "unicast", .type = WB_T_BOOL, .required = false, .def = 0},
-    {.name = "pad", .type = WB_T_U32, .required = false, .min = 0, .max = 1000, .def = 0},
+    {.name = "pad", .type = WB_T_U32, .required = false, .min = 0, .max = 1440, .def = 0},
 };
 
 static const wb_policy_t kTxTestPolicy[] = {
@@ -341,7 +410,11 @@ static const wb_method_t kRadioMethods[] = {
      "rate=default|1m|2m|5m5|11m|6m..54m|mcs0..mcs7|mcs0sgi..mcs7sgi（重启生效）",
      kRatePolicy, 1},
     {"diag", radio_diag, "", NULL, 0},
-    {"tx_bench", radio_tx_bench, "[count=1..2000] [gap=0..500] [kind=probe|bar|data] [unicast=bool] [pad=0..1000]",
+    {"sta_list", radio_sta_list, "[src=auto|passive|ap]", kStaPolicy, 1},
+    {"ap", radio_ap, "[ssid=\"v2-ap\"] [pass=\"\"] [ch=1..196]", kApPolicy, 3},
+    {"ap_stop", radio_ap_stop, "", NULL, 0},
+    {"tx_bench", radio_tx_bench,
+     "[count=1..2000] [gap=0..500] [kind=probe|bar|data] [unicast=bool] [pad=0..1440]",
      kBenchPolicy, 5},
     {"tx_test", radio_tx_test, "[kind=probe|bar|data|qosnull] [ta=mac|random] [ra=mac] [tid] [ssn]",
      kTxTestPolicy, 6},

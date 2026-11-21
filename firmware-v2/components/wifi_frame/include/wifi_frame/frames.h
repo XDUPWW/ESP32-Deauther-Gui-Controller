@@ -48,7 +48,10 @@
 #define WF_BROADCAST_ADDR_INIT \
     { 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF }
 
-#define WF_FRAME_CAP 512
+// 驱动给的注入上限就是 1500（esp_wifi_80211_tx 的注释写死 len <= 1500）。
+// 这里跟驱动对齐，evil twin 克隆完整 beacon（RSN + CSA + TIM + 多个 vendor IE）
+// 才装得下。之前定成 512 是自己给自己上镣铐。
+#define WF_FRAME_CAP 1500
 
 typedef struct {
     uint8_t frame[WF_FRAME_CAP];

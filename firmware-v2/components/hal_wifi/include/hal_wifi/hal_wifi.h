@@ -12,6 +12,17 @@
 // esp_wifi_80211_tx() returns 0x101, which kills every later WiFi call.
 #define HAL_WIFI_UNICAST_GAP_MS 45
 
+// 广播帧不用等 ACK，池子回收比单播快，但也不是无限的：实测 gap=0 连排 132 帧
+// 就把 32 个帧池打穿，之后 0x101 一路到底。这个下限由 HAL 兜住，别指望每个
+// 攻击模块自己数节奏。
+#define HAL_WIFI_BCAST_GAP_MS 20
+
+// esp_wifi_80211_tx 的注释写死 len <= 1500 Bytes，超了驱动直接拒。
+#define HAL_WIFI_TX_MAX 1500
+
+// 被动 STA 表容量。混杂模式下一个 BSS 周围的客户端很少超过这个数。
+#define HAL_WIFI_STA_MAX 32
+
 #define HAL_WIFI_CHANNEL_MAX 196
 #define HAL_WIFI_OWNER_MAX 16
 #define HAL_WIFI_SCAN_MAX 16
@@ -155,6 +166,31 @@ esp_err_t hal_wifi_scan_blocking(uint8_t dwell_ms);
 uint32_t hal_wifi_scan_count(void);
 
 const hal_scan_ap_t *hal_wifi_scan_at(uint32_t index);
+
+// 一个 STA 的画像。被动表和 AP 表共用一个结构，差别在于字段填得全不全。
+typedef struct {
+    uint8_t mac[6];
+    int8_t rssi;          // 被动表：最近一帧的信号强度；AP 表：驱动给的关联 RSSI
+    uint8_t channel;      // 被动表：听到它的信道；AP 表：AP 所在信道
+    uint32_t frames;      // 被动表：累计收到多少帧；AP 表恒为 0，驱动不给这个
+    uint32_t last_seen_ms;
+} hal_wifi_sta_t;
+
+// 三种来源，按你要的语义挑：
+//
+//   hal_wifi_sta_list_passive()  混杂模式嗅出来的 STA。依据只是"这个 MAC 在空气里
+//                                发过管理帧或数据帧"，不要求它连在我们身上。还没起
+//                                softAP、或者想扫别人 BSS 的客户端时用它。
+//   hal_wifi_sta_list_ap()       softAP 当前已关联的 STA，来自驱动，带真实 RSSI。
+//                                evil twin 问"谁连上来了"必须用这个，别用被动表。
+//   hal_wifi_sta_list()          按当前模式自动选：起过 softAP 就用 AP 表，否则用
+//                                被动表。没起过 AP 时的默认行为就是被动表。
+//
+// 三个都返回写进 out 的条数；out 传 NULL 时只返回当前可用总数。被动表满时踢掉
+// 最久没露面的那个，AP 表直接受驱动上限约束（ESP32 是 10 个）。
+size_t hal_wifi_sta_list_passive(hal_wifi_sta_t *out, size_t cap);
+size_t hal_wifi_sta_list_ap(hal_wifi_sta_t *out, size_t cap);
+size_t hal_wifi_sta_list(hal_wifi_sta_t *out, size_t cap);
 
 esp_err_t hal_wifi_ap_start(const char *ssid, const char *password, uint8_t channel);
 
