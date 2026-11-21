@@ -123,14 +123,14 @@ def main():
         device,
         "system.info",
         "system.info",
-        must=("idf=v6.1", "uptime_s=", "heap=", "min_heap=", "objects=2", "OK system.info"),
+        must=("idf=v6.1", "uptime_s=", "heap=", "min_heap=", "objects=4", "OK system.info"),
     )
     out = expect(report, device, "system.help", "system.help",
                  must=("system", "ping", "screen", "[count=1..4]", "OK system.help"))
     report.check(
-        "help lists both objects",
-        any("system" in l for l in out) and any("ui" in l for l in out),
-        repr(out[:6]),
+        "help lists every object",
+        all(any(obj in l for l in out) for obj in ("system", "ui", "radio", "scan")),
+        repr(out[:8]),
     )
     expect(report, device, "system.touch", "system.touch",
            must=("touch raw_x=", "raw_y=", "pressed=", "OK system.touch"))
@@ -193,6 +193,70 @@ def main():
     f0, f1 = flush_of(before), flush_of(after)
     report.check("log mirror triggers redraw", f0 >= 0 and f1 > f0, "flush %d -> %d" % (f0, f1))
 
+    print("== radio ==")
+    info = expect(report, device, "radio.info", "radio.info",
+                  must=("mac=", "ch=", "cc=CN", "tx ok=", "rx frames=", "OK radio.info"))
+    report.check("radio has a mac", "mac=00:00:00:00:00:00" not in " ".join(info))
+
+    print("== scan (active) ==")
+    out = expect(report, device, "scan.ap", "scan.ap", must=("scan ap count=", "OK scan.ap"), timeout=20)
+    count = 0
+    for line in out:
+        if "scan ap count=" in line:
+            try:
+                count = int(line.split("scan ap count=")[1].split()[0])
+            except (IndexError, ValueError):
+                count = 0
+    report.check("active scan finds access points", count > 0, "count=%d" % count)
+    expect(report, device, "scan.clear", "scan.clear", must=("cleared",))
+
+    print("== channel arbitration ==")
+    expect(report, device, "listen for lease", "scan.listen", must=("listening",), timeout=5)
+    expect(report, device, "pinned channel denied while listening", "radio.chan ch=6",
+           must=("channel busy with scan",))
+    expect(report, device, "listen status", "scan.status",
+           must=("listening=1", "owner=scan", "beacon=", "probe_resp="))
+
+    print("== injection loop ==")
+    expect(report, device, "inject probe request", "radio.tx_test",
+           must=("probe request sent len=36", "OK radio.tx_test"))
+    tx = device.command("radio.info")
+    tx_ok = 0
+    for line in tx:
+        for token in line.split():
+            if token.startswith("ok="):
+                try:
+                    tx_ok = int(token.split("=")[1])
+                except ValueError:
+                    tx_ok = 0
+                break
+    report.check("tx counter moved", tx_ok >= 1, "tx ok=%d" % tx_ok)
+
+    got = 0
+    deadline = time.time() + 12
+    while time.time() < deadline:
+        # 被动扫描在跳信道，probe 落到哪条信道是随机的：多发几次，
+        # 迟早会落在某个 AP 的信道上。
+        device.command("radio.tx_test")
+        time.sleep(0.5)
+        status = device.command("scan.status")
+        for line in status:
+            for token in line.split():
+                if token.startswith("probe_resp="):
+                    try:
+                        got = max(got, int(token.split("=")[1]))
+                    except ValueError:
+                        pass
+        if got > 0:
+            break
+    report.check("access points answer our probe request", got > 0, "probe_resp=%d" % got)
+
+    expect(report, device, "stop listening", "scan.stop", must=("stopped",))
+    expect(report, device, "channel free after stop", "radio.chan ch=6",
+           must=("channel=6", "owner=radio"))
+    expect(report, device, "release channel", "radio.release", must=("released",))
+    expect(report, device, "radio diag", "radio.diag", must=("promisc=", "filter=0x", "cc=CN"))
+
     print("== screen flush path ==")
 
     def flush_now():
@@ -231,7 +295,7 @@ def main():
     up0, up1 = field(info_before, "uptime_s"), field(info_after, "uptime_s")
     report.check("uptime advances", up0 >= 0 and up1 > up0, "%d -> %d" % (up0, up1))
     heap = field(info_after, "heap")
-    report.check("heap above 100KB", heap > 100 * 1024, "heap=%d" % heap)
+    report.check("heap above 40KB with wifi up", heap > 40 * 1024, "heap=%d" % heap)
 
     status = device.command("ui.status")
     report.check("ui still ready", any("ready=1" in l for l in status), repr(status[:3]))

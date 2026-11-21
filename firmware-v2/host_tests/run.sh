@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: 2026 XDUPWW
 #
-# 脱机测试：用系统编译器直接编译 wbus 与各层纯逻辑，不需要 ESP-IDF 与开发板。
+# 脱机测试：用系统编译器编译纯逻辑（wbus / wifi_frame），不需要开发板和 ESP-IDF。
 # 用法：sh host_tests/run.sh      （$CC 可覆盖编译器，默认 gcc）
 
 set -e
@@ -22,5 +22,13 @@ echo "== build =="
     components/wbus/src/wbus.c \
     -o build/host/test_wbus
 
+"$CC" $CFLAGS \
+    -I components/wifi_frame/include \
+    host_tests/test_frame.c \
+    components/wifi_frame/src/frame_build.c \
+    components/wifi_frame/src/ie_parse.c \
+    -o build/host/test_frame
+
 echo "== run =="
 ./build/host/test_wbus
+./build/host/test_frame
