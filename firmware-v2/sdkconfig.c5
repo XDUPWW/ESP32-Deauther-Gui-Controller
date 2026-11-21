@@ -4635,7 +4635,7 @@ CONFIG_WB_BLE=y
 #
 # Wireless UI
 #
-CONFIG_WB_LVGL=y
+# CONFIG_WB_LVGL is not set
 # end of Wireless UI
 
 #
