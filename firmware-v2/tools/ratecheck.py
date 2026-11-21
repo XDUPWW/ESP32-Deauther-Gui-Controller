@@ -4,11 +4,13 @@
 """跨板核对注入速率：一块板按启动期配置注入，另一块板用混杂回调读元数据。
 
 用法：
-    python tools/ratecheck.py COM5 COM6 [--channel 6]
+    python tools/ratecheck.py COM5 COM6 [--channel 6] [--only 1m,mcs7sgi]
 
 速率是启动期配置（官方只支持 esp_wifi_init() 之后、esp_wifi_start() 之前设置），
-所以每一档都要写 NVS + 重启。收包侧的速率来自 wifi_pkt_rx_ctrl_t：
-legacy 帧看 rate 索引（0..11），11n 帧看 mcs + sgi。
+所以每一档都要写 NVS + 重启。收包侧的速率来自 wifi_pkt_rx_ctrl_t：legacy 帧看
+rate 编码，11n 帧看 mcs + sgi。
+
+HT 档必须用 QoS 载体：管理帧会被驱动压回 1M，只有 QoS Null 能上 MCS。
 """
 
 import sys
@@ -18,12 +20,37 @@ import serial
 
 TA = "02:00:00:06:00:01"
 
-LEGACY = [("1m", 1.0), ("2m", 2.0), ("5m5", 5.5), ("11m", 11.0),
-          ("6m", 6.0), ("9m", 9.0), ("12m", 12.0), ("18m", 18.0),
-          ("24m", 24.0), ("36m", 36.0), ("48m", 48.0), ("54m", 54.0)]
-HT = [("mcs0", "mcs0", 6.5), ("mcs1", "mcs1", 13.0), ("mcs2", "mcs2", 19.5),
-      ("mcs3", "mcs3", 26.0), ("mcs4", "mcs4", 39.0), ("mcs5", "mcs5", 52.0),
-      ("mcs6", "mcs6", 58.5), ("mcs7", "mcs7", 65.0)]
+# (配置名, 空口应读到的文本, Mbps)
+CASES = [
+    ("1m", "1.0M", 1.0),
+    ("2m", "2.0M", 2.0),
+    ("5m5", "5.5M", 5.5),
+    ("11m", "11.0M", 11.0),
+    ("6m", "6.0M", 6.0),
+    ("9m", "9.0M", 9.0),
+    ("12m", "12.0M", 12.0),
+    ("18m", "18.0M", 18.0),
+    ("24m", "24.0M", 24.0),
+    ("36m", "36.0M", 36.0),
+    ("48m", "48.0M", 48.0),
+    ("54m", "54.0M", 54.0),
+    ("mcs0", "mcs0", 6.5),
+    ("mcs1", "mcs1", 13.0),
+    ("mcs2", "mcs2", 19.5),
+    ("mcs3", "mcs3", 26.0),
+    ("mcs4", "mcs4", 39.0),
+    ("mcs5", "mcs5", 52.0),
+    ("mcs6", "mcs6", 58.5),
+    ("mcs7", "mcs7", 65.0),
+    ("mcs0sgi", "mcs0/sgi", 7.2),
+    ("mcs1sgi", "mcs1/sgi", 14.4),
+    ("mcs2sgi", "mcs2/sgi", 21.7),
+    ("mcs3sgi", "mcs3/sgi", 28.9),
+    ("mcs4sgi", "mcs4/sgi", 43.3),
+    ("mcs5sgi", "mcs5/sgi", 57.8),
+    ("mcs6sgi", "mcs6/sgi", 65.0),
+    ("mcs7sgi", "mcs7/sgi", 72.2),
+]
 
 
 class Board:
@@ -62,7 +89,6 @@ def main():
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
-    inj_port, snf_port = sys.argv[1], sys.argv[2]
     channel = "6"
     if "--channel" in sys.argv:
         channel = sys.argv[sys.argv.index("--channel") + 1]
@@ -70,14 +96,14 @@ def main():
     if "--only" in sys.argv:
         only = sys.argv[sys.argv.index("--only") + 1].split(",")
 
-    inj = Board(inj_port, reset=False)
-    snf = Board(snf_port, reset=False)
+    inj = Board(sys.argv[1], reset=False)
+    snf = Board(sys.argv[2], reset=False)
     inj.pump(1.0)
     snf.pump(1.0)
 
     passed = failed = 0
     print("== 速率（收包侧读 wifi_pkt_rx_ctrl_t） ==")
-    for name, expect in LEGACY + [(n, mbps) for n, _, mbps in HT]:
+    for name, want, mbps in CASES:
         if only and name not in only:
             continue
         # 注入板：写 NVS 后重启，让速率在 esp_wifi_start() 之前生效
@@ -95,7 +121,7 @@ def main():
         snf.pump(0.2)
         snf.buf = ""
 
-        # 管理帧多半被驱动按 legacy 发，MCS 档改用数据帧验证
+        # 管理帧会被驱动压回 1M，HT 档必须用 QoS Null 载体
         kind = "qosnull" if name.startswith("mcs") else "probe"
         for _ in range(8):
             inj.cmd("radio.tx_test kind=%s ta=%s" % (kind, TA), 0.3)
@@ -105,24 +131,16 @@ def main():
 
         got = [l for l in lines if "EVT monitor.rx" in l and ("a2=" + TA) in l]
         if not got:
-            print("  [FAIL] %-4s 没抓到" % name)
+            print("  [FAIL] %-8s 没抓到" % name)
             failed += 1
             continue
         rate_field = ""
         for token in got[0].split():
             if token.startswith("rate="):
                 rate_field = token.split("=", 1)[1]
-        ok = False
-        if name.startswith("mcs"):
-            ok = rate_field.startswith("mcs") and rate_field[3:4] == name[3:4]
-        else:
-            try:
-                ok = abs(float(rate_field.split("M")[0]) - expect) < 0.01
-            except ValueError:
-                ok = False
-        print("  [%s] %-4s 期望 %-5s 空口 %s（抓到 %d 帧）" %
-              ("PASS" if ok else "FAIL", name,
-               ("%.1fM" % expect) if not name.startswith("mcs") else name, rate_field, len(got)))
+        ok = rate_field == want
+        print("  [%s] %-8s 期望 %-9s 空口 %-9s（抓到 %d 帧）" %
+              ("PASS" if ok else "FAIL", name, want, rate_field, len(got)))
         passed += ok
         failed += 0 if ok else 1
 

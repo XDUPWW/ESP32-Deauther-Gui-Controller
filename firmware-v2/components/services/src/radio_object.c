@@ -122,6 +122,14 @@ static hal_rate_t parse_rate(const char *text) {
     if (strcmp(text, "mcs5") == 0) return HAL_RATE_MCS5;
     if (strcmp(text, "mcs6") == 0) return HAL_RATE_MCS6;
     if (strcmp(text, "mcs7") == 0) return HAL_RATE_MCS7;
+    if (strcmp(text, "mcs0sgi") == 0) return HAL_RATE_MCS0_SGI;
+    if (strcmp(text, "mcs1sgi") == 0) return HAL_RATE_MCS1_SGI;
+    if (strcmp(text, "mcs2sgi") == 0) return HAL_RATE_MCS2_SGI;
+    if (strcmp(text, "mcs3sgi") == 0) return HAL_RATE_MCS3_SGI;
+    if (strcmp(text, "mcs4sgi") == 0) return HAL_RATE_MCS4_SGI;
+    if (strcmp(text, "mcs5sgi") == 0) return HAL_RATE_MCS5_SGI;
+    if (strcmp(text, "mcs6sgi") == 0) return HAL_RATE_MCS6_SGI;
+    if (strcmp(text, "mcs7sgi") == 0) return HAL_RATE_MCS7_SGI;
     return HAL_RATE_DEFAULT;
 }
 
@@ -329,7 +337,9 @@ static const wb_method_t kRadioMethods[] = {
     {"info", radio_info, "", NULL, 0},
     {"chan", radio_chan, "ch=1..196 [hold=0..600000]", kChanPolicy, 2},
     {"release", radio_release, "", NULL, 0},
-    {"rate", radio_rate, "rate=default|1m|2m|5m5|11m|6m..54m（重启生效）", kRatePolicy, 1},
+    {"rate", radio_rate,
+     "rate=default|1m|2m|5m5|11m|6m..54m|mcs0..mcs7|mcs0sgi..mcs7sgi（重启生效）",
+     kRatePolicy, 1},
     {"diag", radio_diag, "", NULL, 0},
     {"tx_bench", radio_tx_bench, "[count=1..2000] [gap=0..500] [kind=probe|bar|data] [unicast=bool] [pad=0..1000]",
      kBenchPolicy, 5},

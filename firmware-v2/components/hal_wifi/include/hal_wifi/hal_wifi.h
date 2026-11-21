@@ -47,6 +47,15 @@ typedef enum {
     HAL_RATE_MCS5,
     HAL_RATE_MCS6,
     HAL_RATE_MCS7,
+    // 短保护间隔。MCS7 短 GI 是 72.2 Mbps，长 GI 是 65。
+    HAL_RATE_MCS0_SGI,
+    HAL_RATE_MCS1_SGI,
+    HAL_RATE_MCS2_SGI,
+    HAL_RATE_MCS3_SGI,
+    HAL_RATE_MCS4_SGI,
+    HAL_RATE_MCS5_SGI,
+    HAL_RATE_MCS6_SGI,
+    HAL_RATE_MCS7_SGI,
 } hal_rate_t;
 
 typedef struct {

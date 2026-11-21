@@ -236,6 +236,22 @@ static wifi_phy_rate_t to_phy_rate(hal_rate_t rate) {
             return WIFI_PHY_RATE_MCS6_LGI;
         case HAL_RATE_MCS7:
             return WIFI_PHY_RATE_MCS7_LGI;
+        case HAL_RATE_MCS0_SGI:
+            return WIFI_PHY_RATE_MCS0_SGI;
+        case HAL_RATE_MCS1_SGI:
+            return WIFI_PHY_RATE_MCS1_SGI;
+        case HAL_RATE_MCS2_SGI:
+            return WIFI_PHY_RATE_MCS2_SGI;
+        case HAL_RATE_MCS3_SGI:
+            return WIFI_PHY_RATE_MCS3_SGI;
+        case HAL_RATE_MCS4_SGI:
+            return WIFI_PHY_RATE_MCS4_SGI;
+        case HAL_RATE_MCS5_SGI:
+            return WIFI_PHY_RATE_MCS5_SGI;
+        case HAL_RATE_MCS6_SGI:
+            return WIFI_PHY_RATE_MCS6_SGI;
+        case HAL_RATE_MCS7_SGI:
+            return WIFI_PHY_RATE_MCS7_SGI;
         default:
             return WIFI_PHY_RATE_1M_L;
     }
@@ -328,6 +344,22 @@ const char *hal_wifi_rate_name(hal_rate_t rate) {
             return "mcs6";
         case HAL_RATE_MCS7:
             return "mcs7";
+        case HAL_RATE_MCS0_SGI:
+            return "mcs0sgi";
+        case HAL_RATE_MCS1_SGI:
+            return "mcs1sgi";
+        case HAL_RATE_MCS2_SGI:
+            return "mcs2sgi";
+        case HAL_RATE_MCS3_SGI:
+            return "mcs3sgi";
+        case HAL_RATE_MCS4_SGI:
+            return "mcs4sgi";
+        case HAL_RATE_MCS5_SGI:
+            return "mcs5sgi";
+        case HAL_RATE_MCS6_SGI:
+            return "mcs6sgi";
+        case HAL_RATE_MCS7_SGI:
+            return "mcs7sgi";
         default:
             return "default";
     }
