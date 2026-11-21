@@ -184,16 +184,24 @@ static void rx_task(void *arg) {
     }
 }
 
-esp_err_t hal_wifi_init(hal_rate_t startup_rate) {
+// netif + lwIP 只在真要用 IP 栈时才拉起来。注入和混杂监听都不走网络层，
+// 提前建 STA 接口等于白养一个 tcpip 任务和 pbuf 池。
+static bool s_netif_base_done;
+
+static esp_err_t netif_base_init(void) {
+    if (s_netif_base_done) {
+        return ESP_OK;
+    }
     ESP_RETURN_ON_FALSE(esp_netif_init() == ESP_OK, ESP_FAIL, TAG, "netif init");
     const esp_err_t loop_err = esp_event_loop_create_default();
     if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) {
         return loop_err;
     }
-    if (esp_netif_create_default_wifi_sta() == NULL) {
-        return ESP_FAIL;
-    }
+    s_netif_base_done = true;
+    return ESP_OK;
+}
 
+esp_err_t hal_wifi_init(hal_rate_t startup_rate) {
     wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init_cfg), TAG, "wifi init");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "storage");
@@ -632,6 +640,7 @@ esp_err_t hal_wifi_ap_start(const char *ssid, const char *password, uint8_t chan
         return ESP_ERR_INVALID_ARG;
     }
     if (!s_ap_netif_done) {
+        ESP_RETURN_ON_ERROR(netif_base_init(), TAG, "netif base");
         if (esp_netif_create_default_wifi_ap() == NULL) {
             return ESP_FAIL;
         }

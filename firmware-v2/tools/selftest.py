@@ -123,7 +123,8 @@ def main():
         device,
         "system.info",
         "system.info",
-        must=("idf=v6.1", "uptime_s=", "heap=", "min_heap=", "objects=5", "OK system.info"),
+        # 开 BLE 时多一个 ble 对象，关掉就是 5 个
+        must=("idf=v6.1", "uptime_s=", "heap=", "min_heap=", "OK system.info"),
     )
     out = expect(report, device, "system.help", "system.help",
                  must=("system", "ping", "screen", "[count=1..4]", "OK system.help"))
@@ -328,7 +329,10 @@ def main():
     up0, up1 = field(info_before, "uptime_s"), field(info_after, "uptime_s")
     report.check("uptime advances", up0 >= 0 and up1 > up0, "%d -> %d" % (up0, up1))
     heap = field(info_after, "heap")
-    report.check("heap above 40KB with wifi up", heap > 40 * 1024, "heap=%d" % heap)
+    # 这块板没有 PSRAM：无 BLE 时剩 50KB 上下，开 BLE（控制器预留 55KB + NimBLE host）
+    # 掉到 34KB，再加 GATT 服务的 buffer 就是 23KB。20KB 是当前配置的底线，
+    # 攻击模块填回来之后要重新量这次的真实余量。
+    report.check("heap above 20KB with wifi up", heap > 20 * 1024, "heap=%d" % heap)
 
     status = device.command("ui.status")
     report.check("ui still ready", any("ready=1" in l for l in status), repr(status[:3]))

@@ -10,7 +10,9 @@
 
 static const char *TAG = "ui_port";
 
-#define LCD_DRAW_LINES 20
+// 每块 320*N*2 字节，直接从堆里出。N 越大刷得越少但堆越紧，
+// 这块板子还要留堆给 WiFi 注入和 BLE。
+#define LCD_DRAW_LINES 8
 
 static ui_calib_t s_calib;
 static lv_display_t *s_disp;
@@ -140,11 +142,16 @@ bool ui_port_start(int16_t *width, int16_t *height) {
         return false;
     }
 
+    // lvgl_port_init 之后 LVGL 任务就在跑了，下面这些调用必须进锁，不然两边
+    // 同时动 LVGL 内部链表，轻则丢事件重则死循环
+    ui_port_lock(0);
     lv_display_add_event_cb(s_disp, on_flush_start, LV_EVENT_FLUSH_START, NULL);
+    ui_port_unlock();
 
     if (plat_touch_init() != ESP_OK) {
         ESP_LOGW(TAG, "touch init failed, screen stays read-only");
     } else {
+        ui_port_lock(0);
         lv_indev_t *indev = lv_indev_create();
         if (indev == NULL) {
             ESP_LOGW(TAG, "indev alloc failed");
@@ -153,8 +160,10 @@ bool ui_port_start(int16_t *width, int16_t *height) {
             lv_indev_set_read_cb(indev, touch_read_cb);
             lv_indev_set_display(indev, s_disp);
         }
+        ui_port_unlock();
     }
 
+    ui_port_lock(0);
     lv_indev_t *fake = lv_indev_create();
     if (fake == NULL) {
         ESP_LOGW(TAG, "tap indev alloc failed");
@@ -163,6 +172,7 @@ bool ui_port_start(int16_t *width, int16_t *height) {
         lv_indev_set_read_cb(fake, tap_read_cb);
         lv_indev_set_display(fake, s_disp);
     }
+    ui_port_unlock();
 
     plat_lcd_backlight(true);
     if (width != NULL) {

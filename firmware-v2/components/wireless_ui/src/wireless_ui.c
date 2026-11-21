@@ -120,7 +120,9 @@ void wireless_ui_touch_report(char *buf, size_t cap) {    if (buf == NULL || cap
         snprintf(buf, cap, "touch no display");
         return;
     }
-    if (!ui_port_lock(50)) {
+    // 显示 buffer 压到 8 行之后刷新更密，LVGL 任务占锁时间变长，
+    // 50ms 经常抢不到，这里给足一轮刷新的时间
+    if (!ui_port_lock(200)) {
         snprintf(buf, cap, "touch busy");
         return;
     }
