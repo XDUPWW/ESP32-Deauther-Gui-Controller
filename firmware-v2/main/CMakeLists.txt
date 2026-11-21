@@ -10,5 +10,7 @@ idf_component_register(
         wtarget
         attacks
         hal_wifi
+        hal_ble
         wifi_frame
+        ble_frame
 )

@@ -30,6 +30,14 @@ echo "== build =="
     components/wifi_frame/src/mac.c \
     -o build/host/test_frame
 
+"$CC" $CFLAGS \
+    -I components/ble_frame/include \
+    host_tests/test_ble_frame.c \
+    components/ble_frame/src/adv.c \
+    components/ble_frame/src/addr.c \
+    -o build/host/test_ble_frame
+
 echo "== run =="
 ./build/host/test_wbus
 ./build/host/test_frame
+./build/host/test_ble_frame

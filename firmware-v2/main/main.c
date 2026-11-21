@@ -7,6 +7,7 @@
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "sdkconfig.h"
 
 #include "attacks/attack.h"
 #include "board_cyd/board_cyd.h"
@@ -18,6 +19,10 @@
 #include "services/services.h"
 #include "transport/transport.h"
 #include "wireless_ui/wireless_ui.h"
+
+#if CONFIG_WB_BLE
+#include "hal_ble/hal_ble.h"
+#endif
 
 static const char *TAG = "main";
 
@@ -52,6 +57,12 @@ void app_main(void) {
     if (hal_wifi_init(startup_rate) != ESP_OK) {
         ESP_LOGW(TAG, "radio layer not wired yet");
     }
+#if CONFIG_WB_BLE
+    // BLE 排在 WiFi 后面起，两者抢 2.4G 的事交给 IDF 的共存层
+    if (hal_ble_init() != ESP_OK) {
+        ESP_LOGW(TAG, "ble layer not wired");
+    }
+#endif
     attacks_start();
 
     if (transport_start() != ESP_OK) {
@@ -59,6 +70,10 @@ void app_main(void) {
         return;
     }
     transport_add(transport_serial_text());
+#if CONFIG_WB_BLE
+    // BLE 是第二条控制通道，和串口发的是同一套协议行
+    transport_add(transport_ble_text());
+#endif
     transport_out(kBoot);
 
     if (wireless_ui_start()) {

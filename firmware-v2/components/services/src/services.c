@@ -5,6 +5,7 @@
 
 #include "esp_log.h"
 #include "hal_wifi/hal_wifi.h"
+#include "sdkconfig.h"
 #include "services_private.h"
 #include "wbus/wbus.h"
 
@@ -16,6 +17,9 @@ void services_start(void) {
     wb_register(services_radio_object());
     wb_register(services_scan_object());
     wb_register(services_monitor_object());
+#if CONFIG_WB_BLE
+    wb_register(services_ble_object());
+#endif
     services_scan_attach_rx();
     services_monitor_attach_rx();
     ESP_LOGI(TAG, "objects registered");

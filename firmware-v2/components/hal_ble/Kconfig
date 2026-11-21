@@ -1,0 +1,15 @@
+menu "Wireless"
+
+    config WB_BLE
+        bool "BLE 底层接口（NimBLE 广播 / 扫描）"
+        depends on BT_ENABLED
+        depends on IDF_TARGET_ESP32 || IDF_TARGET_ESP32C3 || IDF_TARGET_ESP32C5 || IDF_TARGET_ESP32C6 || IDF_TARGET_ESP32C2 || IDF_TARGET_ESP32H2 || IDF_TARGET_ESP32S3
+        default y
+        help
+            开一套 BLE 广播和扫描的底层接口，给 wbus 那头当成一个新射频用。
+            前提是系统里已经开了 Bluetooth（CONFIG_BT_ENABLED）并选了 NimBLE host，
+            否则这个选项根本不会出现。
+            经典 ESP32 只能发 legacy 广播，31 字节封顶；C5 / C6 / S3 还能走扩展广播。
+            不想要 BLE 就关掉，串口和屏幕那边照常工作。
+
+endmenu

@@ -6,6 +6,7 @@ idf_component_register(
         "src/radio_object.c"
         "src/scan_object.c"
         "src/monitor_object.c"
+        "src/ble_object.c"
     INCLUDE_DIRS "include"
-    REQUIRES wbus platform esp_timer hal_wifi wtarget wifi_frame
+    REQUIRES wbus platform esp_timer hal_wifi wtarget wifi_frame hal_ble ble_frame
 )

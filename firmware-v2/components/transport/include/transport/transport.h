@@ -28,3 +28,5 @@ esp_err_t transport_submit(const char *line);
 void transport_out(const char *line);
 
 transport_plugin_t *transport_serial_text(void);
+
+transport_plugin_t *transport_ble_text(void);
