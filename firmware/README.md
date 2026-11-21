@@ -114,8 +114,18 @@ idf.py -p COM5 flash
 ```powershell
 idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 set-target esp32c5
 idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 build
-idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
+idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM10 flash
 ```
+
+C5 开发板一般只引出原生 USB（USB-Serial-JTAG），没有 UART0 排针。顶层 `CMakeLists.txt`
+对 `esp32c5` 目标定义了 `ARDUINO_USB_MODE=1` 和 `ARDUINO_USB_CDC_ON_BOOT=1`，Arduino 的
+`Serial` 因此指向 `HWCDCSerial`；`sdkconfig.c5` 里同时把次要 console 关掉，免得 IDF 的 log
+和 HWCDC 抢同一个外设。没这两步，串口能烧写但一条命令都不回。
+
+C5 上 `RXLOG` 的 `fmt=` 直接是驱动的 `cur_bb_format`：0=11b、1=11g、2=HT、3=VHT、4~7=HE。
+只有 0 和 1 会给确切的 `rate=<Mbps>`；HT/HE 帧打 `rate=ht/vht/he`，因为驱动那个字段
+放的是 L-SIG 的 RATE，只描述前导。经典 ESP32 上 `fmt=` 只有 0（11b/g）和 2（HT），
+HT 帧还要连 `mcs` 一起看。
 
 之后切回 ESP32 用普通 `idf.py build` 即可；两套互不覆盖。
 （首次切换 target 时组件管理器会重新下载非当前目标的 `managed_components`，属正常现象。）
@@ -124,8 +134,8 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 
 | 目标 | 镜像 | 分区占用 |
 | --- | --- | --- |
-| ESP32（含 LVGL） | 1.37 MB | 3 MB 分区的 45% |
-| ESP32-C5（无 LVGL） | 1.13 MB | 3 MB 分区的 38% |
+| ESP32（含 LVGL） | 1.40 MB | 3 MB 分区的 47% |
+| ESP32-C5（无 LVGL） | 1.17 MB | 3 MB 分区的 39% |
 
 ---
 
@@ -199,7 +209,7 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | `UIREASON` | 打开屏上 reason 弹窗（等价点 `R:x`） | `OK UIREASON` |
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. rpopup=.. ritems=.. nets=..` |
 | `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/ba/evil/wnm/tim/eapol/pspoll/sae/authflood`），给自动化测试用 | `OK UISCREEN delba` |
-| `RXLOG` | 打印监听到的 802.11 帧（诊断）；收到的 CSA Action 会额外打印 `RXCSA <i> src=.. cat=4 act=4 nch=.. cnt=.. len=..` | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
+| `RXLOG` | 打印最近 256 条监听到的 802.11 帧（诊断），每行带 `rssi/ch/dur/fmt/rate`；收到的 CSA Action 会额外打印 `RXCSA <i> src=.. cat=4 act=4 nch=.. cnt=.. len=..` | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
 | `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧、`addba` / `delba` 统计 Block Ack 管理动作、`bar/ba/pspoll/rts/cts/ack` 统计控制帧 subtype | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
 
 `reason` 缺省 1：

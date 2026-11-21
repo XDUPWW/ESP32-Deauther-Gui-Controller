@@ -66,8 +66,10 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 | `radio.chan ch=1..196 [hold=0..600000]` | 申请并切换信道（租约），被占时返回占用者 |
 | `radio.release` | 释放信道租约 |
 | `radio.diag` | 从驱动读回混杂/过滤/信道/国家码 |
-| `radio.tx_test [kind=probe\|bar] [ta=mac\|random] [ra=mac] [rate=1m..54m\|keep] [ssid=""] [tid] [ssn]` | 注入一帧并回报长度/信道/速率/TA/RA；`kind=bar` 发 20 字节控制帧 |
-| `monitor.start [kind=all\|mgmt\|ctrl\|data] [ta=mac]` | 打开嗅探，抓到的帧逐条打 `EVT monitor.rx` |
+| `radio.rate rate=default\|1m\|2m\|5m5\|11m\|6m..54m\|mcs0..mcs7` | 写 NVS，重启后生效——驱动只支持在 `esp_wifi_start()` 之前设速率 |
+| `radio.tx_test [kind=probe\|bar\|data] [ta=mac\|random] [ra=mac] [ssid=""] [tid] [ssn]` | 注入一帧并回报长度/信道/速率/TA/RA；`kind=bar` 发 20 字节控制帧 |
+| `radio.tx_bench [count=1..2000] [gap=0..500] [kind=probe\|bar\|data] [unicast=bool] [pad=0..1000]` | 连发测吞吐，回报成功/被拒/节流计数与帧构建耗时 |
+| `monitor.start [kind=all\|mgmt\|ctrl\|data] [ta=mac] [max=1..1000]` | 打开嗅探，抓到的帧逐条打 `EVT monitor.rx`；`max` 限制每秒打印行数 |
 | `monitor.chan ch=1..196` / `monitor.stop` / `monitor.status` | 嗅探信道 / 停止 / 计数 |
 | `scan.ap [dwell=1..500]` | 主动扫描（阻塞 1~2 s），结果写入目标表并逐条打印 |
 | `scan.listen [dwell=20..2000]` | 被动监听：拿到信道租约后自动跳 1..13 信道 |
@@ -135,12 +137,17 @@ idf.py -B build -p COM5 flash
   `-Wl,-z,muldefs`（已写进顶层 `CMakeLists.txt`），否则会报重复定义。
 - 混杂接收的帧长上限 512 字节；更长的帧直接丢弃并计入 `rx_too_long`（旧版用 256 字节时
   把带一堆 IE 的 beacon 全丢了）。
-- 注入速率用 `esp_wifi_config_80211_tx_rate()`，是按接口全局生效的；IDF 6.1 的
-  `wifi_pkt_rx_ctrl_t` 里已经没有 `rate` 字段，所以**收到帧的实际速率读不出来**，
-  固定速率只能靠第三方 radiotap 抓包自证。C5 管道实测：CCK 1/2/5.5/11 Mbps 生效并可从
-  radiotap 读到；6~54 Mbps 设置返回成功但空口仍是 1 Mbps，无法区分是抓包端报不出 OFDM 还是
-  驱动对管理帧做了钳制（这套管道往 radiotap Rate 里写的是 ESP 的 PHY rate 编码，值域只见到 0~3）。
+- 注入速率是**启动期配置**：`esp_wifi_config_80211_tx_rate()` 必须在 `esp_wifi_init()`
+  之后、`esp_wifi_start()` 之前调用，只影响 `esp_wifi_80211_tx()` 发出的帧。官方没有运行期
+  逐包选速率的接口，所以 `radio.rate` 只写 NVS，重启才生效。
+- 速率规格：ESP32 的 2.4G 射频覆盖 802.11g 全部 OFDM 速率（6/9/12/18/24/36/48/54 Mbps）
+  和 HT20 的 MCS0~7。54M 只有 g/n 设备能解，b-only 终端完全听不到；要覆盖范围就压到 1M/6M。
+- **收帧速率读得出来**：经典 ESP32 的 `wifi_pkt_rx_ctrl_t` 里有 `rate/sig_mode/mcs/sgi`；
+  C5 是 WiFi 6 芯片，`rx_ctrl` 换成 HE 结构（没有 `sig_mode`/`mcs`），只能用
+  `cur_bb_format` 加 L-SIG 的 RATE 字段判读——11b/11g 帧能给出确切 Mbps，HT/HE 帧的
+  L-SIG 只描述前导，因此只报格式名而不假装报速率。
 - 驱动文档写 `esp_wifi_80211_tx` 只支持 len >= 24，但实测 20 字节的 BAR 能发出去并被抓到。
+  C5 侧收到时 `sig_len` 含 4 字节 FCS，同一个 BAR 报成 24。
 - WiFi 起来后剩余堆约 80 KB（LVGL 池 80 KB + WiFi 栈 + RX 队列 8 KB），后续攻击模块要按这个预算分配缓冲。
 
 ## 许可证
