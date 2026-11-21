@@ -67,7 +67,7 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 | `radio.release` | 释放信道租约 |
 | `radio.diag` | 从驱动读回混杂/过滤/信道/国家码 |
 | `radio.rate rate=default\|1m\|2m\|5m5\|11m\|6m..54m\|mcs0..mcs7` | 写 NVS，重启后生效——驱动只支持在 `esp_wifi_start()` 之前设速率 |
-| `radio.tx_test [kind=probe\|bar\|data] [ta=mac\|random] [ra=mac] [ssid=""] [tid] [ssn]` | 注入一帧并回报长度/信道/速率/TA/RA；`kind=bar` 发 20 字节控制帧 |
+| `radio.tx_test [kind=probe\|bar\|data\|qosnull] [ta=mac\|random] [ra=mac] [ssid=""] [tid] [ssn]` | 注入一帧并回报长度/信道/速率/TA/RA；`kind=bar` 发 20 字节控制帧，`kind=qosnull` 发 26 字节 QoS Null（唯一能上 HT 速率的载体） |
 | `radio.tx_bench [count=1..2000] [gap=0..500] [kind=probe\|bar\|data] [unicast=bool] [pad=0..1000]` | 连发测吞吐，回报成功/被拒/节流计数与帧构建耗时 |
 | `monitor.start [kind=all\|mgmt\|ctrl\|data] [ta=mac] [max=1..1000]` | 打开嗅探，抓到的帧逐条打 `EVT monitor.rx`；`max` 限制每秒打印行数 |
 | `monitor.chan ch=1..196` / `monitor.stop` / `monitor.status` | 嗅探信道 / 停止 / 计数 |
@@ -150,8 +150,11 @@ idf.py -B build -p COM5 flash
   **LSB-first 解释**的（6M=0xB、12M=0xA、54M=0xC）。照标准表正序查会把 6M 报成 54M，
   这个坑踩过一次：修正前 C5 把华为 AP 的 6M beacon 报成 36M。
 - 注入速率实测（`tools/ratecheck.py`，COM5 注入 / COM6 嗅探）：legacy 12 档
-  1/2/5.5/11/6/9/12/18/24/36/48/54 Mbps **全部生效且能读回**。MCS0~7 写入返回成功但
-  空口仍是 1M，推测是未关联 AP 时 HT 速率不可用（未验证，需要连上 HT AP 再测）。
+  1/2/5.5/11/6/9/12/18/24/36/48/54 Mbps **全部生效**；HT20 的 MCS0~7 **也全部生效**，
+  但只对 QoS 帧载体成立——管理帧（probe request）会被驱动强制回落 1M，换成 26 字节的
+  QoS Null 就能上 MCS。
+- 让 QoS Null 的 Addr1 落在组播地址上，否则驱动会一轮重传十几次、每次降速，抓到的全是
+  降速帧。这个坑一度让 MCS 的结果看起来像"设置无效"。
 - 驱动文档写 `esp_wifi_80211_tx` 只支持 len >= 24，但实测 20 字节的 BAR 能发出去并被抓到。
   C5 侧收到时 `sig_len` 含 4 字节 FCS，同一个 BAR 报成 24。
 - WiFi 起来后剩余堆约 80 KB（LVGL 池 80 KB + WiFi 栈 + RX 队列 8 KB），后续攻击模块要按这个预算分配缓冲。

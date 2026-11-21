@@ -130,6 +130,9 @@ HT 帧还要连 `mcs` 一起看。
 `rate=` 的编码要注意：11b 是 0..3 的索引，11g 是 L-SIG 的 RATE 字段且按 LSB-first
 解释（6M=0xB、12M=0xA、54M=0xC）。照标准表正序查会把 6M 读成 54M。
 
+注入速率还有一条帧型限制：HT（MCS0~7）只对 QoS 帧生效，管理帧会被驱动压回 1M。要发
+HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否则重传降速会掩盖真实速率。
+
 之后切回 ESP32 用普通 `idf.py build` 即可；两套互不覆盖。
 （首次切换 target 时组件管理器会重新下载非当前目标的 `managed_components`，属正常现象。）
 
