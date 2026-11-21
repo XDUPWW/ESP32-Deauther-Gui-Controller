@@ -38,12 +38,18 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 - `platform`：UART0 控制台（115200 8N1）、ILI9341（SPI3）、XPT2046（SPI2）、NVS 键值、GPIO4 状态灯
 - `transport`：插件表、行解析（`\r`/`\n`/退格/超长）、串口插件、把输入行路由到 `wbus`、把回执广播给所有插件
 - `services`：`system` 对象（ping/info/help/touch/reset）、`ui` 对象（screen/status），界面能力由 `main` 注入
+- `hal_wifi`：STA 初始化（不关联、PS 关）、国家码/频段、信道租约、注入（45 ms 单播节流、
+  `0x101` 直接重启、覆盖 `ieee80211_raw_frame_sanity_check`）、混杂接收（RX 队列 + 订阅扇出）、
+  主动扫描、SoftAP、TSF、统计与驱动读回诊断
+- `wifi_frame`：probe request 组帧、IE 查找、beacon/probe response 解析（SSID/信道/RSN AKM/MFPR/
+  扩展能力）、TIM 与 CSA 解析；其余帧构造仍是空实现
+- `wtarget`：设备登记表（AP 按 BSSID upsert、RSSI 取最强、STA 带归属 AP）
 - `attacks`：攻击驱动描述符与登记表（空，无攻击注册）
 - `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、主页（标题/运行时长/剩余堆/回执行）、触摸校准存 NVS、作为 `transport` 插件显示同一份回执
 - `main`：按层序编排与常驻循环
 
-契约占位（只有头文件与空实现，返回 `ESP_ERR_NOT_SUPPORTED` 或 `-1`）：
-`hal_wifi`（收发/信道/混杂/扫描/TSF）、`wifi_frame`（帧构造与 IE 解析）、`wtarget`（设备登记表）。
+仍需补齐的帧构造：deauth/disassoc/auth/assoc/beacon/action/data/null/LLC-SNAP/BAR/RTS
+（签名已固定，实现返回 `-1`）。
 
 串口命令一律是 `对象.方法 [key=value ...]`：
 
@@ -56,6 +62,15 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 | `system.reset` | 重启 |
 | `ui.status` | 界面状态：就绪与否、累计刷屏次数、剩余堆 |
 | `ui.screen [count=1..4]` | 全屏色块循环，验证 SPI 刷屏通路 |
+| `radio.info` | MAC、信道与占用者、国家码、收发与信道统计、TSF |
+| `radio.chan ch=1..196 [hold=0..600000]` | 申请并切换信道（租约），被占时返回占用者 |
+| `radio.release` | 释放信道租约 |
+| `radio.diag` | 从驱动读回混杂/过滤/信道/国家码 |
+| `radio.tx_test [ssid=""]` | 注入一个广播 probe request，用来验证注入链路 |
+| `scan.ap [dwell=1..500]` | 主动扫描（阻塞 1~2 s），结果写入目标表并逐条打印 |
+| `scan.listen [dwell=20..2000]` | 被动监听：拿到信道租约后自动跳 1..13 信道 |
+| `scan.stop` / `scan.status` | 停止监听 / 监听计数（beacon、probe response、丢弃） |
+| `scan.list` / `scan.clear` | 目标表内容 / 清空 |
 
 参数校验由 `wbus` 统一负责，报错文案形如
 `ERR ui.screen: count must be 1..4` / `ERR ui.screen: count is not a number` /
@@ -89,10 +104,10 @@ idf.py -B build -p COM5 flash
 
 | 入口 | 依赖 | 覆盖 |
 | --- | --- | --- |
-| `sh host_tests/run.sh` | 系统 gcc | `wbus` 70 项：注册表、调用、参数策略、回执、事件、边界 |
-| `python tools/selftest.py COM5` | pyserial + 板子 | 29 项：启动、每个对象方法、参数校验报错、超长行、突发 40 条背压、界面日志镜像、刷屏增量、稳定性 |
+| `sh host_tests/run.sh` | 系统 gcc | `wbus` 70 项 + `wifi_frame` 36 项：注册表、调用、参数策略、回执、事件、边界、probe 组帧逐字节、beacon/TIM/CSA/RSN 解析 |
+| `python tools/selftest.py COM5` | pyserial + 板子 | 44 项：启动、对象方法、参数报错、超长行、突发背压、界面镜像、刷屏增量、主动扫描、信道仲裁、注入闭环（AP 回应我们的 probe）、稳定性 |
 
-板端自测会复位开发板并逐条校验回执，失败返回非 0。最近一次结果：主机 70/70、板端 29/29。
+板端自测会复位开发板并逐条校验回执，失败返回非 0。最近一次结果：主机 106/106、板端 44/44。
 
 ## 状态
 
@@ -100,7 +115,8 @@ idf.py -B build -p COM5 flash
 - [x] 屏幕点亮（ILI9341 + LVGL）、触摸采样、串口命令闭环
 - [x] 总线骨架：注册表 / 调用 / 参数策略 / 回执 / 事件；插件化传输；对象方法命令
 - [x] 各层契约头文件（`hal_wifi`、`wifi_frame`、`wtarget`、`attacks`）
-- [ ] 总线之后的实现填充：`hal_wifi` 收发与节流、`wifi_frame` 组帧与解析、`wtarget` 登记表
+- [x] 射频底座：注入与节流、混杂接收、信道租约、两条扫描、SoftAP、目标表
+- [ ] 其余帧构造（deauth/auth/assoc/beacon/action/data/BAR/RTS）
 - [ ] 攻击模块重写
 - [ ] 其余上层接口插件（LVGL 队列以外的 TCP / BLE）
 
@@ -109,6 +125,11 @@ idf.py -B build -p COM5 flash
 - `idf_component_register` 不能放进 `if()`：条件分支里的 `REQUIRES` 不会生效，条件只能作用于源文件列表。
 - 渲染（`lv_refr_now`、全屏刷新）只能在 LVGL 任务里做；`console` 任务栈 4 KB，放渲染会栈溢出重启。
 - 触摸坐标映射依赖四角校准，默认值来自本板实测；换屏或换分辨率需重新校准。
+- 注入能出去靠覆盖 `libnet80211` 里的 `ieee80211_raw_frame_sanity_check`，链接期必须带
+  `-Wl,-z,muldefs`（已写进顶层 `CMakeLists.txt`），否则会报重复定义。
+- 混杂接收的帧长上限 512 字节；更长的帧直接丢弃并计入 `rx_too_long`（旧版用 256 字节时
+  把带一堆 IE 的 beacon 全丢了）。
+- WiFi 起来后剩余堆约 80 KB（LVGL 池 80 KB + WiFi 栈 + RX 队列 8 KB），后续攻击模块要按这个预算分配缓冲。
 
 ## 许可证
 

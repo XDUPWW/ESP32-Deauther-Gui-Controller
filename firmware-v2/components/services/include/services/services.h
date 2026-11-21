@@ -5,6 +5,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 typedef struct {
     bool (*screen)(int count);
@@ -14,3 +15,5 @@ typedef struct {
 void services_ui_bind(const services_ui_ops_t *ops);
 
 void services_start(void);
+
+void services_tick(uint32_t now_ms);

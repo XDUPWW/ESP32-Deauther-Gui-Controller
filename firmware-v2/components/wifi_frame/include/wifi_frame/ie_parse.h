@@ -17,7 +17,20 @@ typedef struct {
     size_t pv_len;
 } wf_tim_t;
 
+typedef struct {
+    uint8_t bssid[6];
+    char ssid[33];
+    uint8_t ssid_len;
+    uint8_t channel;
+    bool has_rsn;
+    bool sae;
+    bool mfpr;
+    bool bss_transition;
+} wf_bss_t;
+
 const uint8_t *wf_ie_find(const uint8_t *ies, size_t len, uint8_t id, size_t *out_len);
+
+bool wf_parse_beacon(const uint8_t *frame, size_t len, wf_bss_t *out);
 
 bool wf_rsn_has_akm(const uint8_t *rsn, size_t len, uint8_t akm_type);
 

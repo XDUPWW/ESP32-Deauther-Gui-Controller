@@ -8,6 +8,8 @@
 
 #include "esp_err.h"
 
+#define WT_MAX_ENTRIES 64
+
 typedef enum {
     WT_KIND_AP = 0,
     WT_KIND_STA = 1,
@@ -19,6 +21,10 @@ typedef struct {
     int8_t rssi;
     uint8_t channel;
     wt_kind_t kind;
+    char ssid[33];
+    uint8_t ssid_len;
+    bool sae;
+    bool mfpr;
 } wt_entry_t;
 
 esp_err_t wt_clear(void);

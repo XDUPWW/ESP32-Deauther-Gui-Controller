@@ -6,6 +6,7 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "platform/plat_display.h"
+#include "services_private.h"
 #include "wbus/wbus.h"
 
 static esp_err_t system_ping(wb_args_t *args, wb_reply_t *reply) {

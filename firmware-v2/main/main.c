@@ -57,7 +57,9 @@ void app_main(void) {
     }
 
     for (;;) {
-        attacks_tick((uint32_t)(esp_timer_get_time() / 1000));
+        const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+        services_tick(now);
+        attacks_tick(now);
         vTaskDelay(pdMS_TO_TICKS(LOOP_PERIOD_MS));
     }
 }

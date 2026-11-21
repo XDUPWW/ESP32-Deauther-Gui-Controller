@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "services/services.h"
+#include "services_private.h"
 #include "wbus/wbus.h"
 
 static services_ui_ops_t s_ui;
@@ -58,13 +59,6 @@ static const wb_object_t kUiObject = {
     .n_methods = sizeof(kUiMethods) / sizeof(kUiMethods[0]),
 };
 
-const wb_object_t *services_system_object(void);
-
 const wb_object_t *services_ui_object(void) {
     return &kUiObject;
-}
-
-void services_start(void) {
-    wb_register(services_system_object());
-    wb_register(services_ui_object());
 }
