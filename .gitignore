@@ -37,3 +37,4 @@ Thumbs.db
 # Lab throughput probe (lab/rf_throughput) keeps its own per-target sdkconfig.
 # `sdkconfig.c5` is regenerated with `idf.py -B build_c5 set-target esp32c5`.
 /lab/rf_throughput/sdkconfig.c5
+/lab/victim_btm/sdkconfig.c5

@@ -1,0 +1,16 @@
+# Lab victim station (lab/victim_btm): 802.11v BTM + 802.11k RRM enabled, used to
+# check what a real station does with a forged BTM Request / Neighbor Report.
+#
+# CONFIG_ESP_WIFI_11KV_SUPPORT is the only switch that matters: RRM and WNM both
+# `depends on` it and default to y (components/esp_wifi/Kconfig:702-734 in IDF
+# v6.1). They are spelled out anyway so a future default flip cannot silently
+# strip the feature this project exists for.
+CONFIG_ESP_WIFI_11KV_SUPPORT=y
+CONFIG_ESP_WIFI_RRM_SUPPORT=y
+CONFIG_ESP_WIFI_WNM_SUPPORT=y
+
+# Keep the driver's own noise out of the log: the whole point is one line per
+# connection event, greppable.
+CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
