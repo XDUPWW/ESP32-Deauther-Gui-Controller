@@ -63,8 +63,9 @@ static lv_obj_t *s_csa_label;
 static lv_obj_t *s_delba_label;
 static lv_obj_t *s_ba_label;
 static lv_obj_t *s_mod_label;          // the shared frame-module page's target line
-static lv_obj_t *s_mod_variant_label;  // its variant button's text (Bare/Clear/Plain/...)
-// Which frame-level module the shared page is driving: 0 wnm, 1 tim, 2 eapol, 3 sae, 4 auth.
+static lv_obj_t *s_mod_variant_label;  // its variant button's text (Clear/Plain/...)
+static lv_obj_t *s_mod_variant_btn;     // hidden on the BTM page: it has no variant
+// Which frame-level module the shared page is driving: 0 btm, 1 tim, 2 eapol, 3 sae, 4 auth.
 static int s_atk_kind;
 static void reason_row_clicked(lv_event_t *event);
 // Deauth reason code picker on the mode page. Cycles through the three codes
@@ -296,7 +297,7 @@ typedef enum {
     SCR_DELBA,
     SCR_BA,
     SCR_EVIL,
-    SCR_FRAME,  // shared page for WNM / TIM / EAPOL / SAE / auth / PS-Poll
+    SCR_FRAME,  // shared page for BTM / TIM / EAPOL / SAE / auth / PS-Poll
     SCR_COUNT
 } ui_screen_t;
 
@@ -316,11 +317,11 @@ static void show_screen(ui_screen_t target) {
 }
 
 // The six frame-level modules share one page; these two tables name it.
-static const char *kModNames[6] = {"WNM", "TIM", "EAPOL", "SAE", "AUTH", "PSPOLL"};
-static const char *kModVariants[6] = {"Bare", "Clear", "Plain", "Rand", "NoAuto",
+static const char *kModNames[6] = {"BTM", "TIM", "EAPOL", "SAE", "AUTH", "PSPOLL"};
+static const char *kModVariants[6] = {"", "Clear", "Plain", "Rand", "NoAuto",
                                      "Release"};
 // Screen names reported by `UISCREEN` / `UI` (lowercase, same spelling as the commands).
-static const char *kModScreenNames[6] = {"wnm",  "tim",  "eapol",
+static const char *kModScreenNames[6] = {"btm",  "tim",  "eapol",
                                          "sae",  "authflood", "pspoll"};
 // PM-bit spoof: the frame shape is the one thing worth cycling from the panel
 // (stacks differ in which frame they honour, all three carry the PM bit).
@@ -604,11 +605,21 @@ static void goto_atk(int kind) {
                           s_atk_kind == 5 ? kPspollShapeLabels[s_pspoll_shape]
                                           : kModVariants[s_atk_kind]);
     }
+    // BTM has exactly one shape now (no candidate list, timer is the only knob),
+    // so the variant key would be a second "Start" with a different number on it.
+    // Hide it instead of inventing a difference.
+    if (s_mod_variant_btn != NULL) {
+        if (s_atk_kind == 0) {
+            lv_obj_add_flag(s_mod_variant_btn, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_clear_flag(s_mod_variant_btn, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
     update_mode_label();
     show_screen(SCR_FRAME);
 }
 
-static void goto_wnm(lv_event_t *event) {
+static void goto_btm(lv_event_t *event) {
     (void)event;
     goto_atk(0);
 }
@@ -660,7 +671,7 @@ static void atk_start_clicked(lv_event_t *event) {
             snprintf(command, sizeof(command), "PSPOLL %d", s_selected);
             break;
         default:
-            snprintf(command, sizeof(command), "WNM %d", s_selected);
+            snprintf(command, sizeof(command), "BTM %d", s_selected);
             break;
     }
     emit(command);
@@ -699,15 +710,14 @@ static void atk_variant_clicked(lv_event_t *event) {
             }
             break;
         default:
-            snprintf(command, sizeof(command), "WNM %d bare", s_selected);
-            break;
+            return;  // the button is hidden on the BTM page (single shape)
     }
     emit(command);
 }
 
 static void atk_stop_clicked(lv_event_t *event) {
     (void)event;
-    static const char *kStops[6] = {"WNMSTOP",   "TIMSTOP", "EAPOLSTOP",
+    static const char *kStops[6] = {"BTMSTOP",   "TIMSTOP", "EAPOLSTOP",
                                     "SAESTOP",   "AUTHFLOODSTOP", "PSPOLLSTOP"};
     const int kind = (s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind;
     emit(kStops[kind]);
@@ -724,8 +734,9 @@ static lv_obj_t *build_frame_screen(lv_obj_t *parent) {
     make_button_h(r1, "Start", atk_start_clicked, 34);
     lv_obj_t *r2 = make_row(screen);
     make_button_h(r2, "Stop", atk_stop_clicked, 34);
-    lv_obj_t *variant = make_button_h(r2, kModVariants[0], atk_variant_clicked, 34);
+    lv_obj_t *variant = make_button_h(r2, "Variant", atk_variant_clicked, 34);
     s_mod_variant_label = lv_obj_get_child(variant, 0);
+    s_mod_variant_btn = variant;
     make_button_h(r2, "Back", goto_menu, 34);
     return screen;
 }
@@ -1019,7 +1030,7 @@ static bool build_main_ui(void) {
     make_button(m2, "BA", goto_ba);
     make_button(m2, "Evil", goto_evil);
     lv_obj_t *m3 = make_row(s_screens[SCR_MENU]);
-    make_button(m3, "WNM", goto_wnm);
+    make_button(m3, "BTM", goto_btm);
     make_button(m3, "TIM", goto_tim);
     make_button(m3, "EAPOL", goto_eapol);
     lv_obj_t *m4 = make_row(s_screens[SCR_MENU]);
@@ -1112,7 +1123,7 @@ static bool build_main_ui(void) {
     make_button_h(b2, "Stop", ba_stop_clicked, 34);
     make_button_h(b2, "Back", goto_menu, 34);
 
-    // ---- level 2: WNM / TIM / EAPOL / SAE / auth flood, one shared page
+    // ---- level 2: BTM / TIM / EAPOL / SAE / auth flood, one shared page
     s_screens[SCR_FRAME] = build_frame_screen(root);
 
     // ---- level 2: probe    s_screens[SCR_PROBE] = make_screen(root);
@@ -1550,12 +1561,12 @@ bool wireless_ui_show_by_name(const char *name) {
     } else if (strcmp(name, "evil") == 0) {
         s_tap_pick = 0;
         show_screen(SCR_EVIL);
-    } else if (strcmp(name, "wnm") == 0 || strcmp(name, "tim") == 0 ||
+    } else if (strcmp(name, "btm") == 0 || strcmp(name, "tim") == 0 ||
                strcmp(name, "eapol") == 0 || strcmp(name, "sae") == 0 ||
                strcmp(name, "authflood") == 0 || strcmp(name, "pspoll") == 0) {
         // "pspoll" shares its first letter with "probe", so the names are compared
         // explicitly instead of keying on name[0].
-        const int kind = (strcmp(name, "wnm") == 0)        ? 0
+        const int kind = (strcmp(name, "btm") == 0)        ? 0
                          : (strcmp(name, "tim") == 0)      ? 1
                          : (strcmp(name, "eapol") == 0)    ? 2
                          : (strcmp(name, "sae") == 0)      ? 3

@@ -50,7 +50,7 @@ MENU = [
     ("delba", "DELBA 欺骗"),
     ("ba", "BA 会话攻击"),
     ("evil", "Evil Twin"),
-    ("wnm", "WNM 劝退"),
+    ("btm", "BTM 强制漫游"),
     ("tim", "TIM 投毒"),
     ("eapol", "EAPOL 洪泛"),
     ("sae", "SAE 洪泛"),
@@ -71,11 +71,7 @@ DEAUTH_MODES = [
 
 BA_STEPS = ["512", "256", "1024", "2047", "0 (对照：不推窗口)"]
 
-# 五个管理/数据帧模块的参数选项（文本里的英文前缀就是命令行 token）
-WNM_MODES = [
-    "cand - 带候选 BSS（推荐：客户端被导向一个不存在的 BSSID）",
-    "bare - 不带候选列表（客户端只会自己扫一遍）",
-]
+# 参数选项（文本里的英文前缀就是命令行 token）
 TIM_MODES = [
     "tim - 置位：声称有缓存，客户端一直醒着来取",
     "clear - 清空：客户端睡过真实下行",
@@ -368,9 +364,10 @@ class DeautherApp:
         self.ba_label = None
         # 六个管理/数据帧页面共用：key -> 目标行 label
         self.mod_labels = {}
-        self.wnm_mode_var = tk.StringVar(value=WNM_MODES[0])
-        self.wnm_timer_var = tk.StringVar(value="10")
-        self.wnm_ch_var = tk.StringVar(value="0")
+        self.btm_timer_var = tk.StringVar(value="10")
+        self.btm_sta_var = tk.StringVar(value="")
+        self.btm_cand_var = tk.StringVar(value="")
+        self.btm_candch_var = tk.StringVar(value="0")
         self.tim_mode_var = tk.StringVar(value=TIM_MODES[0])
         self.tim_aid_var = tk.StringVar(value="0")
         self.eapol_tid_var = tk.StringVar(value=EAPOL_TIDS[0])
@@ -441,7 +438,7 @@ class DeautherApp:
         self.pages["delba"] = self._build_delba_page()
         self.pages["ba"] = self._build_ba_page()
         self.pages["evil"] = self._build_evil_page()
-        self.pages["wnm"] = self._build_wnm_page()
+        self.pages["btm"] = self._build_btm_page()
         self.pages["tim"] = self._build_tim_page()
         self.pages["eapol"] = self._build_eapol_page()
         self.pages["sae"] = self._build_sae_page()
@@ -742,42 +739,48 @@ class DeautherApp:
         self.mod_labels[key] = label
         return bar
 
-    def _build_wnm_page(self):
+    def _build_btm_page(self):
         page = self._make_page()
-        ttk.Label(page, text="802.11v BTM Request 欺骗（劝退 STA）",
+        ttk.Label(page, text="802.11v BTM Request 强制漫游",
                   font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
         ttk.Label(
             page,
-            text="伪造 AP 发 WNM Action（category 10 / action 7）：Disassociation Imminent 置位，"
-                 "客户端于是“自愿”漫游或离网。它属于 robust 管理帧类别：PMF 关闭/可选（大多数 WPA2）时有效，强制 PMF 时被驱动丢弃。",
+            text="伪造 AP 发 BTM Request（category 10 / action 7）：Disassociation Imminent 置位，"
+                 "客户端于是自己扫一遍并漫游。它属于 robust 管理帧类别：PMF 关闭/可选（大多数 WPA2）时有效，强制 PMF 时被驱动丢弃。"
+                 "实测（测试报告 §4.4.12）：环境里存在同 SSID、同口令的第二个 BSS 时，真实 STA 会在 0.1 s 内跑过去。",
             foreground="#777777", wraplength=920, justify="left",
         ).pack(anchor="w", pady=(0, 8))
-        self._target_bar(page, "wnm")
+        self._target_bar(page, "btm")
 
         params = ttk.Frame(page)
-        params.pack(fill="x", pady=(4, 6))
-        ttk.Label(params, text="模式：").pack(side="left")
-        ttk.Combobox(params, textvariable=self.wnm_mode_var, values=WNM_MODES,
-                     state="readonly", width=44).pack(side="left")
-        ttk.Label(params, text="  disassoc timer：").pack(side="left")
-        ttk.Entry(params, textvariable=self.wnm_timer_var, width=6).pack(side="left")
-        ttk.Label(params, text="  tbtt").pack(side="left")
-        ttk.Label(params, text="  候选信道（0=自动）：").pack(side="left")
-        ttk.Entry(params, textvariable=self.wnm_ch_var, width=6).pack(side="left")
+        params.pack(fill="x", pady=(4, 2))
+        ttk.Label(params, text="disassoc timer：").pack(side="left")
+        ttk.Entry(params, textvariable=self.btm_timer_var, width=6).pack(side="left")
+        ttk.Label(params, text="  tbtt    目标 STA（可空）：").pack(side="left")
+        ttk.Entry(params, textvariable=self.btm_sta_var, width=19).pack(side="left")
+
+        cand = ttk.Frame(page)
+        cand.pack(fill="x", pady=(2, 6))
+        ttk.Label(cand, text="候选 BSSID（可空，填了才带 Neighbor Report 元素）：").pack(side="left")
+        ttk.Entry(cand, textvariable=self.btm_cand_var, width=19).pack(side="left")
+        ttk.Label(cand, text="  候选信道（0=从扫描结果里找）：").pack(side="left")
+        ttk.Entry(cand, textvariable=self.btm_candch_var, width=6).pack(side="left")
 
         actions = ttk.Frame(page)
         actions.pack(fill="x", pady=(6, 4))
-        ttk.Button(actions, text="开始 BTM", width=14, command=self.start_wnm).pack(side="left")
-        ttk.Button(actions, text="停止", width=10, command=self.wnm_stop).pack(side="left", padx=8)
+        ttk.Button(actions, text="开始 BTM", width=14, command=self.start_btm).pack(side="left")
+        ttk.Button(actions, text="停止", width=10, command=self.btm_stop).pack(side="left", padx=8)
 
         ttk.Label(
             page,
             text=("说明：\n"
+                  "• 默认不带候选列表：客户端自己扫，环境里有同 SSID/同口令的 BSS 就会过去；\n"
+                  "• 填了候选 BSSID 则追加一个 Neighbor Report 元素（BSSID Information 恒 0，含义未经核实）；\n"
                   "• 只对声明支持 11v 的 STA 生效（Extended Capabilities 的 BSS Transition 位），"
-                  "不支持的会被跳过，计数在 wnmskip；\n"
-                  "• timer 必须 ≥1，填 0 客户端不会扫；每 300 ms 对每个客户端重发一次，最多 8 个；\n"
-                  "• 底栏：wnmf 已发帧、wnmc 支持 11v 的客户端、wnmskip 被跳过的、"
-                  "wnmresp 客户端回的 BTM Response 数、wnms 回的状态码。"),
+                  "不支持的会被跳过，计数在 btmskip；\n"
+                  "• timer 必须 ≥1，填 0 客户端不会扫；每 300 ms 对每个客户端重发一次；\n"
+                  "• 底栏：btmf 已发帧、btmc 支持 11v 的客户端、btmskip 被跳过的、"
+                  "btmresp 客户端回的 BTM Response 数、btms 回的状态码。"),
             justify="left",
         ).pack(anchor="w", pady=(12, 0))
         return page
@@ -1005,7 +1008,7 @@ class DeautherApp:
 
     def go_back(self):
         parent = {"one": "deauth", "all": "deauth", "only": "deauth", "except": "deauth"}
-        for key in ("deauth", "probe", "csa", "delba", "ba", "evil", "wnm", "tim", "eapol",
+        for key in ("deauth", "probe", "csa", "delba", "ba", "evil", "btm", "tim", "eapol",
                     "sae", "authflood", "pspoll", "status", "log"):
             parent[key] = "home"
         self.show_page(parent.get(self.current_page, "home"))
@@ -1020,7 +1023,7 @@ class DeautherApp:
         self.back_btn.config(state="normal" if key != "home" else "disabled")
         titles = dict(MENU + [("home", "主菜单")])
         titles.update({k: f"Deauth · {label}" for k, label, _n, _h in DEAUTH_MODES})
-        titles.update({"wnm": "802.11v BTM Request", "tim": "TIM 投毒",
+        titles.update({"btm": "802.11v BTM Request（强制漫游）", "tim": "TIM 投毒",
                        "eapol": "EAPOL-Start/Logoff 洪泛", "sae": "SAE Commit 洪泛",
                        "authflood": "Auth/Assoc 洪泛", "pspoll": "PM 位欺骗（电源管理）"})
         self.page_title.config(text=titles.get(key, key))
@@ -1326,29 +1329,49 @@ class DeautherApp:
             return False
         return True
 
-    def start_wnm(self):
+    def start_btm(self):
         if not self._need_single("BTM"):
             return
-        mode = self.wnm_mode_var.get().split(" ")[0]
         try:
-            timer = int(self.wnm_timer_var.get().strip() or "0")
-            channel = int(self.wnm_ch_var.get().strip() or "0")
+            timer = int(self.btm_timer_var.get().strip() or "0")
         except ValueError:
-            messagebox.showerror("BTM 参数无效", "disassoc timer 与候选信道必须是整数。")
+            messagebox.showerror("BTM 参数无效", "disassoc timer 必须是整数。")
             return
         if not 1 <= timer <= 65535:
             messagebox.showerror("BTM 参数无效", "disassoc timer 必须在 1..65535（0 客户端不会扫）。")
             return
-        if not 0 <= channel <= 196:
-            messagebox.showerror("BTM 参数无效", "候选信道必须是 0（自动）或 1..196。")
+        sta = self.btm_sta_var.get().strip().replace(":", "").replace("-", "").upper()
+        cand = self.btm_cand_var.get().strip().replace(":", "").replace("-", "").upper()
+        if sta and len(sta) != 12:
+            messagebox.showerror("BTM 参数无效", "目标 STA 看起来应该像 02AABBCCDDEE。")
             return
-        command = f"WNM {self.single_index} {mode} {timer}"
-        if channel:
-            command += f" {channel}"
-        self._send(command)
+        if cand and len(cand) != 12:
+            messagebox.showerror("BTM 参数无效", "候选 BSSID 看起来应该像 02AABBCCDDEE。")
+            return
+        try:
+            cand_ch = int(self.btm_candch_var.get().strip() or "0")
+        except ValueError:
+            messagebox.showerror("BTM 参数无效", "候选信道必须是整数（0 = 从扫描结果里找）。")
+            return
+        if not 0 <= cand_ch <= 196:
+            messagebox.showerror("BTM 参数无效", "候选信道必须是 0 或 1..196。")
+            return
+        if not sta and not cand:
+            # 最简形态：位置参数只有 idx 和 timer
+            self._send(f"BTM {self.single_index} {timer}")
+            return
+        # 有可选参数时走关键字调用：位置参数没法跳着填
+        parts = [f"CALL btm.start idx={self.single_index}", f"timer={timer}"]
+        if sta:
+            parts.append(f"sta={sta}")
+        if cand:
+            parts.append(f"cand={cand}")
+            if cand_ch:
+                parts.append(f"cand-ch={cand_ch}")
+        self._send(" ".join(parts))
 
-    def wnm_stop(self):
-        self._send("WNMSTOP")
+    def btm_stop(self):
+        self._send("BTMSTOP")
 
     def start_tim(self):
         if not self._need_single("TIM"):
@@ -1509,8 +1532,9 @@ class DeautherApp:
                 f"({payload.get('delbaf', '-')} 帧 / TID {payload.get('delbat', '-')})    "
                 f"BA：{'on' if payload.get('bamode') == '1' else 'off'} "
                 f"({payload.get('babar', '-')} BAR / SSN {payload.get('bassn', '-')})\n"
-                f"WNM：{payload.get('wnm', '-')} ({payload.get('wnmf', '-')} 帧 / "
-                f"{payload.get('wnmc', '-')} 个 11v STA)    "
+                f"BTM：{payload.get('btm', '-')} ({payload.get('btmf', '-')} 帧 / "
+                f"{payload.get('btmc', '-')} 个 11v STA / 回 {payload.get('btmresp', '-')})    "
+                f"RRM：{payload.get('rrm', '-')} ({payload.get('rrmf', '-')} 帧)    "
                 f"TIM：{payload.get('tim', '-')} ({payload.get('timf', '-')} 帧 / "
                 f"aid=0x{int(payload.get('timaid', '0') or '0'):X})    "
                 f"EAPOL：{payload.get('eap', '-')} ({payload.get('eapf', '-')} 帧 / "
@@ -1529,7 +1553,8 @@ class DeautherApp:
                         "heap", "ui", "caps", "ch", "rx", "rxm",
                         "delba", "delbaf", "delbac", "delbat", "delbab", "delbar", "delbtr",
                         "bamode", "baaddba", "babar", "badlba", "bassn", "baerr", "baplant",
-                        "wnm", "wnmf", "wnmc", "wnmskip", "wnmresp", "wnms",
+                        "btm", "btmf", "btmc", "btmskip", "btmresp", "btms",
+                        "rrm", "rrmf", "rrmc", "rrmleft", "rrmreq", "rrmresp", "rrmch", "rrmtok",
                         "tim", "timf", "timaid", "timreal",
                         "eap", "eapf", "eaprx", "eaprxreq", "eaprxsta",
                         "psp", "pspfrm", "pspf", "pspnul", "pspfl", "pspc", "pspdl",

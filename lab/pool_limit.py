@@ -86,7 +86,7 @@ def main():
         "sae": "SAE %d point %d" % (index, args.gap),
         "eapol": "EAPOL %d 6 %s" % (index, fake),
         "authflood": "AUTHFLOOD %d both noauto" % index,
-        "wnm": "WNM %d cand 10 6 %s" % (index, fake),
+        "btm": "BTM %d 10 %s" % (index, fake),
     }
     cmd = commands[args.module]
     print("start: %s" % cmd)

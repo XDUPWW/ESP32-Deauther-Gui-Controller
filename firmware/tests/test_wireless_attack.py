@@ -417,7 +417,7 @@ class FirmwareFunctionalTests(unittest.TestCase):
     def test_ui_screens_switch(self):
         """LVGL：每个屏幕都能构建出来（切屏后不崩、堆不塌），含五个新模块页。"""
         for name in ("menu", "deauth", "mode", "probe", "csa", "delba", "ba", "evil",
-                     "wnm", "tim", "eapol", "sae", "authflood"):
+                     "btm", "tim", "eapol", "sae", "authflood"):
             line, _ = self.client.command(f"UISCREEN {name}",
                                           lambda l: l.startswith(("OK UISCREEN", "ERR ")), 5)
             self.assertIsNotNone(line, f"UISCREEN {name} 无响应")
@@ -836,9 +836,9 @@ class LvglUiTests(unittest.TestCase):
 
 
 class FirmwareControlFrameModuleTests(unittest.TestCase):
-    """802.11v / TIM / EAPOL / SAE / Auth 洪泛这五个模块的帧格式与运行检查。
+    """BTM / RRM / TIM / EAPOL / SAE / Auth 洪泛这几个模块的帧格式与运行检查。
 
-    这些用例都不打真实客户端：WNM 与 EAPOL 用 `02AA...` 这个假 STA MAC 把自己当目标，
+    这些用例都不打真实客户端：BTM 与 EAPOL 用 `02AA...` 这个假 STA MAC 把自己当目标，
     其余三个模块本来就朝 BSSID/广播发。判据是"字节对不对 + 计数器动了"，
     空口上的确认见 lab/cap_frames.py（C5 抓包管道）。
     """
@@ -877,51 +877,108 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
     def test_help_lists_new_commands(self):
         _, lines = self.client.command("HELP", lambda l: "AUTHFLOODTEST" in l, 5)
         text = "\n".join(lines)
-        for cmd in ("WNM ", "TIM ", "EAPOL ", "SAE ", "AUTHFLOOD ", "WNMTEST",
-                    "PSPOLL ", "PSPOLLREL ", "PSPOLLTEST"):
+        for cmd in ("BTM ", "RRM ", "TIM ", "EAPOL ", "SAE ", "AUTHFLOOD ", "BTMTEST",
+                    "RRMTEST", "PSPOLL ", "PSPOLLREL ", "PSPOLLTEST"):
             self.assertIn(cmd, text, f"HELP 应列出 {cmd}")
 
     def test_status_has_new_fields(self):
         info = self._status()
-        for key in ("wnm", "wnmf", "wnmskip", "wnmresp", "tim", "timf", "timaid", "timreal",
+        for key in ("btm", "btmf", "btmskip", "btmresp", "rrm", "rrmf", "rrmc", "rrmleft",
+                    "rrmch", "rrmtok", "rrmoc", "rrmphy", "tim", "timf", "timaid", "timreal",
                     "eap", "eapf", "eaprxreq", "sae", "saesec", "saef", "saecode", "saetok",
                     "af", "aff", "afa", "afs", "afids", "afst", "afup",
                     "psp", "pspf", "pspnul", "pspfl", "pspc", "pspdl", "psprxp"):
             self.assertIn(key, info, f"STATUS 缺少 {key}")
         self.assertIn("authflood", protocol.parse_caps(info))
 
-    def test_wnm_frame_format_and_run(self):
-        """BTM Request：category 10 / action 7、Disassociation Imminent、候选 Neighbor Report。"""
-        self.client.send("WNMTEST")
-        line, lines = self.client.command("", lambda l: l.startswith("WNMTEST hex="), 6)
-        self.assertIsNotNone(line, "WNMTEST 无输出")
-        text = "\n".join(lines)
-        self.assertIn("cat=10 act=7", text, "应为 WNM Action (category 10, action 7)")
+    def test_btm_frame_format_and_run(self):
+        """BTM Request：category 10 / action 7、Disassociation Imminent、不带候选列表。"""
+        self.client.send("BTMTEST")
+        # 等到最后一行，四种输出（两种形态各自的摘要 + hex）才都收齐
+        line, lines = self.client.command("", lambda l: l.startswith("BTMTEST cand hex="), 6)
+        self.assertIsNotNone(line, "BTMTEST 无输出")
+        text = chr(10).join(lines)
+        self.assertIn("cat=10 act=7", text, "应为 802.11v Action (category 10, action 7)")
         self.assertIn("imm=1", text, "必须置 Disassociation Imminent")
-        self.assertIn("cand=1", text, "cand 模式必须带候选列表")
+        self.assertIn("len=31", text, "24 头 + 7 字节动作体（这一形态不带候选列表）")
         self.assertIn("timer=10", text, "disassociation timer 必须非 0（客户端才会扫）")
-        self.assertIn("eid=52 ie_len=13", text, "候选 BSS 是 Neighbor Report 元素 (52/13)")
+        self.assertIn("candlist=0", text, "默认不带候选列表")
+        # 第二个形态：命令行给了 cand-bssid 时才追加元素
+        self.assertIn("BTMTEST cand len=46", text, "带候选时 31 + 15 = 46 字节")
+        self.assertIn("eid=52 ie_len=13", text, "候选是 Neighbor Report 元素 (52/13)")
+        self.assertIn("req_mode=0x05", text, "带候选时必须置 Preferred Candidate List 位")
 
-        # 参数防呆：mode 拼错、timer 0、信道越界
-        for bad in ("WNM 0 nope", "WNM 0 cand 0", "WNM 0 cand 10 999"):
+        self._scan_first_ap()
+
+        # 参数防呆（必须扫到 AP 之后再测，否则全部停在 index 校验上）：
+        # timer 非数字、timer 0、timer 越界
+        for bad in ("BTM 0 nope", "BTM 0 0", "BTM 0 70000"):
+            line, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
+            self.assertIsNotNone(line, f"{bad} 应被拒绝")
+        ok, lines = self.client.command("BTM 0 10 02AABBCCDDEE",
+                                        lambda l: l.startswith("OK BTM "), 5)
+        self.assertIsNotNone(ok, "BTM 启动失败")
+        self.assertIn("timer=10", ok)
+        self.assertTrue(any(l.startswith("OK BTMSTA") for l in lines),
+                        "显式 STA 注册应有回执")
+        time.sleep(1.2)
+        info = self._status()
+        print(f"\n  btmf={info.get('btmf')} btmc={info.get('btmc')} btm={info.get('btm')}")
+        self.assertEqual(info.get("btm"), "on")
+        self.assertGreater(int(info.get("btmf", "0")), 0, "BTM Request 应已发出")
+
+        # 带候选：给了不存在的 BSSID 又没给信道 → 必须报错，不许瞎填一个
+        line, _ = self.client.command("BTM 0 10 02AABBCCDDEE 02DEADBEEF01",
+                                      lambda l: l.startswith("ERR "), 4)
+        self.assertIsNotNone(line, "候选 BSSID 不在扫描结果里且没给 cand-ch 时应报错")
+        # 带候选 + 显式信道 → 回执里要能看到候选
+        ok2, _ = self.client.command("BTM 0 10 02AABBCCDDEE 02CAFEBABE01 6 1",
+                                     lambda l: l.startswith("OK BTM "), 5)
+        self.assertIsNotNone(ok2, "带候选的 BTM 启动失败")
+        self.assertIn("cand=02:CA:FE:BA:BE:01", ok2)
+        self.assertIn("ch=6", ok2)
+        self.assertIn("info=0x00000001", ok2)
+        self.client.command("BTMSTOP", lambda l: l.startswith("OK BTMSTOP"), 4)
+        stop, _ = self.client.command("BTMSTOP", lambda l: l.startswith("OK BTMSTOP"), 5)
+        self.assertIsNotNone(stop)
+        self.assertEqual(self._status().get("btm"), "off")
+
+    def test_rrm_frame_format_and_run(self):
+        """RRM：802.11k Neighbor Report Response（category 5 / action 5 / 元素 52）。"""
+        self.client.send("RRMTEST")
+        line, lines = self.client.command("", lambda l: l.startswith("RRMTEST hex="), 6)
+        self.assertIsNotNone(line, "RRMTEST 无输出")
+        text = "\n".join(lines)
+        self.assertIn("cat=5 act=5", text, "应为 802.11k Action (category 5, action 5)")
+        self.assertIn("protected=0", text, "伪造的 NRREP 不带保护位")
+        self.assertIn("len=42", text, "24 头 + 3 动作体 + 15 元素")
+        self.assertIn("eid=52 ie_len=13", text, "Neighbor Report 元素是 52/13")
+
+        # 参数防呆：子命令拼错、缺 BSSID、信道 0、count 越界
+        for bad in ("RRM 0 nope", "RRM 0 nbr", "RRM 0 nbr 02AABBCCDDEE 0",
+                    "RRM 0 nbr 02AABBCCDDEE 6 99"):
             line, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
             self.assertIsNotNone(line, f"{bad} 应被拒绝")
 
         self._scan_first_ap()
-        ok, lines = self.client.command("WNM 0 cand 10 6 02AABBCCDDEE",
-                                        lambda l: l.startswith("OK WNM "), 5)
-        self.assertIsNotNone(ok, "WNM 启动失败")
-        self.assertIn("mode=cand", ok)
-        self.assertTrue(any(l.startswith("OK WNMSTA") for l in lines),
+        ok, lines = self.client.command("RRM 0 nbr 02CAFEBABE01 6 0 7 1 115 7 02AABBCCDDEE",
+                                        lambda l: l.startswith("OK RRM "), 5)
+        self.assertIsNotNone(ok, "RRM 启动失败")
+        self.assertIn("token=7", ok)
+        self.assertIn("ch=6", ok)
+        self.assertTrue(any(l.startswith("OK RRMSTA") for l in lines),
                         "显式 STA 注册应有回执")
         time.sleep(1.2)
         info = self._status()
-        print(f"\n  wnmf={info.get('wnmf')} wnmc={info.get('wnmc')} wnm={info.get('wnm')}")
-        self.assertEqual(info.get("wnm"), "cand")
-        self.assertGreater(int(info.get("wnmf", "0")), 0, "BTM Request 应已发出")
-        stop, _ = self.client.command("WNMSTOP", lambda l: l.startswith("OK WNMSTOP"), 5)
+        print(f"\n  rrmf={info.get('rrmf')} rrmc={info.get('rrmc')} rrm={info.get('rrm')}")
+        self.assertEqual(info.get("rrm"), "nbr")
+        self.assertEqual(info.get("rrmtok"), "7")
+        self.assertEqual(info.get("rrmch"), "6")
+        self.assertEqual(info.get("rrminfo"), "0x00000001")
+        self.assertGreater(int(info.get("rrmf", "0")), 0, "Neighbor Report Response 应已发出")
+        stop, _ = self.client.command("RRMSTOP", lambda l: l.startswith("OK RRMSTOP"), 5)
         self.assertIsNotNone(stop)
-        self.assertEqual(self._status().get("wnm"), "off")
+        self.assertEqual(self._status().get("rrm"), "off")
 
     def test_tim_frame_and_run(self):
         """TIM 篡改：DTIM count 归 0，bitmap 按 AID 置位；时间戳由 MAC 写，不是我们。"""

@@ -80,8 +80,8 @@ typedef struct {
     tx_nomem_action_t on_nomem;
 } tx_policy_t;
 
-// 45 ms between unicast frames, restart on 0x101: the six frame-level modules
-// (WNM / TIM / EAPOL / PSPOLL / SAE / AUTHFLOOD) plus CSA. This is the ~20 fps
+// 45 ms between unicast frames, restart on 0x101: the seven frame-level modules
+// (BTM / RRM / TIM / EAPOL / PSPOLL / SAE / AUTHFLOOD) plus CSA. This is the ~20 fps
 // ceiling from the measurements above.
 extern const tx_policy_t kTxPolicyGuard;
 

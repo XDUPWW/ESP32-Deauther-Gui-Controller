@@ -11,10 +11,11 @@ set(SRCS
     "../src/tx_guard.cpp"
     "../src/radio.cpp"
     "../src/ie_util.cpp"
-    "../src/wnm.cpp"
+    "../src/btm.cpp"
     "../src/tim.cpp"
     "../src/eapol.cpp"
     "../src/pspoll.cpp"
+    "../src/rrm.cpp"
     "../src/sae.cpp"
     "../src/authflood.cpp"
 )

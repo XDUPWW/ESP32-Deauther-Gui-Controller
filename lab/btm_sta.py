@@ -5,23 +5,25 @@
 
 What it answers: "does a station that advertises 802.11v actually process and answer a
 forged BTM Request?" The previous rounds could only prove that the frame leaves the
-radio -- there was no 11v station on the bench (`wnmresp=0`).
+radio -- there was no 11v station on the bench (`btmresp=0`).
 
 Topology:
 
   COM10  ESP32-C5  lab/rf_throughput `sta <ssid>` + `btm 1`
                    (needs CONFIG_ESP_WIFI_11KV_SUPPORT=y; the STA then puts
                    Extended Capabilities bit 19 in its Association Request and
-                   handles WNM action frames)
+                   handles 802.11v Action frames)
   COM6   ESP32     lab/rf_throughput `ap <ssid> <ch>`   (optional: omit --ap to use
                    an already-running AP of that SSID)
-  COM5   ESP32-CYD this firmware: `WNM <idx> cand 10 0` -> forged BTM Request
+  COM5   ESP32-CYD this firmware: `BTM <idx> 10` -> forged BTM Request
+         (no candidate list: the station scans and roams to any same-SSID BSS.
+          Add a sta-mac as the third argument to name the victim explicitly.)
 
 Judgement, in order of strength:
 
-  wnmc   > 0   the sniffer saw the station advertise 11v (capability learning works)
-  wnmresp> 0   the station answered with a BTM Response  <- end-to-end success
-  wnms         the status code in that answer (0 = accept, 1 = reject unspecified,
+  btmc   > 0   the sniffer saw the station advertise 11v (capability learning works)
+  btmresp> 0   the station answered with a BTM Response  <- end-to-end success
+  btms         the status code in that answer (0 = accept, 1 = reject unspecified,
                6 = reject, no suitable BSS found, ...)
 
 The station's own serial output is printed as well, so a disconnect/scan trace lines up
@@ -141,12 +143,12 @@ def main():
         print("attack index=%d" % index)
 
         before = status_of(attack)
-        print("before: wnm=%s wnmf=%s wnmc=%s wnmskip=%s wnmresp=%s"
-              % (before.get("wnm"), before.get("wnmf"), before.get("wnmc"),
-                 before.get("wnmskip"), before.get("wnmresp")))
+        print("before: btm=%s btmf=%s btmc=%s btmskip=%s btmresp=%s"
+              % (before.get("btm"), before.get("btmf"), before.get("btmc"),
+                 before.get("btmskip"), before.get("btmresp")))
 
-        attack.send("WNM %d cand 10 0" % index)
-        print("attack:", attack.expect(("OK WNM ", "ERR "), 6.0) or "no answer")
+        attack.send("BTM %d 10" % index)
+        print("attack:", attack.expect(("OK BTM ", "ERR "), 6.0) or "no answer")
 
         deadline = time.time() + args.seconds
         while time.time() < deadline:
@@ -157,17 +159,17 @@ def main():
             if text is not None and text.startswith(("INFO ", "RX ")):
                 print("  atk:", text)
         after = status_of(attack)
-        attack.send("WNMSTOP")
+        attack.send("BTMSTOP")
 
-        print("\nafter: wnm=%s wnmf=%s wnmc=%s wnmskip=%s wnmresp=%s wnms=%s"
-              % (after.get("wnm"), after.get("wnmf"), after.get("wnmc"),
-                 after.get("wnmskip"), after.get("wnmresp"), after.get("wnms")))
+        print("\nafter: btm=%s btmf=%s btmc=%s btmskip=%s btmresp=%s btms=%s"
+              % (after.get("btm"), after.get("btmf"), after.get("btmc"),
+                 after.get("btmskip"), after.get("btmresp"), after.get("btms")))
 
-        ok = int(after.get("wnmresp", "0") or 0) > 0
-        print("\nRESULT: %s (wnmc=%s, wnmresp=%s, wnms=%s)"
+        ok = int(after.get("btmresp", "0") or 0) > 0
+        print("\nRESULT: %s (btmc=%s, btmresp=%s, btms=%s)"
               % ("station answered the forged BTM Request" if ok
-                 else "no BTM Response -- check wnmc first (was 11v advertised?)",
-                 after.get("wnmc"), after.get("wnmresp"), after.get("wnms")))
+                 else "no BTM Response -- check btmc first (was 11v advertised?)",
+                 after.get("btmc"), after.get("btmresp"), after.get("btms")))
         return 0 if ok else 1
     finally:
         for port in (board_ap, board_sta, attack):

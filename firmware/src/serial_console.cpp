@@ -21,7 +21,8 @@
 #include "tim.h"
 #include "tx_guard.h"
 #include "wbus.h"
-#include "wnm.h"
+#include "btm.h"
+#include "rrm.h"
 
 #include "definitions.h"
 #include "evil_twin.h"
@@ -79,9 +80,9 @@ const char* attack_mode_label() {
 
 const char* capabilities() {
 #if CONFIG_SOC_WIFI_SUPPORT_5G
-  return "deauth,eviltwin,probe,5g,wnm,tim,eapol,pspoll,sae,authflood";
+  return "deauth,eviltwin,probe,5g,btm,rrm,tim,eapol,pspoll,sae,authflood";
 #else
-  return "deauth,eviltwin,probe,wnm,tim,eapol,pspoll,sae,authflood";
+  return "deauth,eviltwin,probe,btm,rrm,tim,eapol,pspoll,sae,authflood";
 #endif
 }
 
@@ -113,7 +114,7 @@ void print_help() {
   Serial.println("INFO EVILTWIN <idx> / EVILTWIN_STOP / CREDS");
   Serial.println("INFO TOUCH / CALIBRATE             LVGL touch readback / recalibrate");
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
-  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/ba/evil/wnm/tim/eapol/pspoll/sae/authflood)");
+  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/ba/evil/btm/tim/eapol/pspoll/sae/authflood)");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
   Serial.println("INFO CSA <idx> [ch] [cnt] [secs]   CSA spoof; no ch/auto = random opposite-band channel, loops");
@@ -128,9 +129,14 @@ void print_help() {
   Serial.println("INFO BATX                          send one DELBA/ADDBA/BAR and print the driver verdict");
   Serial.println("INFO BAPLANT <idx> [step]          plant the reorder window once, then stay silent (window-hijack test)");
   Serial.println("INFO BARPUSH <idx> [step]          send only BARs (no ADDBA/DELBA), then stay silent");
-  Serial.println("INFO WNM <idx> [cand|bare] [timer] [ch] [sta-mac]  802.11v BTM Request spoof (needs PMF off)");
-  Serial.println("INFO WNMSTOP                       stop the BTM Request spoof");
-  Serial.println("INFO WNMTEST                       dump the BTM Request bytes (format check)");
+  Serial.println("INFO BTM <idx> [timer] [sta-mac] [cand-bssid] [cand-ch] [cand-info]");
+  Serial.println("INFO                               802.11v BTM Request: forced roam (needs PMF off)");
+  Serial.println("INFO BTMSTOP                       stop the BTM Request spoof");
+  Serial.println("INFO BTMTEST                       dump the BTM Request bytes (format check)");
+  Serial.println("INFO RRM <idx> nbr <bssid> <ch> [count] [token] [info] [opclass] [phy] [sta-mac]");
+  Serial.println("INFO                               802.11k Neighbor Report Response spoof (count=0 keeps going)");
+  Serial.println("INFO RRMSTOP                       stop the Neighbor Report spoof");
+  Serial.println("INFO RRMTEST                       dump the Neighbor Report Response bytes (format check)");
   Serial.println("INFO TIM <idx> [tim|clear] [aid]   tamper the TIM element of a cloned beacon");
   Serial.println("INFO TIMSTOP                       stop the beacon clone");
   Serial.println("INFO TIMTEST                       dump the cloned beacon (TIM check)");
@@ -368,18 +374,40 @@ void do_status() {
   Serial.print((unsigned)csa_auth_replies());
   Serial.print(" csarej=");
   Serial.print((unsigned)csa_assoc_rejects());
-  Serial.print(" wnm=");
-  Serial.print(wnm_mode_name());
-  Serial.print(" wnmf=");
-  Serial.print((unsigned)wnm_frames());
-  Serial.print(" wnmc=");
-  Serial.print((unsigned)wnm_capable_clients());
-  Serial.print(" wnmskip=");
-  Serial.print((unsigned)wnm_skipped_clients());
-  Serial.print(" wnmresp=");
-  Serial.print((unsigned)wnm_responses());
-  Serial.print(" wnms=");
-  Serial.print((unsigned)wnm_last_status());
+  Serial.print(" btm=");
+  Serial.print(btm_state_name());
+  Serial.print(" btmf=");
+  Serial.print((unsigned)btm_frames());
+  Serial.print(" btmc=");
+  Serial.print((unsigned)btm_capable_clients());
+  Serial.print(" btmskip=");
+  Serial.print((unsigned)btm_skipped_clients());
+  Serial.print(" btmresp=");
+  Serial.print((unsigned)btm_responses());
+  Serial.print(" btms=");
+  Serial.print((unsigned)btm_last_status());
+  Serial.print(" rrm=");
+  Serial.print(rrm_mode_name());
+  Serial.print(" rrmf=");
+  Serial.print((unsigned)rrm_frames());
+  Serial.print(" rrmc=");
+  Serial.print((unsigned)rrm_clients());
+  Serial.print(" rrmleft=");
+  Serial.print((unsigned)rrm_remaining());
+  Serial.print(" rrmreq=");
+  Serial.print((unsigned)rrm_requests());
+  Serial.print(" rrmresp=");
+  Serial.print((unsigned)rrm_responses());
+  Serial.print(" rrmch=");
+  Serial.print((unsigned)rrm_candidate_channel());
+  Serial.print(" rrmtok=");
+  Serial.print((unsigned)rrm_token());
+  Serial.print(" rrminfo=0x");
+  Serial.printf("%08X", (unsigned)rrm_bssid_info());
+  Serial.print(" rrmoc=");
+  Serial.print((unsigned)rrm_op_class());
+  Serial.print(" rrmphy=");
+  Serial.print((unsigned)rrm_phy_type());
   Serial.print(" tim=");
   Serial.print(tim_mode_name());
   Serial.print(" timf=");
@@ -929,11 +957,11 @@ void do_ui_state() {
 void do_ui_screen(char* token) {
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
   if (token == nullptr) {
-    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|ba|evil|wnm|tim|eapol|pspoll|sae|authflood>");
+    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|ba|evil|btm|tim|eapol|pspoll|sae|authflood>");
     return;
   }
   if (!wireless_ui_show_by_name(token)) {
-    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba ba evil wnm tim eapol pspoll sae authflood");
+    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba ba evil btm tim eapol pspoll sae authflood");
     return;
   }
   Serial.print("OK UISCREEN ");
@@ -975,9 +1003,12 @@ const bus_alias_t kBusAliases[] = {
     {"DEAUTH_ONLY", "deauth", "only"},
     {"DEAUTH_EXCEPT", "deauth", "except"},
     {"PROBE_BROADCAST", "probe", "broadcast"},
-    {"WNM", "wnm", "start"},
-    {"WNMSTOP", "wnm", "stop"},
-    {"WNMTEST", "wnm", "test"},
+    {"BTM", "btm", "start"},
+    {"BTMSTOP", "btm", "stop"},
+    {"BTMTEST", "btm", "test"},
+    {"RRM", "rrm", "start"},
+    {"RRMSTOP", "rrm", "stop"},
+    {"RRMTEST", "rrm", "test"},
     {"TIM", "tim", "start"},
     {"TIMSTOP", "tim", "stop"},
     {"TIMTEST", "tim", "test"},

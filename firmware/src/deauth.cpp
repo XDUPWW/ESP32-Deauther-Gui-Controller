@@ -15,7 +15,8 @@
 #include "tim.h"
 #include "tx_guard.h"
 #include "types.h"
-#include "wnm.h"
+#include "btm.h"
+#include "rrm.h"
 
 int eliminated_stations;
 bool deauth_active = false;
@@ -909,7 +910,8 @@ void attack_modules_register_defaults(void) {
     static const attack_module_t kModules[] = {
         {"csa", csa_step, csa_stop, csa_on_rx},
         {"delba", delba_step, delba_stop, delba_on_rx},
-        {"wnm", wnm_step, wnm_stop, wnm_on_rx},
+        {"btm", btm_step, btm_stop, btm_on_rx},
+        {"rrm", rrm_step, rrm_stop, rrm_on_rx},
         {"tim", tim_step, tim_stop, tim_on_rx},
         {"eapol", eapol_step, eapol_stop, eapol_on_rx},
         {"pspoll", pspoll_step, pspoll_stop, pspoll_on_rx},

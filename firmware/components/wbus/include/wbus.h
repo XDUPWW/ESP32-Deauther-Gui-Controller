@@ -23,7 +23,7 @@
 extern "C" {
 #endif
 
-#define WB_MAX_ARGS 6
+#define WB_MAX_ARGS 10
 #define WB_MAX_OBJECTS 16
 #define WB_MAX_METHODS 8
 #define WB_MAX_SUBS 4

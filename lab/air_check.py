@@ -71,7 +71,7 @@ def report(title, blob, bssid):
         return
     import collections
     out = collections.defaultdict(int)
-    for key in ("wnm_samples", "wnm_resp_samples", "sae_samples", "auth_samples",
+    for key in ("btm_samples", "btm_resp_samples", "sae_samples", "auth_samples",
                 "token_samples", "beacon_samples", "eapol_samples"):
         out[key] = []
     total = 0
@@ -80,10 +80,10 @@ def report(title, blob, bssid):
             pkt = cap_pipe.skip_radiotap(pkt)
         total += 1
         cap_frames.decode(pkt, bssid, out)
-    print("frames=%d forged-TA=%d  WNM=%d SAE=%d AUTH=%d EAPOL=%d(status76=%d) forged_beacons=%d"
-          % (total, out["forged_ta"], out["wnm"], out["sae"], out["auth"], out["eapol"],
+    print("frames=%d forged-TA=%d  BTM=%d SAE=%d AUTH=%d EAPOL=%d(status76=%d) forged_beacons=%d"
+          % (total, out["forged_ta"], out["btm"], out["sae"], out["auth"], out["eapol"],
              out["sae_token_resp"], out["beacon_forged_seq"]))
-    for key, label in (("wnm_samples", "wnm"), ("wnm_resp_samples", "wnm-response"),
+    for key, label in (("btm_samples", "btm"), ("btm_resp_samples", "btm-response"),
                        ("sae_samples", "sae"), ("auth_samples", "auth"),
                        ("token_samples", "anti-clogging"), ("eapol_samples", "eapol"),
                        ("beacon_samples", "beacon")):
@@ -96,7 +96,7 @@ def main():
     ap.add_argument("--port", default="COM5")
     ap.add_argument("--bssid", required=True)
     ap.add_argument("--seconds", type=float, default=4.0)
-    ap.add_argument("--only", default=None, help="run one test: wnm|tim|eapol|sae|authflood")
+    ap.add_argument("--only", default=None, help="run one test: btm|tim|eapol|sae|authflood")
     args = ap.parse_args()
     target = args.bssid.upper()
 
@@ -131,7 +131,7 @@ def main():
     fake_sta = "02AABBCCDDEE"
 
     tests = [
-        ("wnm", "WNM %d cand 10 %d %s" % (index, 6 if channel != 6 else 11, fake_sta), "WNMSTOP"),
+        ("btm", "BTM %d 10 %s" % (index, fake_sta), "BTMSTOP"),
         ("tim", "TIM %d tim 0" % index, "TIMSTOP"),
         ("eapol", "EAPOL %d 6 %s" % (index, fake_sta), "EAPOLSTOP"),
         ("sae", "SAE %d point 20" % index, "SAESTOP"),

@@ -115,7 +115,7 @@ def stable_lines(first, second):
 
 # Words that carry meaning in an OK line and must survive the skeleton reduction.
 MODE_WORDS = {
-    "auto", "fixed", "auto(opposite-band)", "point", "rand", "cand", "bare", "tim",
+    "auto", "fixed", "auto(opposite-band)", "point", "rand", "cand-bssid", "nbr", "tim",
     "clear", "both", "auth", "assoc", "noauto", "null", "qosnull", "action", "all",
     "none", "on", "off", "pm", "upgraded", "single", "multi",
 }

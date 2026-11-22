@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-// Minimal 802.11 element helpers shared by the WNM / TIM-TSF / SAE / auth-flood
+// Minimal 802.11 element helpers shared by the BTM / TIM-TSF / SAE / auth-flood
 // modules. Every call takes a (start, end) pair, so a truncated frame can never
 // walk off the receive buffer -- these helpers run inside the promiscuous
 // callback and a bad length there means a crash, not an exception.

@@ -5,8 +5,11 @@
     python lab/cap_frames.py --file cap.pcap --bssid BE:41:99:0B:20:36
 
 What it proves (one line per frame family, with the fields that matter):
-  * WNM    management subtype 13, category 10, action 7 -> request mode, timer,
+  * BTM    management subtype 13, category 10, action 7 -> request mode, timer,
            validity interval, and the Neighbor Report candidate
+  * RRM    management subtype 13, category 5, action 5 -> dialog token, Protected
+           bit, and the Neighbor Report element (id 52): BSSID, information word,
+           operating class, channel, PHY type
   * TIM    management subtype 8 beacon with the target BSSID -> TIM element
            (DTIM count/period, bitmap); the timestamp field is the MAC's, not ours
   * EAPOL  data frame whose LLC/SNAP carries EtherType 0x888E -> EAPOL version/type
@@ -27,6 +30,33 @@ def fmt_mac(raw, off):
     return cap_pipe.mac(raw, off)
 
 
+def decode_rrm(pkt, ta, out):
+    """802.11k Radio Measurement actions: requests/reports/neighbor reports."""
+    act = pkt[25]
+    protected = (pkt[1] & 0x40) >> 6
+    if act == 5:
+        out["rrm_nbr"] += 1
+        token = pkt[26] if len(pkt) > 26 else -1
+        cand = " no-element"
+        if len(pkt) >= 42 and pkt[27] == 52:
+            # eid(27) len(28) bssid(29..34) info(35..38 LE) op_class(39) ch(40) phy(41)
+            info = pkt[35] | (pkt[36] << 8) | (pkt[37] << 16) | (pkt[38] << 24)
+            cand = (" eid=52 ie_len=%d cand_bssid=%s info=0x%08X op_class=%d ch=%d phy=%d"
+                    % (pkt[28], fmt_mac(pkt, 29), info, pkt[39], pkt[40], pkt[41]))
+        if len(out["rrm_samples"]) < 3:
+            out["rrm_samples"].append(
+                "len=%d ta=%s ra=%s token=%d protected=%d%s"
+                % (len(pkt), ta, fmt_mac(pkt, 4), token, protected, cand))
+    elif act == 4:
+        out["rrm_nbr_req"] += 1
+        if len(out["rrm_req_samples"]) < 3:
+            out["rrm_req_samples"].append(
+                "len=%d ta=%s ra=%s token=%d protected=%d"
+                % (len(pkt), ta, fmt_mac(pkt, 4), pkt[26] if len(pkt) > 26 else -1, protected))
+    else:
+        out["rrm_other"] += 1
+
+
 def decode(pkt, bssid_filter, out):
     if len(pkt) < 10:
         return
@@ -39,7 +69,7 @@ def decode(pkt, bssid_filter, out):
     if ftype == 0 and subtype == 13 and len(pkt) >= 26:
         cat, act = pkt[24], pkt[25]
         if cat == 10 and act == 7:
-            out["wnm"] += 1
+            out["btm"] += 1
             if len(pkt) >= 31:
                 mode = pkt[27]
                 timer = pkt[28] | (pkt[29] << 8)
@@ -49,17 +79,19 @@ def decode(pkt, bssid_filter, out):
                     # cand: eid(31) len(32) bssid(33..38) info(39..42) op_class(43) ch(44) phy(45)
                     cand = " cand_bssid=%s op_class=%d ch=%d" % (
                         fmt_mac(pkt, 33), pkt[43], pkt[44])
-                if len(out["wnm_samples"]) < 3:
-                    out["wnm_samples"].append(
+                if len(out["btm_samples"]) < 3:
+                    out["btm_samples"].append(
                         "len=%d ta=%s ra=%s mode=0x%02X imm=%d candlist=%d timer=%d "
                         "validity=%d%s" % (len(pkt), ta, fmt_mac(pkt, 4), mode,
                                            (mode >> 2) & 1, mode & 1, timer, validity, cand))
         elif cat == 10 and act == 8:
-            out["wnm_resp"] += 1
-            if len(out["wnm_resp_samples"]) < 3:
-                out["wnm_resp_samples"].append(
+            out["btm_resp"] += 1
+            if len(out["btm_resp_samples"]) < 3:
+                out["btm_resp_samples"].append(
                     "len=%d ta=%s ra=%s dialog=%d status=%d" % (
                         len(pkt), ta, fmt_mac(pkt, 4), pkt[26], pkt[27] if len(pkt) > 27 else -1))
+        elif cat == 5:
+            decode_rrm(pkt, ta, out)
         else:
             out["other_action"] += 1
 
@@ -177,8 +209,9 @@ def main():
 
     bssid_filter = args.bssid.upper() if args.bssid else None
     out = collections.defaultdict(int)
-    for key in ("wnm_samples", "wnm_resp_samples", "sae_samples", "auth_samples",
-                "token_samples", "beacon_samples", "eapol_samples"):
+    for key in ("btm_samples", "btm_resp_samples", "rrm_samples", "rrm_req_samples",
+                "sae_samples", "auth_samples", "token_samples", "beacon_samples",
+                "eapol_samples"):
         out[key] = []
 
     total = 0
@@ -189,12 +222,18 @@ def main():
         decode(pkt, bssid_filter, out)
 
     print("frames: %d  forged-TA(02:..)=%d" % (total, out["forged_ta"]))
-    print("WNM BTM Request=%d  BTM Response=%d  other action=%d"
-          % (out["wnm"], out["wnm_resp"], out["other_action"]))
-    for s in out["wnm_samples"]:
-        print("  wnm: %s" % s)
-    for s in out["wnm_resp_samples"]:
-        print("  wnm-response: %s" % s)
+    print("BTM BTM Request=%d  BTM Response=%d  other action=%d"
+          % (out["btm"], out["btm_resp"], out["other_action"]))
+    for s in out["btm_samples"]:
+        print("  btm: %s" % s)
+    for s in out["btm_resp_samples"]:
+        print("  btm-response: %s" % s)
+    print("RRM neighbor report resp=%d  neighbor report req=%d  other cat5 action=%d"
+          % (out["rrm_nbr"], out["rrm_nbr_req"], out["rrm_other"]))
+    for s in out["rrm_samples"]:
+        print("  rrm: %s" % s)
+    for s in out["rrm_req_samples"]:
+        print("  rrm-req: %s" % s)
     print("SAE commit(alg=3)=%d  auth(alg=0)=%d  status76 answers=%d"
           % (out["sae"], out["auth"], out["sae_token_resp"]))
     for s in out["sae_samples"]:
