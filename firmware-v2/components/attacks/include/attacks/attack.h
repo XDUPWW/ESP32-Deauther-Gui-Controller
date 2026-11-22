@@ -47,3 +47,4 @@ const attack_driver_t *csa_attack(void);
 const attack_driver_t *authflood_attack(void);
 const attack_driver_t *sae_attack(void);
 const attack_driver_t *btm_attack(void);
+const attack_driver_t *qosnull_attack(void);

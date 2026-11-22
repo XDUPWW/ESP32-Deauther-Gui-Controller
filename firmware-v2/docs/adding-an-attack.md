@@ -397,13 +397,13 @@ wf_csa_parse(ie, len, &channel, &count)
 
 ## 六、还没迁的目录与已经踩过的坑
 
-`components/attacks/` 下现在只有 `common`、`pspoll`、`tim` 还是空壳，其余都已落地。
+`components/attacks/` 下 9 个攻击都已落地；`tim`（克隆 beacon 改省电位图）按计划不再做，
+PS-Poll 那条路换成了单播 QoS Null 的 PM 位欺骗（`qosnull`）。
 剩下几个的难点：
 
 | 目录 | 依赖什么 | 真正的难点 |
 |---|---|---|
-| `tim` | beacon 克隆 + TIM IE | AID 从哪来（关联响应或按位图推算） |
-| `pspoll` | Null / QoS Null / Action 帧的 PM 位 | 效果边界大：AP 有缓存老化，不是永久阻断 |
+| `qosnull` | 单播 QoS Null 的 PM 位（已落地，照 `attacks/qosnull/qosnull.c`） | 效果边界大：AP 有缓存老化，受害者自己发 PM=0 会把状态翻回来 |
 
 已经迁完的模块里，有两个值得在动手前先读一眼：
 

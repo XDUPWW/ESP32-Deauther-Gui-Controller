@@ -17,7 +17,7 @@
 
 每个模块都有 `<对象>.test`，不发射，只 dump 组出来的帧字节。
 
-`tim`、`wnm`、`pspoll` 三个目录还是空的，没迁过来。
+`tim` 不做了；PS-Poll 那条路换成了单播 QoS Null，见 `qosnull/`。
 
 公共件：
 

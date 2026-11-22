@@ -9,6 +9,7 @@ idf_component_register(
         "delba/delba.c"
         "eapol/eapol.c"
         "btm/btm.c"
+        "qosnull/qosnull.c"
         "probe/probe.c"
         "sae/sae.c"
     INCLUDE_DIRS "include"

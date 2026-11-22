@@ -1,7 +1,7 @@
 # firmware-v2
 
-按分层重写的 ESP32 无线测试固件工程。屏幕、串口、总线、HAL 都已跑通，攻击侧已迁入 9 个模块
-（deauth / probe / delba / ba / eapol / csa / authflood / sae / btm）。
+按分层重写的 ESP32 无线测试固件工程。屏幕、串口、总线、HAL 都已跑通，攻击侧已迁入 10 个模块
+（deauth / probe / delba / ba / eapol / csa / authflood / sae / btm / qosnull）。
 
 ## 分层
 
@@ -53,8 +53,8 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 - `wifi_frame`：probe request 组帧、IE 查找、beacon/probe response 解析（SSID/信道/RSN AKM/MFPR/
   扩展能力）、TIM 与 CSA 解析；其余帧构造仍是空实现
 - `wtarget`：设备登记表（AP 按 BSSID upsert、RSSI 取最强、STA 带归属 AP）
-- `attacks`：攻击驱动描述符与登记表，已注册 9 个（`deauth` `probe` `delba` `ba` `eapol`
-  `csa` `authflood` `sae` `btm`），每个模块自带上限节拍与计数，`attacks_tick` 统一驱动
+- `attacks`：攻击驱动描述符与登记表，已注册 10 个（`deauth` `probe` `delba` `ba` `eapol`
+  `csa` `authflood` `sae` `btm` `qosnull`），每个模块自带上限节拍与计数，`attacks_tick` 统一驱动
 - `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、主页（标题/运行时长/剩余堆/回执行）、触摸校准存 NVS、作为 `transport` 插件显示同一份回执
 - `main`：按层序编排与常驻循环
 
@@ -108,6 +108,12 @@ probe resp/action/data/null/LLC-SNAP/BAR/RTS，签名没变、实现不再是空
 | `authflood` | `authflood.start idx=..` / `.stop` / `.test` |
 | `sae` | `sae.start idx=..` / `.stop` / `.test` |
 | `btm` | `btm.start idx=.. [timer=..] [sta=mac] [cand=mac] [cand-ch=..] [cand-info=..]` / `.stop` / `.test` |
+| `qosnull` | `qosnull.start idx=.. [sta=mac] [tid=0..15]` / `.stop` / `.release` / `.test` |
+
+`qosnull` 冒充受害 STA 给 AP 回一个单播 QoS Null（ToDS，26 字节，无载荷）：PM=1 让 AP 把它
+当成睡了、下行缓存进 TIM，每 6 帧改发 PM=0 把缓存"放"给不在听的站，`.release` 也发这一帧。
+节拍 10 帧/s——这类短帧 20 帧/s 几百帧就把帧池抽干。判据看 `qndl`（发向受害者的下行帧，
+生效时停止增长）；边界是 AP 会老化缓存、受害者自己的 PM=0 上行会把状态翻回来。
 
 ### BTM 强制漫游：必须自带一个可加入的目标 BSS
 
@@ -197,7 +203,7 @@ UI 层不用改一行。
 - [x] 各层契约头文件（`hal_wifi`、`wifi_frame`、`wtarget`、`attacks`）
 - [x] 射频底座：注入与节流、混杂接收、信道租约、两条扫描、SoftAP、目标表
 - [x] 帧构造全套（deauth/auth/assoc/beacon/action/data/BAR/RTS）
-- [x] 攻击模块重写：9 个已迁入，`BTM` 配 `radio.ap` 完成单板漫游闭环
+- [x] 攻击模块重写：10 个已迁入，`BTM` 配 `radio.ap` 完成单板漫游闭环
 - [ ] 其余上层接口插件（LVGL 队列以外的 TCP / BLE）
 
 ## 已知约束
