@@ -37,7 +37,8 @@ firmware/
 ├── include/
 │   ├── deauth.h              攻击接口、计数器、扫描/射频预设
 │   ├── csa.h / delba.h       CSA 欺骗 / DELBA + BA 会话劫持
-│   ├── wnm.h / tim.h        802.11v BTM Request / TIM 投毒
+│   ├── btm.h / rrm.h        802.11v BTM Request / 802.11k Neighbor Report
+│   ├── tim.h                TIM 投毒
 │   ├── eapol.h / sae.h       EAPOL-Start/Logoff / SAE Commit 洪泛
 │   ├── pspoll.h              电源管理（PM 位）欺骗
 │   ├── authflood.h           Auth/Assoc 洪泛 + WPA3 自动升级
@@ -54,7 +55,8 @@ firmware/
 │   ├── deauth.cpp            deauth 攻击 + 嗅探触发 + 逐 AP 计数 + STA 嗅探
 │   ├── csa.cpp               CSA 欺骗（倒计时播报 + 新信道克隆 beacon + 接应）
 │   ├── delba.cpp             DELBA 欺骗 + BA 会话劫持（DELBA→ADDBA→BAR）
-│   ├── wnm.cpp               802.11v BTM Request 欺骗
+│   ├── btm.cpp               802.11v BTM Request 欺骗
+│   ├── rrm.cpp               802.11k Neighbor Report Response 伪造
 │   ├── tim.cpp               克隆 beacon 篡改 TIM
 │   ├── eapol.cpp             EAPOL-Start/Logoff 洪泛（ToDS 数据帧 + LLC/SNAP）
 │   ├── pspoll.cpp            伪造 PM=1 Null Data（让 AP 缓存受害 STA 的下行）+ PM=0 撤销
@@ -160,7 +162,7 @@ HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否�
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. txg=.. txgok=.. txgerr=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. wnm=.. wnmf=.. wnmc=.. wnmskip=.. wnmresp=.. wnms=.. tim=.. timf=.. timaid=.. timreal=.. eap=.. eapf=.. eaprx=.. eaprxreq=.. eaprxsta=.. sae=.. saesec=.. saef=.. saec=.. saeresp=.. saecode=.. saetok=.. saeecho=.. af=.. aff=.. afa=.. afs=.. afids=.. afst=.. afup=.. delba=.. delbaf=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. txg=.. txgok=.. txgerr=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. btm=.. btmf=.. btmc=.. btmskip=.. btmresp=.. btms=.. rrm=.. rrmf=.. rrmc=.. rrmleft=.. rrmreq=.. rrmresp=.. rrmch=.. rrmtok=.. rrminfo=0x.. rrmoc=.. rrmphy=.. tim=.. timf=.. timaid=.. timreal=.. eap=.. eapf=.. eaprx=.. eaprxreq=.. eaprxsta=.. sae=.. saesec=.. saef=.. saec=.. saeresp=.. saecode=.. saetok=.. saeecho=.. af=.. aff=.. afa=.. afs=.. afids=.. afst=.. afup=.. delba=.. delbaf=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
 | `WBUS` | wbus 对象表：列出已迁移到总线的对象、方法、事件 | `WBUS objects=2` / `WBUS deauth "Deauth / disassoc flood" methods=start,stop events=state` |
 | `DESCRIBE [obj]` | 对象的 UI 元数据（标题 / 方法 / 参数名·类型·默认值·枚举），供 GUI 与触屏生成页面；不带参数=全部对象 | `OBJ csa "CSA spoof"` / `METHOD csa.start ".."` / `ARG csa.start ch type=enum default=-1 values=auto` / `EVT csa state` |
 | `CALL <obj>.<method> [k=v ...]` | wbus 关键字调用，与同名旧命令等价（`CALL deauth.start idx=3 reason=7` ≡ `DEAUTH 3 7`）；未知对象/方法/参数各有独立 `ERR` | `OK DEAUTH 3 ssid` / `ERR unknown arg nope (try DESCRIBE deauth)` |
@@ -179,9 +181,12 @@ HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否�
 | `BAATTACK <idx> [step]` | BA 会话劫持：DELBA 清场 → 伪造 ADDBA 种窗口 → BAR 推窗，循环（`step` 0–2047，<128 为对照） | `OK BAATTACK 0 step=512 ch=1 ssid=dt` |
 | `BAPLANT <idx> [step]` | 只种窗口（≤8 帧 ADDBA）然后**完全静默**，用于判断静默期是否也会瘫 | `OK BAPLANT 0 step=512 ch=1` |
 | `BARPUSH <idx> [step]` | 只发 BAR（不发 ADDBA/DELBA）后静默，用来隔离"推窗"与"会话改写" | `OK BARPUSH 0 step=512 ch=1` |
-| `WNM <idx> [cand\|bare] [timer] [ch] [sta-mac]` | 802.11v BTM Request 欺骗。`cand`=带一个幻影候选 BSS（默认），`bare`=不带候选列表；`timer` 是 disassociation timer（TBTT，必须非 0，默认 10）；`ch` 是候选 BSS 通告的信道；给了 `sta-mac` 就直接对那个 MAC 发（不必等它自己说话） | `OK WNM 0 mode=cand timer=10 cand_ch=6 ssid=..` / `OK WNMSTA 02:AA:BB:CC:DD:EE` |
-| `WNMSTOP` | 停止 BTM 欺骗 | `OK WNMSTOP frames=45 responses=0 last_status=0` |
-| `WNMTEST` | 打印 BTM Request 原始字节 + 解码（category/action/request mode/timer/候选元素），格式自检 | `WNMTEST ... cat=10 act=7 ... imm=1 cand=1 timer=10` |
+| `BTM <idx> [timer] [sta-mac] [cand-bssid] [cand-ch] [cand-info]` | 802.11v BTM Request 强制漫游。默认**不带候选列表**（客户端自己扫，实测能漫游到同 SSID 的 BSS）；给了 `cand-bssid` 才追加一个 Neighbor Report 元素，把客户端**指定**到那个 BSS——`cand-ch=0` 表示从扫描结果里按 BSSID 查信道（查不到会报错，不瞎填），`cand-info` 是 BSSID Information 字，默认 0（位含义未核实）。`sta-mac` 直接指定受害者 | `OK BTM 0 timer=10 ssid=..` / `OK BTM 0 timer=10 cand=88:13:BF:B9:01:91 ch=6 info=0x00000000 ssid=..` |
+| `BTMSTOP` | 停止 BTM 欺骗 | `OK BTMSTOP frames=45 responses=0 last_status=0` |
+| `BTMTEST` | 两种形态都打：默认 31 字节，带候选 46 字节（元素 52/13），各自 hex | `BTMTEST state=off len=31 cat=10 act=7 ... candlist=0` / `BTMTEST cand len=46 req_mode=0x05 eid=52 ie_len=13 ...` |
+| `RRM <idx> nbr <bssid> <ch> [count] [token] [info] [opclass] [phy] [sta-mac]` | 802.11k Neighbor Report Response 伪造。`nbr` 是目前唯一的子命令；`bssid`/`ch` 是通告给客户端的幻影邻居；`count` 是本次总共注入多少帧（0 = 一直发到 `RRMSTOP`）；`token`/`info`/`opclass`/`phy` 是元素里那几个“按真帧抄”的字段，默认全 0；给了 `sta-mac` 就直接对那个 MAC 发 | `OK RRM 0 nbr count=3 token=7 cand=02:CA:FE:BA:BE:01 ch=3 info=0x00000001 ssid=..` / `OK RRMSTA 02:AA:BB:CC:DD:EE` |
+| `RRMSTOP` | 停止 Neighbor Report 伪造 | `OK RRMSTOP frames=45 clients=2` |
+| `RRMTEST` | 打印 Neighbor Report Response 原始字节 + 解码（category/action/token/Protected 位/元素 52），格式自检 | `RRMTEST ... cat=5 act=5 token=0 protected=0 ... eid=52 ie_len=13` |
 | `TIM <idx> [tim\|clear] [aid]` | 克隆目标 AP 的 beacon 并篡改 TIM。`tim`=按 AID 置位（默认）、`clear`=清空 bitmap；`aid=0` 表示用学到的全部 AID，1..255 指定单个 AID | `OK TIM 0 mode=tim aid=3 ch=12` |
 | `TIMSTOP` | 停止克隆 beacon | `OK TIMSTOP frames=277 real_beacons=50` |
 | `TIMTEST` | 打印 TIM 元素与克隆 beacon 的字节 | `TIMTEST tim len=6 ... dtim_count=0 ... bitmap=08 bmp_mask=0x00000008` |
@@ -217,7 +222,7 @@ HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否�
 | `UITARGETS` | 打开屏上目标弹窗（等价点 `Targets`） | `OK UITARGETS` |
 | `UIREASON` | 打开屏上 reason 弹窗（等价点 `R:x`） | `OK UIREASON` |
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. rpopup=.. ritems=.. nets=..` |
-| `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/ba/evil/wnm/tim/eapol/pspoll/sae/authflood`），给自动化测试用 | `OK UISCREEN delba` |
+| `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/ba/evil/btm/tim/eapol/pspoll/sae/authflood`），给自动化测试用 | `OK UISCREEN delba` |
 | `RXLOG` | 打印最近 256 条监听到的 802.11 帧（诊断），每行带 `rssi/ch/dur/fmt/rate`；收到的 CSA Action 会额外打印 `RXCSA <i> src=.. cat=4 act=4 nch=.. cnt=.. len=..` | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
 | `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧、`addba` / `delba` 统计 Block Ack 管理动作、`bar/ba/pspoll/rts/cts/ack` 统计控制帧 subtype | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
 
@@ -232,8 +237,8 @@ HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否�
 `<idx>` 只在最近一次 `SCAN` 内有效（重扫后旧索引无意义）。
 
 所有攻击与射频命令都已迁移到 wbus 总线（`TODO.md` 第 6 节 P1–P4）：`DEAUTH*` / `CSA*` / `DELBA*` /
-`BA*` / `WNM*` / `TIM*` / `EAPOL*` / `PSPOLL*` / `SAE*` / `AUTHFLOOD*` / `PROBE_BROADCAST` /
-`EVILTWIN*` / `CREDS` / `RADIO`，共 40 条命令映射到 13 个对象。命令名与回执文本
+`BA*` / `BTM*` / `RRM*` / `TIM*` / `EAPOL*` / `PSPOLL*` / `SAE*` / `AUTHFLOOD*` / `PROBE_BROADCAST` /
+`EVILTWIN*` / `CREDS` / `RADIO`，共 43 条命令映射到 14 个对象。命令名与回执文本
 **一个字节都没变**，内部改由 `wbus_call()` 分发，所以参数校验、`DESCRIBE` 元数据、`EVT` 事件
 都不必每个模块各写一遍。新代码优先用 `CALL <obj>.<method> k=v`。
 留在旧 `strcmp` 链里的是控制台管道（`HELP`/`PING`/`STATUS`/`STATS`/`SCAN`/`STOP`/`REASON`/`MON`/
@@ -250,7 +255,7 @@ CRED <idx> <用户名> <密码> <时间戳ms>
 RX   <i> type=<0..3> sub=<n> len=<n> dest=<mac> src=<mac> bssid=<mac>
 ```
 
-`caps` 取值：`deauth`、`eviltwin`、`probe`、`wnm`、`tim`、`eapol`、`sae`、`authflood`，
+`caps` 取值：`deauth`、`eviltwin`、`probe`、`btm`、`rrm`、`tim`、`eapol`、`sae`、`authflood`，
 C5 额外带 `5g`。
 
 ### 4.3 用脚本驱动
@@ -311,17 +316,26 @@ while True:
   这是修掉"`deauth_frames` 在涨但帧没出去"那个 bug 的关键（见 §11）。
 - `PROBE_BROADCAST` 不需要目标也不需要扫描：4 帧/4 ms，SSID/BSSID 每帧随机，120 ms 换信道。
 - `STOP` 立即停一切（含 Evil Twin），回到静默。
-- **802.11v BTM Request 欺骗**（`WNM`）：WNM Action（category 10 / action 7）。注意保护状态：
-  action 类别里只有 Public/HT/Unprotected-WNM/Self-protected/VHT/厂商自定义不算 robust，**category 10
+- **802.11v BTM Request 欺骗**（`BTM`）：802.11v Action（category 10 / action 7）。注意保护状态：
+  action 类别里只有 Public/HT/未保护类(11)/Self-protected/VHT/厂商自定义不算 robust，**category 10
   在 robust 集合里**——所以 PMF 强制（WPA3）的客户端会在驱动里直接丢弃，本模块打的是
-  PMF 关闭或可选（大多数 WPA2）的网络。伪造 TA 为 AP BSSID 即被客户端接受。`cand` 模式带一个幻影候选 BSS（Neighbor
-  Report 元素 id 52 / len 13，指向同频段的另一个信道）；`bare` 模式不带候选列表。
+  PMF 关闭或可选（大多数 WPA2）的网络。伪造 TA 为 AP BSSID 即被客户端接受。
+  **只有一种形态：不带候选列表**（31 字节）。实测（§4.4.12）：带一个幻影候选 BSS 时客户端会回
+  BTM Response 但原地不动；不带列表时它会自己扫，只要环境里有一个同 SSID、同安全模式的 BSS，
+  就在 ~0.1 s 内漫游过去（`reason=207 ROAMING`）。所以这条攻击要跟"造一个同名 BSS"配套使用。
   **disassociation timer 必须非 0**：wpa_supplicant 只在
   `DISASSOC_IMMINENT 且 timer != 0` 时才 `wpa_supplicant_req_scan()`，置 0 等于什么都没发生。
   客户端能力从它的 Probe/（重）Association Request 里的 Extended Capabilities（id 127, bit 19）
-  学出来，明确不支持的会被跳过（`wnmskip=`）；`sta-mac` 参数可以绕过学习直接指定目标。
-  每个客户端 300 ms 重发一次，全局节拍 50 ms（见 §11 第 10 条）。可观测：`wnmresp=`（BTM Response
-  数量）、`wnms=`（最后一次的 status，1=reject unspecified，说明它解析了但拒绝）。
+  学出来，明确不支持的会被跳过（`btmskip=`）；`sta-mac` 参数可以绕过学习直接指定目标。
+  每个客户端 300 ms 重发一次，全局节拍 50 ms（见 §11 第 10 条）。可观测：`btmresp=`（BTM Response
+  数量）、`btms=`（最后一次的 status，1=reject unspecified，说明它解析了但拒绝）。
+- **802.11k Neighbor Report 伪造**（`RRM`）：Radio Measurement Action（category 5 / action 5），
+  伪造 AP 的 TA 告诉客户端“还有个邻居 BSS，去连它”。category 5 同样在 robust 集合里，
+  所以 PMF 强制时会被客户端驱动丢弃——和 BTM 一样的边界，不是绕过。元素固定 id 52 / len 13，
+  没有可选子元素；`info`/`opclass`/`phy` 三个字段默认 0，是为了先按真帧逐位抄再回填，
+  不要凭印象填位表。节拍与 BTM 相同（每客户端 300 ms、全局 50 ms，走 `kTxPolicyGuard`）。
+  可观测：`rrmf=`（已发帧数）、`rrmc=`（学到的 STA 数）、`rrmleft=`（本次还剩多少帧，0 = 无限或已发完）。
+  **客户端会不会接受“没请求过”的 NRREP 属实现行为，未实测**。
 - **TIM 投毒**（`TIM`）：克隆目标 AP 的 beacon（同 BSSID/SSID/RSN IE/capability/
   beacon interval），每 20 ms 发一帧（真 AP 是 100 TU ≈ 102 ms，即 5 倍占空比），
   **在学到真 beacon 之前一帧都不发**（否则 SSID 为空的帧只会被当成另一个坏网络）。
@@ -370,7 +384,7 @@ while True:
 
 ---
 
-### 5.1 六个模块的验证步骤
+### 5.1 七个模块的验证步骤
 
 判据分三层，越往下越有说服力：**① 帧上空气且字段对**（抓包管道）→ **② 对端有回应**（STA 侧计数）
 → **③ 效果可观测**（客户端断开/吞吐下降/AP 表满）。本仓库只做到 ②，③ 需要对应的对端环境。
@@ -384,8 +398,9 @@ python lab/air_check.py --port COM5 --bssid <AP-BSSID>      # 逐模块起-抓-�
 
 | 模块 | 命令 | ① 抓包看什么 | ② 串口计数 | ③ 需要什么对端 |
 | --- | --- | --- | --- | --- |
-| BTM Request | `WNM <idx> cand 10 <ch> <STA-MAC>` | `cat=10 act=7 req_mode=0x05 timer=<n>` + Neighbor Report 元素 | `wnmf>0`；能解析并回应的 STA 会让 `wnmresp>0`、`wnms` 有值（1 = reject unspecified） | COM6 跑一个 STA 固件：`CONFIG_ESP_WIFI_11KV_SUPPORT=y`，连接时 `wifi_sta_config_t.btm_enabled=1`，再连上目标 AP。它会在 Assoc Request 里带 Extended Capabilities bit19（本模块据此判定能力），收到 BTM 后触发扫描/漫游。**不支持的 STA 会被 `wnmskip` 跳过，属预期** |
+| BTM Request | `BTM <idx> cand 10 <ch> <STA-MAC>` | `cat=10 act=7 req_mode=0x05 timer=<n>` + Neighbor Report 元素 | `btmf>0`；能解析并回应的 STA 会让 `btmresp>0`、`btms` 有值（1 = reject unspecified） | COM6 跑一个 STA 固件：`CONFIG_ESP_WIFI_11KV_SUPPORT=y`，连接时 `wifi_sta_config_t.btm_enabled=1`，再连上目标 AP。它会在 Assoc Request 里带 Extended Capabilities bit19（本模块据此判定能力），收到 BTM 后触发扫描/漫游。**不支持的 STA 会被 `btmskip` 跳过，属预期** |
 | TIM | `TIM <idx> tim <aid>` / `clear` | 克隆 beacon 的 TIM 元素：`dtim_count=0`、bitmap 按 AID 置位（AID 3 → `08`）；`clear` 模式的 bitmap 应为 `00`。**管道没起时**用 `lab/tim_air.py`（COM6 的 `sniff <ch>`）核对 | `timf>0`、`timreal>0`（说明学到了真 beacon；没学到就一帧都不发）、`timaid` 位图 | 会进 PS 模式且有下行缓存的客户端（手机锁屏 / IoT 设备）。对照 `clear` 与 `tim` 两种模式的唤醒次数/丢包 |
+| Neighbor Report | `RRM <idx> nbr 02CAFEBABE01 <ch> 3 7` | `cat=5 act=5 token=7 protected=0` + 元素 `eid=52 ie_len=13`；整帧 42 字节（+4 FCS） | `rrmf>0`；第二块板 `MON <ch> N` 后 `RXLOG` 能看到 `type=0 sub=13 len=46 ... cat=5 act=5 nch=52 cnt=13`，TA=AP BSSID | 没有真客户端的台架上只能验到“帧上空气”。客户端是否采信未请求的 NRREP、会不会真的换 BSS，需要一台真 11k 客户端在 PMF 关闭的 BSS 上复测 |
 | EAPOL | `EAPOL <idx> 6 <STA-MAC>` | `AAAA03…888E ver=2 type=1/2`，非 QoS 与 QoS(TID6) 交替 | `eapf>0`；**`eaprxreq>0` 才说明 AP 的 802.1X 状态机真的重启**（AP 回 EAP-Request/Identity），`eaprxsta>0` 说明真实 STA 收到了 Logoff | WPA2/WPA-Enterprise 或 802.1X 的 AP。**WPA2-PSK 下这条 AP 完全忽略**，`eaprxreq`/`eaprxsta` 都是 0，属于已知边界 |
 | SAE | `SAE <idx> point 50` | `alg=3 seq=1 group=19`，128 字节；AP 的回复是 `alg=3 seq=2 status=…` | `saef>0`、`saeresp>0`、`saecode`（13 = 该 AP 不吃 SAE；76 = 要反 clogging token；`saetok>0` 说明 token 到了、`saeecho>0` 说明回显了） | WPA3-SAE 的 AP。效果判据：拿到 token 回显后，**合法 STA 的 ping RTT 明显上升**。对照组 `SAE <idx> rand 50`（随机元素，AP 在点校验就退），两者 RTT 差异即"贵在哪一步" |
 | PM 位欺骗 | `PSPOLL <idx> <STA-MAC> [qosnull\|null\|action]` | 三种帧型各自的帧控制高字节：`0x1148`(Null)/`0x11C8`(QoS Null)/`0x10D0`(Action)，都带 PM=1，`ra=<BSSID> ta=<STA>`。**管道没起时**用 `lab/pspoll_air.py`（另一块板跑 lab 固件的 `ap` + `sniffpoll <ch>`，一块板同时当 AP 与嗅探器，逐帧型统计 PM=1 帧数） | `pspf>0`、`pspfrm`（当前帧型）、`pspnul/pspfl`（PM=1/PM=0 各多少）、`pspdl`（发向受害者的下行帧）；`psprxp` 恒 0 属正常（ESP-IDF 站点按 DTIM 收帧，从不发 PS-Poll） | 一台 AP + 一个真实客户端：`lab/pspoll_ps.py` 量 AP 侧 RATE，三种帧型分别为 −30%/−38%/−21%，撤销后立刻恢复 |
@@ -426,7 +441,7 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
 ```
 一级  [Deauth] [Probe] [CSA]
       [DELBA] [BA] [Evil]
-      [WNM] [TIM] [EAPOL]
+      [BTM] [TIM] [EAPOL]
       [SAE] [Auth] [PS-Poll]
 二级  Deauth -> [One] [All] / [Only] [Except] / [Back]
 三级  模式页：[Scan] [Targets] [Start] / [Stop] [Back] / [Reason: 7 class-3 frame]
@@ -450,11 +465,13 @@ idf.py menuconfig      # Wireless Attack UI (LVGL) -> Enable LVGL touch UI
   `Start` 固定发 `DELBA <idx> 37`；标签写着 `DELBA #0 TP-LINK reason=37`。
 - `BA` 页：同样四键，`Start` 固定发 `BAATTACK <idx> 512`（步进在屏上不可调，串口/GUI 可调）；
   标签写着 `BA #0 TP-LINK step=512`；`UISCREEN ba` 可供自动化切换。
-- 六个帧级模块页（`WNM` / `TIM` / `EAPOL` / `SAE` / `Auth` / `PS-Poll`）共用同一个版式：
-  一行目标（`WNM #0 TP-LINK`）、`[Scan] [Targets] [Start]`、`[Stop] <变体> [Back]`。
-  `Start` 发不带参数的缺省命令（`WNM 0` / `TIM 0` / `EAPOL 0` / `SAE 0` / `AUTHFLOOD 0` / `PSPOLL 0`），
-  中间那个变体键发对照形态：`Bare`=`WNM 0 bare`、`Clear`=`TIM 0 clear`、`Plain`=`EAPOL 0 -1`、
-  `Rand`=`SAE 0 rand`、`NoAuto`=`AUTHFLOOD 0 both noauto`。PS-Poll 那一页的变体键是**帧型循环**（`QoSNull`→`Null`→`Action`），点一下换一种帧型并重启攻击；撤销 `PSPOLLREL` 与受害 MAC 走串口/GUI。参数细分仍走串口/GUI。
+- 六个帧级模块页（`BTM` / `TIM` / `EAPOL` / `SAE` / `Auth` / `PS-Poll`）共用同一个版式：
+  一行目标（`BTM #0 TP-LINK`）、`[Scan] [Targets] [Start]`、`[Stop] <变体> [Back]`。
+  `Start` 发不带参数的缺省命令（`BTM 0` / `TIM 0` / `EAPOL 0` / `SAE 0` / `AUTHFLOOD 0` / `PSPOLL 0`），
+  中间那个变体键发对照形态：`Clear`=`TIM 0 clear`、`Plain`=`EAPOL 0 -1`、`Rand`=`SAE 0 rand`、
+  `NoAuto`=`AUTHFLOOD 0 both noauto`。PS-Poll 那一页的变体键是**帧型循环**（`QoSNull`→`Null`→`Action`），点一下换一种帧型并重启攻击；撤销 `PSPOLLREL` 与受害 MAC 走串口/GUI。参数细分仍走串口/GUI。
+  **`BTM` 页没有变体键**（按钮被隐藏）：BTM 只剩一种形态，再放一个键就等于"第二个 Start"，
+  徒增困惑；`timer` 这类参数走串口/GUI（`BTM 0 50`）。
 - 重扫会清空勾选与单选；弹窗开着也会就地重建列表。
 - 诊断：`UITARGETS`（开弹窗）+ `UI`（回报 `screen/popup/items/nets`），不需要用手指点。
 

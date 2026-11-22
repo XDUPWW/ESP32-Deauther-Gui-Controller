@@ -28,7 +28,7 @@
 | DELBA 欺骗（拆 Block Ack 会话） | `DELBA <idx> [reason]` | ✅ | ✅ | ✅ | 帧格式逐字节校验、跨板收到 `delba=82`、ADDBA 精确补刀 `delbtr=5`、实验室链路吞吐量 **-99%**（480→5 KiB/s，链路不掉线） |
 | BA 会话劫持（DELBA→伪造 ADDBA→BAR） | `BAATTACK <idx> [step]` / `BAPLANT` / `BARPUSH` | ✅ | ✅ | ✅ | 帧格式逐字节校验；伪造 ADDBA 可让 4 Mbit/s 的流冻结且不自愈（需重连）；**Android 客户端 A/B 判定：step=512 卡死、step=0 无影响 → 推窗机制成立** |
 | Probe 泛洪（Beacon + Probe Response） | `PROBE_BROADCAST` | ✅ | ✅ | ✅ | **双板实测**（另一块板扫到 37 个伪造 SSID） |
-| 802.11v BTM Request 欺骗 | `WNM <idx> [cand\|bare] [timer] [ch] [sta-mac]` | ✅ | ✅ | ✅ | 空口抓包 `cat=10 act=7 req_mode=0x05 timer=10` + 候选 Neighbor Report（C5 抓包管道）；**缺 11v 客户端做端到端** |
+| 802.11v BTM Request 欺骗 | `BTM <idx> [timer] [sta-mac]` | ✅ | ✅ | ✅ | **端到端已验**（真华为 AP + 同名第二个 BSS）：伪造 BTM 让真实 STA 漫游到我们软 AP（`reason=207`，0.07 s）|
 | TIM 投毒（克隆 beacon） | `TIM <idx> [tim\|clear] [aid]` | ✅ | ✅ | ✅ | 空口抓包 TIM 元素逐字节正确、克隆 50 帧/s（真 AP 10 帧/s）；**对省电客户端的效果未量化** |
 | ~~TSF 投毒~~ | —（已删除） | ❌ | ❌ | ❌ | **本硬件不可实现**：MAC 用接口自己的 TSF 覆盖 beacon 时间戳（未关联时报 0），与 Duration 同源；`tsf`/`both` 模式与 `ttsf=` 字段一并删除 |
 | EAPOL-Start/Logoff 洪泛 | `EAPOL <idx> [tid\|-1] [sta-mac]` | ✅ | ✅ | ✅ | 空口抓包 `ver=2 type=1/2`；**WPA2-PSK 的 AP 忽略**，需 802.1X 环境验证效果 |
@@ -157,10 +157,11 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 │   ├── tim_ps.py                 ← TIM 打真实省电 STA 的吞吐对比（AP/STA/攻击三块板）
 │   ├── pspoll_air.py             ← PM 位/PS-Poll 的空口字段核对（一块板同时当 AP 与嗅探器）
 │   ├── pspoll_ps.py              ← PM 位欺骗对下行吞吐的影响（含 PSPOLLREL 撤销阶段）
-│   ├── btm_sta.py                ← BTM Request 打真实 11v STA 的端到端（看 wnmresp）
+│   ├── btm_sta.py                ← BTM Request 打真实 11v STA 的端到端（看 btmresp）
 │   ├── pool_limit.py             ← 单播注入的缓冲池速率上限（0x101 边界）
 │   ├── soak.py                   ← 帧级模块长跑稳定性（判据：txgerr 恒 0、无 FATAL）
-│   └── rf_throughput/            ← 吞吐实验用的迷你 AP/STA 工程
+│   ├── rf_throughput/            ← 吞吐实验用的迷你 AP/STA 工程
+│   └── victim_btm/               ← 11KV 受害者 STA（打 reason code，判 BTM/RRM 是否被处理）
 └── gui/                          ← Windows 上位机
     ├── README.md
     ├── main.py                   ← tkinter 界面（三级菜单 + 目标弹窗）
@@ -190,7 +191,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 | `CSA <idx> [ch\|auto] [cnt] [secs]` / `CSASTOP` / `CSATEST` | CSA 欺骗 / 停止 / 帧字节自检 |
 | `DELBA <idx> [reason]` / `DELBASTOP` / `DELBATEST` | DELBA 拆聚合 / 停止 / 帧字节自检 |
 | `BAATTACK` / `BAPLANT` / `BARPUSH` / `BASTOP` | BA 会话劫持三步 / 只种窗口 / 只推 BAR / 停止 |
-| `WNM <idx> [cand\|bare] [timer] [ch] [sta-mac]` / `WNMSTOP` / `WNMTEST` | 802.11v BTM Request / 停止 / 帧自检 |
+| `BTM <idx> [timer] [sta-mac]` / `BTMSTOP` / `BTMTEST` | 802.11v BTM Request 强制漫游 / 停止 / 帧自检 |
 | `TIM <idx> [tim\|clear] [aid]` / `TIMSTOP` / `TIMTEST` | 克隆 beacon 篡改 TIM / 停止 / 自检 |
 | `EAPOL <idx> [tid\|-1] [sta-mac]` / `EAPOLSTOP` / `EAPOLTEST` | EAPOL-Start/Logoff 洪泛 / 停止 / 帧自检 |
 | `SAE <idx> [point\|rand] [gap_ms]` / `SAESTOP` / `SAETEST` | SAE Commit 洪泛 / 停止 / 帧自检 |
@@ -254,7 +255,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 4. **C5 无触摸屏界面**：Kconfig 宏 `depends on IDF_TARGET_ESP32`，属设计选择。
 5. **五个新模块的"效果"层**：帧上空气与字段都逐字节验证过（`测试报告 §4.4`）。端到端补了两项
    （2026-11-15，三块板，见 `§4.4.8`）：**TIM 对真实省电 STA 的吞吐无可测影响**（deauth 阳性对照
-   成立，说明不是帧没到）、**BTM 在 ESP-IDF STA 上拿不到 BTM Response**（`wnmc=1` 但 `wnmresp=0`）。
+   成立，说明不是帧没到）、**BTM 在 ESP-IDF STA 上拿不到 BTM Response**（`btmc=1` 但 `btmresp=0`）。
    仍缺环境的：SAE 需要真的 WPA3 AP、EAPOL 需要 802.1X 环境、Auth 洪泛没压到 station 表满。
 6. **PS 位欺骗（PM 位）已实现并量化**（2026-11-15，见 `测试报告 §4.4.9`/`§4.4.10`）：伪造 PM=1 的帧
    让 AP 把下行缓存起来；PM 位可装在三种帧里（`null`/`qosnull`/`action`），实测下行吞吐分别

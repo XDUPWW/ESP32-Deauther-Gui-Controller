@@ -51,13 +51,14 @@
 | 4.2 | CSA（Beacon IE） | `csa.cpp` | `CSA` | 同上，两条路径同一轮发出 | mgmt / 8 + IE 37 | 信道管理 | beacon 里的 CSA 元素 | **不受保护**（beacon 不是 robust 帧） | 帧上空气 ✅，客户端是否跟随未实测 |
 | 5 | DELBA 欺骗 | `delba.cpp` | `DELBA` `DELBATEST` | 双向单播（学了 TID）或广播兜底 | mgmt / 13，cat 3 act 2 | Block Ack 会话管理 | 每个 TID 的聚合会话 | **被拦**（cat 3 属 robust） | 吞吐 −99%（非 PMF 链路）✅ |
 | 6 | BA 会话劫持 | `delba.cpp` | `BAATTACK` `BAPLANT` `BARPUSH` `BATEST` `BATX` `BARSEQ` | DELBA+ADDBA+BAR 持续 / 只种窗口 / 只推 BAR | mgmt / 13 cat 3 act 0 + ctrl / 8 | Block Ack 重排窗口 | ADDBA 的 SSN → WinStartB | **被拦**（同上） | ESP-IDF 目标 ✅ 冻结；mac80211 未实测 |
-| 7 | WNM BTM Request | `wnm.cpp` | `WNM` `WNMTEST` | cand（带幻影候选 BSS）/ bare（不带列表） | mgmt / 13，cat 10 act 7 | WNM / 漫游决策（802.11v） | BTM Request + Extended Capabilities | **被拦**（cat 10 属 robust，需 PMF 关闭） | 帧上空气 ✅，端到端未实测 |
+| 7 | BTM 强制漫游（steering） | `btm.cpp` | `BTM` `BTMTEST` | Disassociation Imminent + timer；默认不带候选列表，可选用 `cand-bssid` 指定一个真 BSS | mgmt / 13，cat 10 act 7 | 802.11v / 漫游决策 | BTM Request + Extended Capabilities | **被拦**（cat 10 属 robust，需 PMF 关闭） | 端到端 ✅（真实 STA 漫游到我们软 AP，`reason=207`）|
 | 8 | TIM 投毒 | `tim.cpp` | `TIM` `TIMTEST` | tim（按 AID 置位）/ clear（清空位图） | mgmt / 8 + IE 5 | 省电（PS）调度 | DTIM/TIM 位图 | **不受保护**（beacon） | 帧字段 ✅，客户端省电行为未实测 |
 | 13 | PS 位欺骗（电源管理） | `pspoll.cpp` | `PSPOLL` `PSPOLLREL` `PSPOLLSTOP` `PSPOLLTEST` | 持续伪造 PM=1（每第 6 帧换 PM=0 释放）；帧型可选 null/qosnull/action | data 4 / data 12 / mgmt 13 cat 127 | 省电（PS）状态机 | PM 位声明 + TIM 缓存 | **不受保护**（PM 位与厂商自定义 Action 都不在 robust 集合里） | 三种帧型空口 ✅，吞吐 −21…−38%、零掉线 ✅ |
 | 9 | EAPOL-Start/Logoff | `eapol.cpp` | `EAPOL` `EAPOLTEST` | Start 与 Logoff 交替；非 QoS 与 QoS(TID) 交替 | data / 0、8 + LLC/SNAP 0x888E | 802.1X 认证（端口状态机） | EAPOL PDU、受控/非受控端口 | 未加密数据帧可能被丢 | 帧上空气 ✅，该 AP 无回应 |
 | 10 | SAE Commit 洪泛 | `sae.cpp` | `SAE` `SAETEST` | point（合法点）/ rand（对照）；身份每 4 帧轮换 | mgmt / 11，alg 3 seq 1 | SAE 握手（WPA3） | ECC 标量乘 + 反 clogging token | 无（认证帧本就不加密） | 帧上空气 ✅，AP 回 status 13（非 WPA3） |
 | 11 | Auth/Assoc 洪泛 | `authflood.cpp` | `AUTHFLOOD` `AUTHFLOODTEST` | both（Auth→Assoc→换身份）/ auth / assoc；WPA3 自动升级 SAE | mgmt / 11 alg 0 + mgmt / 0 | 认证 + 关联（station 表） | 每个身份一条状态机 | 无（auth/assoc 从不加密） | AP 回 status 0（接受了伪造身份）✅ |
 | 12 | Evil Twin | `evil_twin.cpp` | `EVILTWIN` `EVILTWIN_STOP` `CREDS` | deauth 3 s → 克隆 softAP → DNS 劫持 → HTTP 钓鱼页 | softAP + DNS + HTTP | 上层（钓鱼） | 客户端自动连接 / 用户输入 | 无 | 凭据捕获未量化 |
+| 14 | RRM 伪造 Neighbor Report | `rrm.cpp` | `RRM` `RRMTEST` | nbr（幻影邻居，元素 52/13）；count 限次或持续；token/info/opclass/phy 可注入 | mgmt / 13，cat 5 act 5 | 802.11k 邻居表 / 漫游候选 | Neighbor Report element | **被拦**（cat 5 属 robust，需 PMF 关闭） | 帧上空气 ✅（对端解出 cat=5 act=5），客户端采信未实测 |
 
 "PMF 被拦"统一指：客户端**协商了 PMF**（WPA3 强制，WPA2 可选）后，驱动会丢弃未受保护的
 robust 管理帧。依据是 Linux 的判定函数 `_ieee80211_is_robust_mgmt_frame()`：
@@ -430,11 +431,12 @@ Request/Response 就立刻补一帧定向 DELBA（`delbtr=` 计数）；都还�
 
 ---
 
-## 7. WNM：802.11v BTM Request 欺骗（`wnm.cpp`）
+## 7. BTM 强制漫游攻击（BTM steering，`btm.cpp`）
 
-- CLI：`WNM <idx> [cand|bare] [timer] [ch] [sta-mac]`、`WNMSTOP`、`WNMTEST`
-- 入口：`wnm.cpp`（构造 `build_btm_request()` :172，能力学习 `learn_capabilities()` :155，
-  发送节拍 `wnm_step()` :253）
+- CLI：`BTM <idx> [timer] [sta-mac] [cand-bssid] [cand-ch] [cand-info]`、`BTMSTOP`、`BTMTEST`
+- 同一族的 802.11k 通道（伪造 Neighbor Report Response）见 §14；两者是同一层、同一个 PMF 边界，只有 category 不同
+- 入口：`btm.cpp`（构造 `build_btm_request()` :172，能力学习 `learn_capabilities()` :155，
+  发送节拍 `btm_step()` :253）
 
 ### 7.1 协议层定位
 
@@ -450,15 +452,15 @@ Self-protected/VHT/厂商自定义之外的所有 category 都算 robust"
 
 - PMF 关闭或可选（绝大多数 WPA2 部署）→ 伪造帧被接受，客户端真的会去扫/漫游；
 - PMF 强制（WPA3 / MFPR）→ 客户端驱动按"未受保护的 robust 管理帧"直接丢弃
-  （`net/mac80211/rx.c` 的 `ieee80211_drop_unencrypted_mgmt()`），WNM 代码根本跑不到。
+  （`net/mac80211/rx.c` 的 `ieee80211_drop_unencrypted_mgmt()`），802.11v 代码根本跑不到。
 
 所以这条通道**不是 PMF 绕过**，而是"不需要断开连接也能把客户端推走"的另一条路。
-（`wnm.cpp` 顶部注释、`wnm.h`、GUI 文案都已按这个事实改写；`firmware/README.md §5`
+（`btm.cpp` 顶部注释、`btm.h`、GUI 文案都已按这个事实改写；`firmware/README.md §5`
 原先写的"PMF 不保护 BTM"是错的，本文为准。）
 
 ### 7.2 帧格式
 
-【代码】`wnm.cpp:172`，cand 模式 46 字节 / bare 模式 31 字节（抓包 50 / 35，含 FCS）：
+【代码】`build_btm_request()`，固定 **31 字节**（空口 35，含 FCS）。不再带候选列表——理由见 §7.4 的实测：
 
 ```
 0    2  FC 0xD0 0x00        ; mgmt / subtype 13 = action
@@ -470,13 +472,16 @@ Self-protected/VHT/厂商自定义之外的所有 category 都算 robust"
 25   1  Action            7  = BTM Request
 26   1  Dialog token      1..255 循环
 27   1  Request Mode      bit 0 = Preferred Candidate List Included
-                          bit 2 = Disassociation Imminent   → cand 模式 0x05，bare 模式 0x04
+                          bit 2 = Disassociation Imminent   → 恒为 0x04（不带候选列表）
 28   2  Disassociation Timer（TBTT 数，缺省 10；0 = 客户端不扫）
-30   1  Validity Interval 10（候选列表寿命，单位 beacon interval）
-31   .. 候选列表          cand 模式：Neighbor Report 元素
+30   1  Validity Interval 10（请求的新鲜期，单位 beacon interval）
 ```
 
-【代码】Neighbor Report 元素（id 52，长度 13）：
+整帧 **31 字节**（空口 35，含 4 字节 FCS）；给了 `cand-bssid` 时再追加下面那个元素，变成 **46 字节**
+（空口 50）。默认不带候选列表：旧实现里的"带一个随机幻影候选"被实测证明无效，已删除；
+现在带候选必须由命令行指定一个**真实存在**的 BSSID，见 §7.4。
+
+【代码】可选候选元素（id 52，长度 13；只在 `cand-bssid` 给出时出现）：
 
 ```
 ..  1  Element ID        52
@@ -492,7 +497,7 @@ Self-protected/VHT/厂商自定义之外的所有 category 都算 robust"
 （`kGlobalGapMs`）——节拍属于电台而不是每个客户端，八个客户端也不能把注入率乘八。
 目标只挑**声明支持 11v** 的 STA：嗅探客户端自己的 Probe Request / (Re)Association Request，
 看 Extended Capabilities 元素（id 127）的 **bit 19（BSS Transition）**；不支持的直接跳过
-（`wnmskip=` 计数）。
+（`btmskip=` 计数）。
 
 ### 7.3 为什么有效 / 何时失效
 
@@ -506,13 +511,14 @@ Self-protected/VHT/厂商自定义之外的所有 category 都算 robust"
 - 带候选列表时只扫那个 BSSID（一个不存在的 BSSID = 每次请求都变成一次"离信道空跑"）；
 - 不带列表时客户端回一个 BTM Response（reason = "reject, unspecified"），但仍然会扫。
 
-【标准/代码】失效条件：①PMF 强制（上面）；②客户端不支持 11v（`wnmskip` 会涨）；
+【标准/代码】失效条件：①PMF 强制（上面）；②客户端不支持 11v（`btmskip` 会涨）；
 ③客户端把"候选 BSS 不在我扫得到的范围内"当作无效请求（部分实现）；
 ④客户端设置了 `disable_btm` 之类的策略。
 
 ### 7.4 实现与实测
 
-【实测】`测试报告.md §4.4.1`：`WNM 2 cand 10 6 02AABBCCDDEE`，5 s 内 64 帧 BTM Request 上空气，
+【实测】`测试报告.md §4.4.1`（**旧命令形态**，当时还有 `cand` 模式）：`BTM 2 cand 10 6 02AABBCCDDEE`，
+5 s 内 64 帧 BTM Request 上空气，
 字段 `cat=10 act=7 req_mode=0x05`、`timer=10`、`validity=10`、
 候选 `Neighbor Report eid=52 len=13 op_class=81 ch=6 phy=7`，TA = AP BSSID、RA = 伪造 STA。
 
@@ -520,21 +526,57 @@ Self-protected/VHT/厂商自定义之外的所有 category 都算 robust"
 `lab/rf_throughput` 的 `sta` + `btm 1`，`CONFIG_ESP_WIFI_11KV_SUPPORT=y`）做端到端：
 
 ```
-WNM 0 cand 10 0   -> 8 s 发 23 帧
-   wnmc=1       能力判别正确：STA 的 Association Request 里确实有 Extended Capabilities bit 19
-   wnmresp=0    但 STA 一句也没回（wnms=0）
+BTM 0 cand 10 0   -> 8 s 发 23 帧      （旧形态）
+   btmc=1       能力判别正确：STA 的 Association Request 里确实有 Extended Capabilities bit 19
+   btmresp=0    但 STA 一句也没回（btms=0）
 ```
 
 ESP-IDF 的 11v 只公开了 `WIFI_EVENT_STA_NEIGHBOR_REP`（11k），**没有 BTM 事件/回调**，
 BTM 逻辑全在闭源 wifi 库里——它是否静默扫了一次从计数上看不出来（攻击期间 STA 侧 RATE
 没有停顿）。所以**「客户端应答」这种端到端证据在 ESP-IDF STA 上拿不到**；要判它是否真的
 处理了 BTM，需要一个会回 BTM Response 的客户端（wpa_supplicant 的 `wnm_sta.c` 会回，
-Android / 桌面 Linux 更合适）。脚本：`lab/btm_sta.py`。
+Android / 桌面 Linux 更合适）。
 
-计数器：`wnm`（off/cand/bare）、`wnmf`（帧数）、`wnmc`（支持 11v 的客户端数）、
-`wnmskip`（被跳过的）、`wnmresp`（BTM Response 数）、`wnms`（最后一次响应的状态码）。
+【实测】2026-11-22，用 `lab/victim_btm`（11KV 打开、`ps 0` 一直醒、记录断开 reason 与最终关联 BSS）
+在两种受害者上跑：软 AP 和**本机真实的华为 WPA2 AP**（`BE:41:99:0B:20:36`，ch12）。
 
----
+**带候选列表（旧 `cand` 形态，已从代码删除）：收到、回应、不漫游**
+
+| 场景 | 当时的形态 | 请求/响应 | 结果 |
+| --- | --- | --- | --- |
+| 软 AP + 11v 开 | 带候选（幻影 BSSID） | 42 / **44** | 不断开 |
+| 软 AP + 11v 开 | 不带候选 | 55 / 0 | 不断开 |
+| 软 AP，`btm 0` 对照 | 带候选 | 72 / 0 | 不断开（连响应都没有） |
+| 真华为 AP | 带候选 | 97 / 50（`btms=7`） | 不断开 |
+| 真华为 AP | 不带候选 | 152 / 19 | 不断开 |
+
+带候选时几乎每条请求都回一条 BTM Response —— 只有解析了 dialog token 的 STA 才会回，所以帧确实
+被收下并处理了；但候选 BSSID 是随机幻影，扫不到，STA 没有可去的地方。所以那一半代码没有用，
+干脆删掉：**现在模块只发不带候选列表的形态**。
+
+**第二 BSS 真实存在时：STA 被拐走**（同 SSID、同 WPA2 口令、ch6，我们自己的软 AP；旧 AP 在 ch12）
+
+- 对照：第二 BSS 开着、`-6 dBm`（比旧 AP 强 29 dB），**90 s 不发 BTM** → victim 一动不动，
+  仍在 ch12。
+- 发 `BTM <idx> 10 <victim-mac>`（TA = 华为 BSSID；现在只有这一种形态）→
+  `EVT sta_disconnected reason=207 ROAMING`（旧 AP `rssi=-36`）→
+  `EVT sta_connected bssid=<我们的软 AP> ch=6`，`back_after=0.072s`，随后从我们的 DHCP 拿到 IP。
+
+结论（这条路真实有效，但边界要写清）：
+1. **只要攻击者能提供同 SSID、同安全模式、能被扫到的第二个 BSS，一条伪造 BTM 就能把已关联的
+   真实 STA 拽过来**，不需要真 AP 的密码，也不需要 deauth。之后就是 Evil Twin 的猎场。
+2. ESP-IDF 上报的码是 **`207 WIFI_REASON_ROAMING`**，不是标准里的 12
+   （`WIFI_REASON_BSS_TRANSITION_DISASSOC`）。判据要按两个一起 grep。
+3. 命中条件是**环境里真的有一个同 SSID、同安全模式、扫得到的 BSS**——凭空造一个候选 BSSID
+   （旧 `cand` 形态）只会换来一条 BTM Response。所以这条攻击天然和"造一个同名 BSS"成对使用。
+4. 指定候选（`cand-bssid`）能进一步收窄：2026-11-22 实测把候选指向我们 ch6 的软 AP，
+   STA 在 0.099 s 内就漫游过去了，且**没有回 BTM Response**——所以"回不回应"不能当判据，
+   最终连到哪个 BSS + reason 才是。
+4. 这台华为 AP 不强制 PMF（victim 用默认 PMF 配置能关联上，推断），所以未保护的 BTM 没被 PMF 挡掉。
+
+【实测/教训】第一轮 victim 用驱动默认 `WIFI_PS_MIN_MODEM`，空口能看到它发 `NULL ... pm=1`：
+睡着的 STA 只在 DTIM 附近开窗，第三方注入的单播帧大部分听不见（那几轮 `btmresp` 只有 0~3）。
+**任何"注入进去了但对方没反应"的实验，先确认对方醒着**。详见 `firmware/测试报告.md §4.4.12`。
 
 ## 8. TIM 投毒（`tim.cpp`）
 
@@ -1088,6 +1130,122 @@ AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
 ---
 
 
+## 14. RRM 伪造 Neighbor Report Response（`rrm.cpp`）
+
+- CLI：`RRM <idx> nbr <bssid> <ch> [count] [token] [info] [opclass] [phy] [sta-mac]`、`RRMSTOP`、`RRMTEST`
+- 入口：`rrm.cpp`（组帧 `build_nbr_response()`，STA 学习与请求/响应计数 `rrm_on_rx()`，
+  发送节拍 `rrm_step()`，自检 `rrm_selftest()`）
+
+### 14.1 协议层定位
+
+【标准】802.11k-2008 定义的射频测量（Radio Measurement）在 802.11-2020 里是 §11.11
+"Radio measurement"（条款号以你手上的标准版本为准，本文只按 Action 字段编号说话）。
+它让 AP 与客户端交换邻居/信道/beacon 测量结果。其中 **Neighbor Report** 是唯一"能指挥客户端
+去哪"的那条：AP 回一个邻居列表，客户端把它填进漫游候选表。
+
+【标准】承载帧是 Action 管理帧（mgmt subtype 13）。Action 字段：category = 5（Radio Measurement），
+action = 4（Neighbor Report Request）/ 5（Neighbor Report Response）。本模块只伪造 **action 5**，
+同时统计嗅到的 action 4（`s_requests`），因为"客户端到底问没问过"是实现行为的关键变量。
+
+【代码】`rrm.cpp` 与 `btm.cpp` 是同一层的东西：都在 net80211 之上直接拼 24 字节 MAC 头 + Action 体，
+都只发单播、都由 `tx_guard` 节拍。区别只有一个——category 5 是 802.11k 的通道，category 10 是 802.11v 的。
+
+### 14.2 帧格式
+
+【代码】`build_nbr_response()`，42 字节（+4 FCS），`RRMTEST` 逐字节可见：
+
+```
+偏移  长度 字段                    取值（本模块）
+0     2   Frame Control           0xD0 0x00   mgmt, subtype 13 = Action
+2     2   Duration                0x0000      由驱动重算，写什么都不会上空气（附录 B 第 1 条）
+4     6   Addr1 = RA              目标 STA（命令参数的 sta-mac，或嗅探学到的客户端）
+10    6   Addr2 = TA              目标 AP 的 BSSID（伪造）
+16    6   Addr3 = BSSID           同上
+22    2   Sequence                0xF0 0xFF（固定）
+24    1   Category                5  = Radio Measurement
+25    1   Action                  5  = Neighbor Report Response
+26    1   Dialog Token            参数 token，默认 0
+27    1   Element ID              52 = Neighbor Report
+28    1   Length                  13 = 固定部分，无 optional subelement
+29    6   BSSID                   幻影邻居的 BSSID（命令参数 bssid）
+35    4   BSSID Information       参数 info，小端，**默认 0**（位含义未核实，不猜）
+39    1   Operating Class         参数 opclass，**默认 0**（按真帧回填）
+40    1   Channel Number          幻影邻居的信道（命令参数 ch）
+41    1   PHY Type                参数 phy，**默认 0**（按真帧回填）
+```
+
+- 【代码】组帧是手写偏移（和 `btm.cpp` 一样），没有走 `ie_util.cpp`——那几个函数是**解析**用的
+  （遍历 IE / RSN AKM / MFPR / Extended Capabilities），本模块发的是一个固定元素，不需要构造器。
+- 【标准】元素固定 13 字节是"最小合法值"：BSSID(6) + BSSID Information(4) + Operating Class(1) +
+  Channel(1) + PHY Type(1)。可选子元素整段省略。
+- 【实测】空口抓到 `len=46`，即 42 + 4 字节 FCS（硬件加，不由我们写）。
+
+### 14.3 为什么有效 / 失效
+
+**成功条件**（协议层）：
+1. TA/Addr3 必须是受害者当前 AP 的 BSSID——客户端只从"自己 AP 发的帧"里读邻居表。
+   本模块直接照抄扫描结果里的 BSSID。
+2. 链路没有强制 PMF。**category 5 在 robust 管理帧集合里**（Linux `_ieee80211_is_robust_mgmt_frame()`
+   的判定是"除 Public/HT/未保护类/Self-protected/VHT/厂商自定义之外所有 Action 类别"），
+   所以 PMF required 的客户端会在驱动里直接丢掉未保护的这类帧。这与 deauth、DELBA、CSA、BTM 的
+   天花板相同——本模块不是 PMF 绕过。
+3. 客户端真的维护 11k 邻居表，并且对"未请求的 response"宽容（见下面的失效条件 3）。
+
+**失效条件**（写全，别只写一半）：
+1. 强制 PMF（WPA3）→ 驱动丢弃；
+2. 客户端不做 11k。**本模块目前不判能力**：`rrm_on_rx()` 只按 MAC 学 STA，不看 Extended Capabilities。
+   实现时留在 `rrm.h` 的 TODO 里——802.11k 的能力位定义本轮没有核实到原文，不猜；
+3. 客户端只接受"自己发过 Request 且 dialog token 匹配"的 Response。本模块发的是**未请求**的
+   response（token 可配但客户端没请求过），**接受度未实测**，这是本模块最大的未知；
+4. 真实 AP 自己的 Neighbor Report 覆盖我们伪造的记录（真实响应更可信、也更频繁）；
+5. 客户端对候选做 RSSI/负载阈值判断，而元素里没有"信号强度"字段，只有 BSSID/信道/PHY 类型。
+
+【诚实边界】不要写"可打 WPA3 / PMF 无效"。本模块与 BTM 一样，只在 PMF 关闭或可选的链路上有窗口。
+
+### 14.4 实现与实测
+
+【代码】发射路径：`esp_wifi_80211_tx()` 经 `tx_guard_send()`（`kTxPolicyGuard`：45 ms 单播节拍，
+首个 `0x101` 打 `FATAL` 后 `esp_restart()`）。节拍模型与 BTM 完全相同——每客户端 300 ms 一次、
+全局 50 ms 一帧、一次 `rrm_step()` 只出一帧。
+
+【代码】`count` 语义：`0` = 一直发到 `RRMSTOP`；`1..16` = 本次总共注入多少帧，发满后
+`rrm_step()` 自己把模式切回 `off`（不用手动 STOP）。`STATUS` 的 `rrmleft=` 是剩余帧数，
+所以 `rrmleft=0` 有两种含义（无限 / 已发完），要看 `rrm=` 是 `nbr` 还是 `off` 来区分。
+
+【代码】客户端来源：①命令里的 `sta-mac`（`rrm_add_station()`，台架用）；②混杂回调里记下 BSS 内
+所有单播管理帧的源地址（上限 8 个，`rrmc=`）。代码不判 11k 能力（见 14.3 失效条件 2）。
+
+【实测】2026-11-21，COM5 = ESP32-2432S028R 注入，COM6 = ESP32 当嗅探器：
+
+| 项 | 结果 |
+| --- | --- |
+| `RRMTEST` | `len=42 cat=5 act=5 token=0 protected=0`，元素 `eid=52 ie_len=13` |
+| 空口 | `MON 3 8` → `RXLOG`：`type=0 sub=13 len=46 dest=02:AA:BB:CC:DD:EE src=CC:08:FB:F6:25:64 cat=5 act=5 nch=52 cnt=13 rate=1M dur=314` |
+| 计数 | `count=0` 跑 6 s：`rrmf=45`、`rrmc=2` |
+| 限次 | `count=3` → `rrmf=3` 后 `rrm=off` |
+| 参数回显 | `rrmtok/rrmch/rrminfo/rrmoc/rrmphy` 与命令行一致 |
+
+【实测/推测】注入窗口里嗅探侧 `RXMIX` 是 `rts=1187 / cts=65`，逐帧可见 `type=1 sub=11`
+（RTS，`RA=02:AA:BB:CC:DD:EE`、`TA=目标 AP BSSID`、`dur=1198`），而同期只注入了 45 帧。
+RTS 的 TA 与注入帧的 Addr2 相同，**推测**是注入路径给每帧做了 RTS/CTS 保护、没人回 CTS
+（RA 是假 STA）导致重传吃空口——与附录 B 的单播 20 帧/s 上限同源，但"是驱动发的 RTS"这一点
+本轮没有独立证据。
+
+【实测】2026-11-22，用 `lab/victim_btm`（802.11v/802.11k 打开、`ps 0` 一直醒的 ESP32-C5）当受害者：
+伪造 16 帧 NRREP（`token=7`、`info=0x00000001`），空口可见 16 条 `cat=5 len=46`（42+4，AP 板
+`sniffpoll` 同时抓的），但 STA 侧**没有** `WIFI_EVENT_STA_NEIGHBOR_REP`，也没有断开。
+即"未请求的 Neighbor Report Response"在 ESP-IDF 端点上不产生可观测行为
+（`firmware/测试报告.md §4.4.12`）。对比：同一轮里 BTM 是**有**响应的（§7.4），
+说明不是"STA 整体不理 action 帧"，而是这一条它在等一个自己发过的请求。
+
+【未实测】①真实 11k 客户端是否采信未请求的 response（ESP-IDF 端点给否定，wpa_supplicant/Android 未测）；
+②PMF required 下的空口行为（按标准应被丢弃）；
+③C5 抓包管道当时没在运行，`lab/cap_frames.py` 新增的 cat 5 解码分支没有吃到真抓包
+（上面的字段来自对端固件 `RXLOG`，它只解出 cat/act 与首个元素的 id/len，不打印帧体）。
+
+---
+
+
 ## 附录 A：已删除、已失效与"做了但没证明"的路径
 
 按仓库现状，下面这些**不再存在**或**明确无效**，列出原因以免被重新"发明"：
@@ -1100,7 +1258,7 @@ AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
 | PS-Poll 欺骗（控制子类型 10，`PSPOLL ... poll\|both`） | **已删除**（本次） | 帧本身能发出去，但**单播**的 PS-Poll 一帧都上不了空口：`CTRLTEST 10 broadcast 0xC025` 两轮各 **10/10**（空口 `dur=0xC025 aid=37`，说明 Duration/ID **没有**被改写），把 RA 换成 AP 的 BSSID 后两轮各 **0/10**——同长度、同 TA、同 Duration，只有 RA 不同。PS-Poll 只有单播给 AP 才有意义，所以整条路径删除；探针留在 `CTRLTEST [subtype] [broadcast\|bssid] [dur]`，`测试报告 §4.4.9` |
 | TIM 的 AID 位编码 | **已修正**（不是删除） | 旧实现按 `(AID−1)` 落位，等于把 AID 1 写到组播位（AID 0）、AID 3 写到 AID 2。现在按 `AID/8` 字节、`AID%8` 位（见 §8.1）；空口复测已完成：`bitmap=08`（AID 3），见 §8.4 |
 | "BA 推窗"在 mac80211 上的证明 | **未证明** | 在 ESP-IDF 目标上 `step=0` 对照组同样冻结，无法把"窗口被推走"单独分离；Android 那次对照（`BARPUSH 512` 卡死 / `0` 正常）是用户现场观察、单设备、无抓包（`§4.2`） |
-| "BTM Request 天然绕 PMF" | **说法已改正** | category 10 属 robust 管理帧集合，PMF 强制时会被客户端驱动丢弃（§7.1）。`wnm.cpp`/`wnm.h`/README/GUI 的旧说法已改 |
+| "BTM Request 天然绕 PMF" | **说法已改正** | category 10 属 robust 管理帧集合，PMF 强制时会被客户端驱动丢弃（§7.1）。`btm.cpp`/`btm.h`/README/GUI 的旧说法已改 |
 
 ---
 
@@ -1156,7 +1314,7 @@ AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
 | `BARSEQ <n> [gap]` | 按固定节拍只发 BAR | 证明"BAR 会回收缓存"（30 ms 节拍 100 帧零失败），这是附录 B 第 4 条的来源 |
 | `BATX` | 发一帧 DELBA/ADDBA/BAR 并打印驱动返回值 | 帧构造错了先看这里 |
 | `MON <ch> [sec]` | 被动监听（可跳信道） | 观测 `RXMIX`：帧真的上了空口吗 |
-| `STATIONS [sec]` | 扫客户端 | deauth/DELBA/WNM 的目标来源 |
+| `STATIONS [sec]` | 扫客户端 | deauth/DELBA/BTM 的目标来源 |
 | `RXLOG` / `RXMIX` / `CTRLFILTER` | 收帧明细 / 分类计数 / 控制帧过滤掩码 | 混杂模式两级过滤的现场诊断 |
 
 这些命令**故意不接整流器**：它们要测的就是"池子什么时候空、驱动什么时候拒"。
@@ -1171,11 +1329,11 @@ AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
 
 | 函数（`ie_util.cpp`） | 作用 | 谁在用（`path:line`） | 用在帧的哪一部分 |
 | --- | --- | --- | --- |
-| `ie_find(start, end, id, *len)` | 顺序遍历元素（id+len+body），返回 body 指针；遇到截断就停 | `tim.cpp:120/126/133`、`authflood.cpp:246/252`、`sae.cpp:219`、`wnm.cpp:157` | 解析真 AP / 客户端的帧：SSID(0)、RSN(48)、TIM(5)、Extended Capabilities(127) |
+| `ie_find(start, end, id, *len)` | 顺序遍历元素（id+len+body），返回 body 指针；遇到截断就停 | `tim.cpp:120/126/133`、`authflood.cpp:246/252`、`sae.cpp:219`、`btm.cpp:157` | 解析真 AP / 客户端的帧：SSID(0)、RSN(48)、TIM(5)、Extended Capabilities(127) |
 | `rsn_has_akm_sae(rsn, len)` | 在 RSN 的 AKM 列表里找 `00-0F-AC:8/9/24` | `sae.cpp:223`（`AUTHFLOOD` 通过 `sae_classify()` 间接用） | 判定目标是不是 WPA3（决定是否启动/升级 SAE 洪泛） |
 | `rsn_has_akm_psk(rsn, len)` | 找 `00-0F-AC:2/4/6` | `sae.cpp:224` | 区分 `wpa2-psk` / `wpa2/wpa3` transition |
 | `rsn_mfpr_required(rsn, len)` | 读 RSN Capabilities 的 MFPR 位（bit 6） | **当前无人调用**（定义了、备着） | 原计划给"要不要提示 PMF 会挡"用；现在文档里靠静态判断，不靠运行时 |
-| `extcap_has_bss_transition(extcap, len)` | 判 Extended Capabilities 的 bit 19 | `wnm.cpp:165` | 客户端能力学习：不支持的 STA 被 `wnmskip` 跳过 |
+| `extcap_has_bss_transition(extcap, len)` | 判 Extended Capabilities 的 bit 19 | `btm.cpp:165` | 客户端能力学习：不支持的 STA 被 `btmskip` 跳过 |
 
 两点现状值得记一下（与"以代码为准"有关）：
 
@@ -1195,12 +1353,12 @@ AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
 
 | 旧说法（出处） | 事实（依据） | 现在的写法 |
 | --- | --- | --- |
-| "BTM Request 不在 PMF 的 robust 集合里，PMF 不校验"（`wnm.cpp` 头注释、`wnm.h`、`firmware/README §5`、GUI 文案） | Action 帧里只有 Public(4)/HT(7)/Unprotected WNM(11)/Self-protected(15)/VHT(21)/厂商自定义(127) 不算 robust；category 10 **在**集合里。Linux 的 `_ieee80211_is_robust_mgmt_frame()` + `net/mac80211/rx.c` 会在协商了 PMF 时丢弃未保护的这类帧 | "PMF 关闭或可选（大多数 WPA2）时有效；强制 PMF 时被驱动丢弃"，见 §7.1 |
+| "BTM Request 不在 PMF 的 robust 集合里，PMF 不校验"（`btm.cpp` 头注释、`btm.h`、`firmware/README §5`、GUI 文案） | Action 帧里只有 Public(4)/HT(7)/Unprotected WNM(11)/Self-protected(15)/VHT(21)/厂商自定义(127) 不算 robust；category 10 **在**集合里。Linux 的 `_ieee80211_is_robust_mgmt_frame()` + `net/mac80211/rx.c` 会在协商了 PMF 时丢弃未保护的这类帧 | "PMF 关闭或可选（大多数 WPA2）时有效；强制 PMF 时被驱动丢弃"，见 §7.1 |
 | "CSA 不受 802.11w/PMF 保护"（`csa.cpp` 头注释、`firmware/README §5`、GUI 文案） | Spectrum Management action 帧**是** robust；真正不受保护的是 **beacon 里的 CSA IE** | 两条路径分开写，见 §4.1 |
 | "DELBA 不是 robust 管理帧，PMF 不校验"（`delba.cpp` 头注释、`delba.h`） | category 3（Block Ack）**在** robust 集合里 | "实测的 −99% 属于非 PMF 链路"，见 §5.1 |
 | `TIMTSF ... tsf|both` 可用（有效部分只有 TIM） | beacon 的 timestamp 被 MAC 用自己的 TSF 覆盖（未关联时为 0），写字无效 | 模块改名 `TIM`，TSF 那半删除，见附录 A 与 §11 第 8 条 |
 | TIM 位图按 `AID-1` 落位（代码与其注释） | Partial Virtual Bitmap 按 AID 编号索引（bit 0 = AID 0 = 组播） | 改 `AID/8`+`AID%8`，空口复测 `bitmap=08`，见 §8.1 与 `测试报告 §4.4.7` |
-| "五个新模块只有 CLI，没有 LVGL 页面"（`AGENTS §11`） | 现在有了，而且六个帧级模块**共用一个页面**（`SCR_FRAME`） | 见 `firmware/README §7.2`；`UISCREEN` 认 `wnm/tim/eapol/pspoll/sae/authflood` |
+| "五个新模块只有 CLI，没有 LVGL 页面"（`AGENTS §11`） | 现在有了，而且六个帧级模块**共用一个页面**（`SCR_FRAME`） | 见 `firmware/README §7.2`；`UISCREEN` 认 `btm/tim/eapol/pspoll/sae/authflood` |
 | "帧级模块一律 20 帧/s"（`firmware/README §5`、`AGENTS §11`） | 只对管理帧/数据帧成立。**PM 位帧在 20 帧/s 下会在几百帧后打满缓存池并重启** | `pspoll.cpp` 自降到 10 帧/s（`kSendMs=100`），见 §13.4 与附录 B |
 | "PS 位欺骗只能用 Null Data"（上一版 §13、`firmware/README §5`） | 同一 bit 还能装在 QoS Null 与单播 Action(127) 里，三种实测都上空气、都能压吞吐 | 三种帧型可切（默认 `qosnull`），见 §13.2/§13.4 |
 

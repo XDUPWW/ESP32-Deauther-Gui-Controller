@@ -15,12 +15,18 @@ ESP32 / ESP32-C5 的 **802.11 无线安全测试工具**，由三块代码组成
   不建 AP、不发 beacon、没有 Web 控制台；扫描与攻击全部由串口命令行驱动。ESP32 目标可选带 LVGL 触摸界面。
 - `gui/` —— Windows 桌面上位机（tkinter + pyserial），把同一套协议行包装成三/四级页面；**不含攻击逻辑**。
 - `lab/rf_throughput/` —— 独立的迷你 ESP-IDF 工程（一块板当 AP、一块当 STA，TCP 4444 打流），只用于测量 DELBA / BA 攻击对吞吐的影响，不是产品代码。
+- `lab/victim_btm/` —— `rf_throughput` 的 STA 专用变体：`CONFIG_ESP_WIFI_11KV_SUPPORT=y`、
+  `btm_enabled`/`rm_enabled` 置 1，把每个连接事件的 reason code 打一行日志（`reason=12` 打成
+  `BSS_TRANSITION!`），用来判伪造 BTM Request / Neighbor Report 到底有没有被受害者处理。
+  原 `rf_throughput` 一字未改，继续提供 `ap` 角色。命令：`ssid <文本>` / `pass <口令>` /
+  `country <cc>` / `join` / `sta <ssid>` / `btm <0|1>` / `rm <0|1>` / `ps <0|1|2>` / `scan` / `status`。
+  口令只存板子上的 NVS，**不要写进仓库任何文件**。
 
 核心设计：**串口行协议是唯一控制面**。触摸屏按钮、GUI、脚本都只发协议行；攻击实现只有一份（`firmware/src/`）。
 改功能时不要为某个界面单独写一条执行路径。
 
 已实现的攻击：deauth（单/全/白/黑名单）、Probe/Beacon 泛洪、CSA 欺骗、DELBA 欺骗、BA 会话劫持、Evil Twin、
-802.11v BTM Request 欺骗（WNM）、TIM 投毒（克隆 beacon）、EAPOL-Start/Logoff 洪泛、SAE Commit 洪泛、
+802.11v BTM Request 欺骗（BTM）、802.11k Neighbor Report 伪造（RRM）、TIM 投毒（克隆 beacon）、EAPOL-Start/Logoff 洪泛、SAE Commit 洪泛、
 Auth/Assoc 洪泛（WPA3 时自动升级成 SAE）、电源管理（PM 位）欺骗（`pspoll.cpp`）。
 **NAV（虚拟载波侦听）已删除**：注入帧的 Duration 字段由驱动/MAC 重算，应用层改不了，详见 `attack-principles.md` 附录 A。
 **PS-Poll 欺骗（控制子类型 10）也已删除**：单播的 PS-Poll 在本 MAC 上发不出去（广播 RA 10/10 上空气、
@@ -88,6 +94,8 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 产物大小参考：ESP32 带 LVGL 约 1.37 MB，C5 约 1.13 MB（factory 分区 3 MB）。
 
 `lab/rf_throughput/` 是同样方式构建的独立工程（自己的 `build/`、`build_c5/`，`sdkconfig.c5` 不入库）。
+`lab/victim_btm/` 同样（`idf.py -B build` 走 `sdkconfig.defaults`；C5 用 `-B build_c5 -D SDKCONFIG=sdkconfig.c5`，
+那份 `sdkconfig.c5` 的 console 已改成 UART0，`rf_throughput` 那份是 USB-Serial/JTAG，别搞混）。
 
 ## 4. 分层红线与运行时契约
 
@@ -144,7 +152,7 @@ P0/P1 已落地的实际白名单与三条实测踩坑（组件清单见 `firmwa
 现状（P4 完成；目标分层见 4.1 与 `架构与路线图-v2.md`，执行清单见 `TODO.md §5`）：
 
 ```
-串口字节 → 行缓冲 → dispatch() ─┬→ 别名表（40 条）→ wbus_call() → 对象 handler（13 个对象）
+串口字节 → 行缓冲 → dispatch() ─┬→ 别名表（43 条）→ wbus_call() → 对象 handler（14 个对象）
                                 └→ 旧 strcmp 链（25 条管道命令）
 LVGL 按钮 → 命令队列 → wireless_console_execute()
                                      wb_reply_t sink（serial_console.cpp 注入）统一打印
@@ -152,7 +160,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 
 - wbus（`components/wbus/`）是对象注册表 + 参数策略 + 事件的最小总线，**一个命令搬到对象表后，
   回执文本必须与旧 `strcmp` 分支逐字节一致**（测试与 `lab/*.py` 都靠它解析）。当前已迁移
-  **13 个对象 / 40 条别名**：`deauth` / `csa` / `delba` / `ba` / `wnm` / `tim` / `eapol` / `pspoll` /
+  **14 个对象 / 43 条别名**：`deauth` / `csa` / `delba` / `ba` / `btm` / `rrm` / `tim` / `eapol` / `pspoll` /
   `sae` / `authflood` / `probe` / `evil` / `radio`。新增/迁移命令时，回执一律走 `wb_reply_*()`，
   不要在新对象里直接 `Serial.print`。
 
@@ -165,7 +173,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
   驱动拒收（`ESP_ERR_NO_MEM`）时退避 5 ms 重试。这条约束修掉过"计数在涨但帧没出去"的缺陷，别改回去。
 - **所有注入走 `tx_guard_send()` / `tx_guard_send_as()`**（`src/tx_guard.cpp`，两个策略）：
   `kTxPolicyGuard`（45 ms 节拍，首个 `0x101` 打 `FATAL tx 0x101 ... policy=…` 后 `esp_restart()`）覆盖
-  CSA 与六个帧级模块；`kTxPolicyBurst`（不节拍，`0x101` 只计错退避）覆盖 deauth 与 DELBA/BA
+  CSA 与七个帧级模块（含 RRM）；`kTxPolicyBurst`（不节拍，`0x101` 只计错退避）覆盖 deauth 与 DELBA/BA
   （它们的多帧序列必须连发）。`BARSEQ` / `BATX` / `CTRLTEST` 这类"故意把池打空"的探针**必须**留在
   守卫之外，否则测不到它要测的东西。单播注入节拍上限约 20 帧/s（§11 第 7 条）——唯一例外是
   `pspoll.cpp`：PM 位帧在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s。
@@ -190,7 +198,8 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 | `deauth.cpp` | deauth 攻击、混杂回调 `sniffer()`、AP/STA 表、注入队列、逐 AP 计数、`attack_step()`、reason code 池、raw 帧构造 |
 | `csa.cpp` | CSA 欺骗（倒计时播报、单播/广播混合、新信道克隆 beacon、Auth 成功 / Assoc status 17） |
 | `delba.cpp` | DELBA 欺骗 + BA 会话劫持（DELBA → 伪造 ADDBA → BAR）、TID 学习 |
-| `wnm.cpp` | 802.11v BTM Request 欺骗：11v 能力学习、候选 Neighbor Report、Response 计数 |
+| `btm.cpp` | 802.11v BTM Request 欺骗：11v 能力学习、候选 Neighbor Report、Response 计数 |
+| `rrm.cpp` | 802.11k Neighbor Report Response 伪造：幻影邻居元素（52/13）、按 STA 轮询发送、count 限次 |
 | `tim.cpp` | 克隆 beacon 篡改 TIM（AID bitmap/DTIM）、AID 学习（TSF 那半已删除） |
 | `eapol.cpp` | EAPOL-Start/Logoff 洪泛：ToDS 数据帧 + LLC/SNAP 0x888E，收侧统计 EAP 包 |
 | `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
@@ -198,7 +207,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 | `pspoll.cpp` | 电源管理（PM 位）欺骗：伪造 PM=1 的帧让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；三种承载帧 `null`/`qosnull`（默认）/`action`；`pspoll_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
 | `tx_guard.cpp` | 统一注入入口 + 策略：`kTxPolicyGuard`（45 ms、首个 `0x101` 重启）/ `kTxPolicyBurst`（不节拍、`0x101` 退避），并集中记录 ok/err/throttled |
 | `radio.cpp` | 信道仲裁：`radio_set_channel(owner, ch)` 记录 owner，两个 owner 在 2 s 内抢同一信道时打 `WARN radio:`；`RADIO` 的 `owner=`/`rtake=` 来自这里 |
-| `bus_objects.cpp` | wbus 对象表：13 个对象（`deauth` / `csa` / `delba` / `ba` / `wnm` / `tim` / `eapol` / `pspoll` / `sae` / `authflood` / `probe` / `evil` / `radio`）的参数策略、handler、事件；handler 从 `serial_console.cpp` 原样搬来，回执字节不变 |
+| `bus_objects.cpp` | wbus 对象表：14 个对象（`deauth` / `csa` / `delba` / `ba` / `btm` / `rrm` / `tim` / `eapol` / `pspoll` / `sae` / `authflood` / `probe` / `evil` / `radio`）的参数策略、handler、事件；handler 从 `serial_console.cpp` 原样搬来，回执字节不变 |
 | `include/console_commands.h` | 总线与控制台的桥：`console_scan_count()`、`console_apply_reason()`、`console_ui_log()`、`wbus_register_all()` |
 | `components/wbus/` | 迷你 ubus：对象注册表、`wb_arg_spec_t` 参数策略、`wb_reply_t` 注入式输出、`EVT` 事件订阅。纯 C++，不依赖 Arduino/esp_* |
 | `ie_util.cpp` | IE 遍历、RSN AKM（SAE/PSK）、MFPR、Extended Capabilities bit19 判定 |
@@ -210,7 +219,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 
 上位机：`gui/protocol.py` 是纯函数解析层（`classify/parse_net/parse_status/parse_cred/parse_caps/band_of_channel`，
 无 Tk 无 IO），`gui/main.py` 是串口线程 + 页面 + 目标弹窗（`SerialLink`、`TargetDialog`、`DeautherApp`）。
-页面键：`home / deauth / one / all / only / except / probe / csa / delba / ba / evil / wnm / tim / eapol / sae / authflood / status / log`。
+页面键：`home / deauth / one / all / only / except / probe / csa / delba / ba / evil / btm / tim / eapol / sae / authflood / status / log`。
 
 **新增源文件必须同时加进 `firmware/main/CMakeLists.txt` 的 `SRCS`**，否则不会参与编译。
 **新增功能的两端顺序**：先在 `gui/protocol.py` 加解析（可单测）→ 再在 `main.py` 加控件；固件侧先加头文件 + 计数器，再在 `dispatch()` 接线。
@@ -279,12 +288,12 @@ python -m unittest discover -s tests -v
 
 - 端口打不开或固件无响应时，硬件相关测试类会 `SkipTest`（所以不接板子也能跑通，只是大部分跳过）。
 - 纯 Python 的协议解析用例（10 个）不需要硬件，任何时候都应通过。
-- 用例默认不发攻击帧，例外是 `PROBE_BROADCAST` 的 3 秒计数用例，以及 CSA/DELBA/BA 与六个帧级模块的
+- 用例默认不发攻击帧，例外是 `PROBE_BROADCAST` 的 3 秒计数用例，以及 CSA/DELBA/BA 与七个帧级模块的
   "起来 → 看计数器 → 停"用例（打扫描到的第一个 AP，1–2 秒内 `STOP`）。不要写长期洪泛或对多个 AP
   的自动化用例——那是 `lab/` 脚本（需要人明确执行）该干的事。
 - 硬件类用例在 `setUp` 里先发 `STOP/CSASTOP/DELBASTOP/BASTOP` 清残留状态（CSA 自动模式会停在 5G 信道，残留会让后续扫描偶发失败），
   新用例也要遵守这个清理约定。
-- 自动化覆盖：协议解析、PING/HELP/STATUS/SCAN、参数校验、`DELBATEST`/`BATEST`/`WNMTEST`/`TIMTEST`/
+- 自动化覆盖：协议解析、PING/HELP/STATUS/SCAN、参数校验、`DELBATEST`/`BATEST`/`BTMTEST`/`RRMTEST`/`TIMTEST`/
   `EAPOLTEST`/`SAETEST`/`AUTHFLOODTEST` 帧字节、`UISCREEN` 逐屏切换、堆稳定性、命令洪泛、垃圾字节、
   PING/STATUS/扫描耗时、LVGL 就绪与弹窗行数/堆余量。
 - 空口层面的验证不在 unittest 里：用 C5 的抓包管道 + `lab/cap_frames.py`（帧字段）与
@@ -297,8 +306,13 @@ python -m unittest discover -s tests -v
   并在提交信息里说明**。
 - 管道没起时的兜底：`lab/tim_air.py` 用 `lab/rf_throughput` 的 `sniff <ch>`（COM6 当 beacon
   嗅探器）核对 TIM 元素字节。端到端脚本 `lab/tim_ps.py`（TIM vs 真实省电 STA）与
-  `lab/btm_sta.py`（BTM vs 真实 11v STA，判据 `wnmresp>0`）需要两块 lab 板 + 攻击板同时在位，
+  `lab/btm_sta.py`（BTM vs 真实 11v STA，判据 `btmresp>0`）需要两块 lab 板 + 攻击板同时在位，
   `lab/rf_throughput` 的 STA 角色要 `ps 1` / `btm 1`（后者需要 `CONFIG_ESP_WIFI_11KV_SUPPORT=y`）。
+- 客户端侧的 BTM / RRM 判据用 `lab/victim_btm/`（11KV 打开，日志里找 `reason=12 BSS_TRANSITION!`）。
+  实测结论见 `firmware/测试报告.md §4.4.12`：候选是幻影时 STA 回 BTM Response 但不动；
+  **环境里有同 SSID/同口令的第二个 BSS 时，一条伪造 BTM 能把真实 STA 拐走**
+  （`reason=207 ROAMING`，本机 IDF 不用 12）。**跑这类实验前必须 `ps 0`**——驱动默认
+  `WIFI_PS_MIN_MODEM`，睡着的 STA 只在 DTIM 附近开窗，第三方注入的单播帧大部分听不见（踩过）。
 - 上位机冒烟（不建窗口，可用于验证导入/布局没有崩）：
 
 ```powershell
@@ -319,7 +333,7 @@ python main.py --self-test
 - 改功能时按需同步：`README.md`（能力矩阵/协议速查）、`firmware/README.md`（协议/行为/限制）、`firmware/测试报告.md`（实测数据）、
   `TODO.md`（状态 `[x]/[~]/[ ]`）、`gui/README.md`（页面与命令映射）。
 - 不要提交：`build*`、`managed_components/`、`sdkconfig`、`sdkconfig*.old`、`__pycache__/`、`*.bin/*.elf/*.map`；
-  根 `.gitignore` 还排除了 `/blog/`、`/参考博文/`、`/lab/rf_throughput/sdkconfig.c5` 与上游参考树。
+  根 `.gitignore` 还排除了 `/blog/`、`/参考博文/`、`/lab/rf_throughput/sdkconfig.c5`、`/lab/victim_btm/sdkconfig.c5` 与上游参考树。
   这些目录在磁盘上存在是正常的，不要"顺手加进 git"。
 - 仓库没有任何 CI；"构建 + 接板子跑 unittest + `--self-test`"就是提交前的验证清单。
 
@@ -364,7 +378,7 @@ python main.py --self-test
    `0x101`、40 帧/s → 117 帧、30/20 帧/s → 45 s 各 1350/900 帧零拒收；广播克隆 beacon 50 帧/s
    → 3000 帧零拒收（无需 ACK，缓存立刻回收）。精确占用时长不可观测（`tx_cb` 对注入帧不回调）。
    `tx_guard.cpp` 现在按策略节拍（`tx_guard_send_as()`）：`kTxPolicyGuard` 强制单播 45 ms 间隔、
-   首个 `0x101` 立即重启，覆盖六个帧级模块 + `CSA`；`kTxPolicyBurst` 不节拍、`0x101` 只退避，
+   首个 `0x101` 立即重启，覆盖七个帧级模块 + `CSA`；`kTxPolicyBurst` 不节拍、`0x101` 只退避，
    覆盖 deauth 与 `DELBA`/BA——它们长跑 19–25 帧/s（在排水速率以下），且 deauth 的"2 单播 + 1 广播"
    与 BA 的 DELBA→ADDBA→BAR 都必须连发，加间隔会静默丢帧。`SAE` 的 `gap_ms` 低于 50 会被抬高并打 `INFO`，
    `STATUS` 的 `txg=` 是被策略挡下的帧数（不算错误）。`BARSEQ`/`BATX` 这类"故意打空池"的探针永在守卫外。

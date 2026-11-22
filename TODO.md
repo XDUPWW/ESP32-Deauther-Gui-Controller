@@ -65,7 +65,7 @@
 
 | 状态 | 条目 | 交付物 | 怎么算完成 |
 | --- | --- | --- | --- |
-| `[x]` | **802.11v BTM Request 欺骗**（PMF 不保护，等同 deauth 但"合法"）：`cand` 带幻影候选 BSS、`bare` 不带；11v 能力从客户端的 Extended Capabilities bit19 学习，不支持的跳过；`sta-mac` 可指定目标 | `src/wnm.cpp`、`WNM <idx> [cand\|bare] [timer] [ch] [sta-mac]` / `WNMSTOP` / `WNMTEST` | 空口抓包 `cat=10 act=7 req_mode=0x05 timer=10` + Neighbor Report 候选（`测试报告 §4.4.1`）；端到端已试（§4.4.8）：真实 11v STA 会声明能力（`wnmc=1`）但**不回 BTM Response**（`wnmresp=0`），ESP-IDF 没有公开 BTM 事件，换客户端才能继续 |
+| `[x]` | **802.11v BTM Request 欺骗**：单一形态（不带候选列表，实测只有这一种能把 STA 拐走）；11v 能力从客户端的 Extended Capabilities bit19 学习，不支持的跳过；`sta-mac` 可指定目标 | `src/btm.cpp`、`BTM <idx> [timer] [sta-mac]` / `BTMSTOP` / `BTMTEST` | 空口抓包 `cat=10 act=7 req_mode=0x05 timer=10` + Neighbor Report 候选（`测试报告 §4.4.1`）；端到端已试（§4.4.8）：真实 11v STA 会声明能力（`btmc=1`）但**不回 BTM Response**（`btmresp=0`），ESP-IDF 没有公开 BTM 事件，换客户端才能继续 |
 | `[x]` | **TIM 投毒**（克隆 beacon 按 AID 置位/清空 bitmap、DTIM count 归 0） | `src/tim.cpp`、`TIM <idx> [tim\|clear] [aid]` / `TIMSTOP` / `TIMTEST` | 空口抓包 TIM 元素逐字节正确、克隆频率 5×真 AP（§4.4.1）；AID 位编码已修正并在空口复测（`bitmap=08`，§4.4.7）；端到端已做（§4.4.8）：**对真实省电 STA 的吞吐无影响**（变化在噪声内：+10%/+3%，样本 12–18 个；deauth 阳性对照成立） |
 | `[x]` | ~~**TSF 投毒**~~ —— 结论：**本硬件不可实现，已删除**。MAC 用接口自己的 TSF 覆盖 beacon 的 timestamp（未关联时报 0），与 Duration 同源的字段重写 | —（`tsf`/`both` 模式与 `ttsf=` 字段已移除） | `last_tsf=654632723879` vs 空口 `tsf=0`（§4.4.3） |
 | `[x]` | **EAPOL-Start/Logoff 洪泛**：ToDS 数据帧 + LLC/SNAP 0x888E，伪造受害 STA，Start/Logoff 交替，QoS(TID6)/非 QoS 两种形态 | `src/eapol.cpp`、`EAPOL <idx> [tid\|-1] [sta-mac]` / `EAPOLSTOP` / `EAPOLTEST` | 空口抓包 `ver=2 type=1/2` 双向交替（§4.4.1）；**WPA2-PSK 的华为 AP 完全忽略，`eaprxreq` 为 0**，需要 802.1X/WPA-Enterprise 环境才能验证效果 |
@@ -73,7 +73,8 @@
 | `[x]` | **Auth/Assoc 洪泛 + WPA3 自动升级**：随机身份轮换、Assoc Request 带目标 SSID/RSN IE、嗅到 AKM 含 SAE 自动转 SAE 洪泛 | `src/authflood.cpp` + `sae.cpp` 的 `sae_classify()`，`AUTHFLOOD <idx> [both\|auth\|assoc] [noauto]` / `AUTHFLOODSTOP` / `AUTHFLOODTEST` | 空口 817 帧、AP 回 `status=0`（接受了伪造身份，§4.4.2）；**未压到表满（status 17）** |
 | `[x]` | **单播注入的速率上限与"永不 NOMEM"**：50 帧/s → 63 帧 `0x101`、40 帧/s → 117 帧、30/20 帧/s → 45 s 各 1350/900 帧零拒收、广播 50 帧/s → 3000 帧零拒收；固件改成由整流器强制单播 45 ms 间隔，`SAE` 的 `gap_ms` 低于 50 自动抬高，CSA 也接入 | `tx_guard.h`/`tx_guard.cpp` + `lab/pool_limit.py` + `lab/soak.py` | 数据见 §4.4.4/§4.4.5；判据 = 长跑 `STATUS` 的 `txgerr` 恒 0 且无 `FATAL tx 0x101` |
 | `[ ]` | **WPA3 AP 上的 SAE 量化**：需要真 WPA3-SAE AP，看 `status 76 → token 回显 → saetok/saeecho`，并用合法 STA 的往返时延劣化做效果判据 | 实验台 | `saetok>0`、`saeecho>0`，且合法 STA 的 ping RTT 明显上升 |
-| `[~]` | **BTM 的端到端验证** —— 已做（§4.4.8）：ESP32-C5 STA 开 11v 后 `wnmc=1`（能力对）但 `wnmresp=0`（不回 BTM Response），ESP-IDF 无 BTM 事件可观察 | `lab/btm_sta.py` | **结论：需要 wpa_supplicant/Android 类客户端才能判「是否处理」** |
+| `[x]` | **802.11k RRM：伪造 Neighbor Report Response**（category 5 / action 5，元素 52/13）：幻影邻居 + `count` 限次 + `token`/`info`/`opclass`/`phy` 可注入；STA 从嗅探里学（不判 11k 能力位） | `src/rrm.cpp`、`RRM <idx> nbr <bssid> <ch> [count] [token] [info] [opclass] [phy] [sta-mac]` / `RRMSTOP` / `RRMTEST` | 空口（COM6 `MON`+`RXLOG`）：`type=0 sub=13 len=46 cat=5 act=5 nch=52 cnt=13`，TA=AP BSSID（`测试报告 §4.4.11`）；**客户端是否采信未请求的 response 未验证** |
+| `[x]` | **BTM 的端到端验证** —— 已做（§4.4.12）：候选是幻影时 STA 回 BTM Response 但不动；**第二个 BSS 真实存在（同 SSID/同口令/ch6）时，伪造 BTM 把已关联的真实 STA 拐到我们软 AP 上**（`reason=207 ROAMING`，0.072 s 切完并从我们的 DHCP 拿 IP；90 s 静默对照不移动） | `lab/victim_btm/`（STA + softAP 两角色）、`lab/btm_sta.py` | ESP-IDF 上报 207 而非 12；带随机幻影候选的形态已删除（无效），改为可选 `cand-bssid` 指定真实 BSS（实测 0.099 s 拐走）|
 | `[~]` | **TIM 投毒的效果量化** —— 已做（§4.4.8）：PS STA（−16% 基线差）+ 三阶段吞吐对比，**无可测影响**；deauth 阳性对照成立（6 次掉线 / −90% 速率） | `lab/tim_ps.py` | 结论：克隆 beacon 缺 TSF 时间基准，睡眠 STA 大概率不按它调度 |
 
 ## 3. 界面
@@ -237,7 +238,7 @@ PSPOLL 那一次的实测成本：`serial_console.cpp` +200 行、`deauth.cpp` 3
 
 ### P4 余下 8 个模块（2026-11-18 完成）
 
-所有**攻击与射频模块**都已搬到 wbus 对象表：`deauth` / `csa` / `delba` / `ba` / `wnm` / `tim` /
+所有**攻击与射频模块**都已搬到 wbus 对象表：`deauth` / `csa` / `delba` / `ba` / `btm` / `tim` /
 `eapol` / `pspoll` / `sae` / `authflood` / `probe` / `evil` / `radio`，共 13 个对象、40 条别名。
 加一个攻击现在是三处数据：驱动表一行（`attack_module_t`）、对象表一张（方法 + 参数策略 + handler）、
 别名表一行；`deauth.cpp` 的热路径与 `serial_console.cpp` 的 `strcmp` 链都不用动。
@@ -257,7 +258,7 @@ bus_objects.cpp      0 → 约 1300 行（13 个对象，回执与旧实现逐�
 - [x] `delba` + `ba` 对象（`start` / `stop` / `test`，`attack` / `plant` / `push` / `tx`）：
       9 条旧命令（`DELBA` / `DELBASTOP` / `DELBATEST` / `BAATTACK` / `BAPLANT` / `BARPUSH` / `BATX` /
       `BASTOP` / `BATEST`）走别名表
-- [x] `wnm`、`tim`、`eapol`、`sae`、`authflood`、`pspoll` 六个对象 + `radio` 对象 + `probe` / `evil`：
+- [x] `btm`、`tim`、`eapol`、`sae`、`authflood`、`pspoll` 六个对象 + `radio` 对象 + `probe` / `evil`：
       27 条命令（`WNM*` / `TIM*` / `EAPOL*` / `SAE*` / `AUTHFLOOD*` / `PSPOLL*` / `RADIO` /
       `PROBE_BROADCAST` / `EVILTWIN` / `EVILTWIN_STOP` / `CREDS`）+ `DEAUTH_ALL` / `DEAUTH_ONLY` /
       `DEAUTH_EXCEPT` 三个方法。`pspoll` 的 `[sta-mac] [null|qosnull|action]` 自由顺序靠

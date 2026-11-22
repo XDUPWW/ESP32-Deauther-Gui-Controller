@@ -33,7 +33,7 @@
                         ▼                                │
         ┌──────────────────────────────────────────────┐ │
         │ 攻击模块层（每个模块一个 .cpp + 一个 .h）      │ │
-        │ deauth  csa  delba  wnm  tim  eapol  sae      │ │
+        │ deauth  csa  delba  btm  tim  eapol  sae      │ │
         │ authflood  evil_twin                          │ │
         └──────┬──────────────────────────┬────────────┘ │
                │ 组帧：手写字节 + IE 解析   │ 发射          │
@@ -391,7 +391,7 @@ MAC 头 24 字节（本工程所有帧都从这几个偏移开始）：
 
 1. `DEAUTH` 最简单：`build_deauth_ex()` 只有 26 字节 → 看 `DELBATEST`（30 字节，管理动作帧带类别/动作）
    → `BATEST`（ADDBA 33 字节 / BAR 20 字节，控制帧没有 Addr3）→ `EAPOLTEST`（数据帧 + LLC/SNAP）
-   → `WNMTEST`（管理动作帧 + 元素）→ `TIMTEST`（beacon + 元素）。
+   → `BTMTEST`（管理动作帧 + 元素）→ `TIMTEST`（beacon + 元素）。
 2. 每次先看串口打印的 `len=` 和 `hex=`，**手算**每个字段的偏移，再与《攻击原理》对应节的帧图核对。
 3. 元素（IE）的通用结构是 `id(1) + len(1) + body(len)`，`ie_util.cpp` 的 `ie_find()` 就是按这个走的。
 
@@ -412,7 +412,7 @@ MAC 头 24 字节（本工程所有帧都从这几个偏移开始）：
 | 1 | Auth/Assoc 洪泛 | `authflood.cpp`（`build_auth` → `build_assoc` → `authflood_step` → `authflood_on_rx`） | 每个随机 MAC 先认证再关联，消耗 AP 的 station 表 | `aff` 涨、`afids` 涨、`afst=0`（被接受）/`17`（表满） |
 | 2 | SAE Commit 洪泛 | `sae.cpp`（`build_commit` → `store_token` → `sae_classify` → `sae_step`） | 每个 commit 让 WPA3 AP 做一次 ECC 标量乘 | `saef`、`saec`、`saeresp`、`saecode`（76=要 token） |
 | 3 | EAPOL | `eapol.cpp`（`build_eapol` → `eapol_step` → `eapol_on_rx`） | 伪造成 STA 发 Start/Logoff，搅 802.1X 端口状态机 | `eaprxreq>0` 才算真踢动（本工程对 PSK AP 实测为 0） |
-| 3 | WNM（BTM） | `wnm.cpp`（`build_btm_request` → `learn_capabilities` → `wnm_step`） | 伪造 AP 劝客户端漫游/离网 | `wnmc`（支持 11v 的 STA 数）、`wnmresp`（有应答才算端到端） |
+| 3 | BTM 强制漫游 | `btm.cpp`（`build_btm_request` → `learn_capabilities` → `btm_step`） | 伪造 AP 劝客户端漫游/离网 | `btmc`（支持 11v 的 STA 数）、`btmresp`（有应答才算端到端） |
 | 4 | TIM | `tim.cpp`（`build_tim` → `learn_beacon` → `note_aid` → `tim_step`） | 克隆 beacon 改 TIM 位图 | `timf`、`timreal>0`（学到真 beacon）、`timaid` |
 | 4 | PM 位欺骗 | `pspoll.cpp`（`build_null_data`/`build_qos_null`/`build_action` → `pspoll_step` → `pspoll_on_rx` → `pspoll_release`） | 伪造 STA 的"我睡了"（PM=1），让 AP 把下行缓存起来；PM 位可装在三种帧里 | `pspf`、`pspfrm`、`pspnul/pspfl`（PM=1/PM=0）、`pspdl`（发向受害者的下行帧） |
 | 4 | CSA | `csa.cpp`（`build_csa_action` → `build_beacon` → `send_csa_round` → `csa_step`） | 通告换信道，然后在新信道顶克隆 beacon | `csaf`、`csa=announce/hold`、`csaauth/csarej` |
@@ -600,12 +600,12 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
         ├─ deauth.cpp ─────┼── 被所有攻击模块调用：attack_sniffer_enable()
         │   │              │   attack_stop() / attack_step() / build_* 工具
         │   └─ sniffer()   │
-        │        └── 分发 ─┼─→ csa_on_rx / delba_on_rx / wnm_on_rx
+        │        └── 分发 ─┼─→ csa_on_rx / delba_on_rx / btm_on_rx
         │                  │   tim_on_rx / eapol_on_rx / sae_on_rx / authflood_on_rx
         │
         ├─ csa.cpp        ── tx_guard_send()
         ├─ delba.cpp      ── 自己的 tx()（长跑在排水速率以下，故意不接守卫）
-        ├─ wnm.cpp        ── tx_guard_send() + ie_util
+        ├─ btm.cpp        ── tx_guard_send() + ie_util
         ├─ tim.cpp        ── tx_guard_send() + ie_util
         ├─ eapol.cpp      ── tx_guard_send()
         ├─ sae.cpp        ── tx_guard_send() + ie_util
@@ -620,8 +620,8 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
 | 底座 | 提供 | 使用者 |
 | --- | --- | --- |
 | `deauth.cpp` | `attack_sniffer_enable()`、`attack_stop()`、`attack_step()`、`attack_rx_*`、`find_ap`、注入队列 | 所有攻击模块（每个 `*_start()` 都会调 `attack_sniffer_enable()`；`attack_step()` 里依次调 7 个 `*_step()`） |
-| `tx_guard.cpp` | `tx_guard_send()` + 三个计数 | `csa`、`wnm`、`tim`、`eapol`、`sae`、`authflood` |
-| `ie_util.cpp` | `ie_find` / `rsn_has_akm_sae` / `rsn_has_akm_psk` / `rsn_mfpr_required` / `extcap_has_bss_transition` | `tim`、`authflood`、`sae`、`wnm`（`csa` 自己写了一份等价的 IE 遍历；`rsn_mfpr_required` 目前无人调用） |
+| `tx_guard.cpp` | `tx_guard_send()` + 三个计数 | `csa`、`btm`、`tim`、`eapol`、`sae`、`authflood` |
+| `ie_util.cpp` | `ie_find` / `rsn_has_akm_sae` / `rsn_has_akm_psk` / `rsn_mfpr_required` / `extcap_has_bss_transition` | `tim`、`authflood`、`sae`、`btm`（`csa` 自己写了一份等价的 IE 遍历；`rsn_mfpr_required` 目前无人调用） |
 
 ## 2.2 分层拆解（每层只干一件事）
 
@@ -758,7 +758,7 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
 - 协议层：`firmware/src/serial_console.cpp`（`dispatch` / `do_*` / `handle_serial_console` / `scan_task`）
 - 守卫：`firmware/src/tx_guard.cpp`（`tx_guard_send`）
 - 解析：`firmware/src/ie_util.cpp`（5 个函数）
-- 攻击：`firmware/src/{deauth,csa,delba,wnm,tim,eapol,sae,authflood,evil_twin}.cpp`
+- 攻击：`firmware/src/{deauth,csa,delba,btm,rrm,tim,eapol,sae,authflood,evil_twin}.cpp`
 - 界面：`firmware/components/wireless_ui/src/{ui.c,ui_port.c,calib.c}`、`include/wireless_ui.h`
 - 字库：`firmware/tools/gen_cjk_font.py`、`components/wireless_ui/fonts/lv_font_ui_cjk.c`
 - 存储：`firmware/src/storage.cpp`、`components/wireless_ui/src/calib.c`
