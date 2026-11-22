@@ -52,8 +52,8 @@
 | 5 | DELBA 欺骗 | `delba.cpp` | `DELBA` `DELBATEST` | 双向单播（学了 TID）或广播兜底 | mgmt / 13，cat 3 act 2 | Block Ack 会话管理 | 每个 TID 的聚合会话 | **被拦**（cat 3 属 robust） | 吞吐 −99%（非 PMF 链路）✅ |
 | 6 | BA 会话劫持 | `delba.cpp` | `BAATTACK` `BAPLANT` `BARPUSH` `BATEST` `BATX` `BARSEQ` | DELBA+ADDBA+BAR 持续 / 只种窗口 / 只推 BAR | mgmt / 13 cat 3 act 0 + ctrl / 8 | Block Ack 重排窗口 | ADDBA 的 SSN → WinStartB | **被拦**（同上） | ESP-IDF 目标 ✅ 冻结；mac80211 未实测 |
 | 7 | BTM 强制漫游（steering） | `btm.cpp` | `BTM` `BTMTEST` | Disassociation Imminent + timer；诱饵 AP 在跑时自动把候选指向它，也可用 `cand-bssid` 显式指定 | mgmt / 13，cat 10 act 7 | 802.11v / 漫游决策 | BTM Request + Extended Capabilities | **被拦**（cat 10 属 robust，需 PMF 关闭） | 端到端 ✅（真实 STA 漫游到我们软 AP，`reason=207`）|
-| 8 | TIM 投毒 | `tim.cpp` | `TIM` `TIMTEST` | tim（按 AID 置位）/ clear（清空位图） | mgmt / 8 + IE 5 | 省电（PS）调度 | DTIM/TIM 位图 | **不受保护**（beacon） | 帧字段 ✅，客户端省电行为未实测 |
-| 13 | PS 位欺骗（电源管理） | `pspoll.cpp` | `PSPOLL` `PSPOLLREL` `PSPOLLSTOP` `PSPOLLTEST` | 持续伪造 PM=1（每第 6 帧换 PM=0 释放）；帧型可选 null/qosnull/action | data 4 / data 12 / mgmt 13 cat 127 | 省电（PS）状态机 | PM 位声明 + TIM 缓存 | **不受保护**（PM 位与厂商自定义 Action 都不在 robust 集合里） | 三种帧型空口 ✅，吞吐 −21…−38%、零掉线 ✅ |
+| 8 | ~~TIM 投毒~~（已下线） | —（`tim.cpp` 已删除） | — | — | mgmt / 8 + IE 5 | 省电（PS）调度 | DTIM/TIM 位图 | **不受保护**（beacon） | 帧字段 ✅，客户端省电行为无影响（§8） |
+| 13 | QoS Null PM 位欺骗（电源管理） | `qosnull.cpp` | `QOSNULL` `QOSNULLREL` `QOSNULLSTOP` `QOSNULLTEST` | 伪造单播 QoS Null，持续 PM=1（每第 6 帧换 PM=0 释放） | data 12（ToDS） | 省电（PS）状态机 | PM 位声明 + TIM 缓存 | **不受保护**（数据帧的 PM 位不在 robust 集合里） | 三种帧型空口 ✅，吞吐 −21…−38%、零掉线 ✅ |
 | 9 | EAPOL-Start/Logoff | `eapol.cpp` | `EAPOL` `EAPOLTEST` | Start 与 Logoff 交替；非 QoS 与 QoS(TID) 交替 | data / 0、8 + LLC/SNAP 0x888E | 802.1X 认证（端口状态机） | EAPOL PDU、受控/非受控端口 | 未加密数据帧可能被丢 | 帧上空气 ✅，该 AP 无回应 |
 | 10 | SAE Commit 洪泛 | `sae.cpp` | `SAE` `SAETEST` | point（合法点）/ rand（对照）；身份每 4 帧轮换 | mgmt / 11，alg 3 seq 1 | SAE 握手（WPA3） | ECC 标量乘 + 反 clogging token | 无（认证帧本就不加密） | 帧上空气 ✅，AP 回 status 13（非 WPA3） |
 | 11 | Auth/Assoc 洪泛 | `authflood.cpp` | `AUTHFLOOD` `AUTHFLOODTEST` | both（Auth→Assoc→换身份）/ auth / assoc；WPA3 自动升级 SAE | mgmt / 11 alg 0 + mgmt / 0 | 认证 + 关联（station 表） | 每个身份一条状态机 | 无（auth/assoc 从不加密） | AP 回 status 0（接受了伪造身份）✅ |
@@ -613,7 +613,10 @@ BAITAPSTOP               -> [STA] BEACON_TIMEOUT，0.25 s 回连原 AP
 客户端 35 s 一动不动（`rrmreq=0`，它从不发 Neighbor Report Request）。
 11k 的邻居报告是"参考信息"，没有强制力；能把人赶走的只有 BTM。RRM 单独只能算帧级验证。
 
-## 8. TIM 投毒（`tim.cpp`）
+## 8. TIM 投毒（已下线，`tim.cpp` 已删除）
+
+> 这个模块在 2026-11-22 按计划下线，固件里已经没有 `TIM` / `TIMSTOP` / `TIMTEST` 命令。
+> 本节保留协议原理与当时的实测结论，供以后重新评估用；下面的 CLI 与行号都是历史记录。
 
 - CLI：`TIM <idx> [tim|clear] [aid]`、`TIMSTOP`、`TIMTEST`
 - 入口：`tim.cpp`（`build_tim()` :146，`build_beacon()` :197，AID 学习 `note_aid()` :89）
@@ -1015,14 +1018,14 @@ deauth 逼客户端重连），它换了一条路：用 `WiFi.softAP()` 起一�
 
 ---
 
-## 13. PS 位欺骗：伪造电源管理状态（`pspoll.cpp`）
+## 13. QoS Null PM 位欺骗（`qosnull.cpp`）
 
-- CLI：`PSPOLL <idx> [sta-mac] [null|qosnull|action]`、`PSPOLLREL`、`PSPOLLSTOP`、`PSPOLLTEST`
-- 入口：`pspoll.cpp`（构造 `build_null_data()` / `build_qos_null()` / `build_action()`，
-  节拍 `pspoll_step()`，撤销 `pspoll_release()`）
+- CLI：`QOSNULL <idx> [sta-mac]`、`QOSNULLREL`、`QOSNULLSTOP`、`QOSNULLTEST`
+- 入口：`qosnull.cpp`（构造 `build_qos_null()`，节拍 `qosnull_step()`，撤销 `qosnull_release()`）
 - 与 §8 的 TIM 投毒是同一台机器的两面：**TIM 改的是 AP 的 beacon**（告诉客户端"有你的帧"），
   **这里改的是 STA 的电源管理声明**（告诉 AP"我睡了，别发"）。两者可以叠加（§13.3 末）。
-- 这个"我睡了"可以用三种帧承载，各家协议栈认的不是同一种，所以帧型可切（§13.2）。
+- 承载帧只留了一种：**单播 QoS Null**（data 12，26 字节，ToDS）。早期还试过 Null Data 和
+  厂商自定义 Action，实测 QoS Null 最强（§13.4），其余两种下线，CLI 也就没有帧型参数了。
 
 ### 13.1 协议层定位
 
@@ -1047,7 +1050,8 @@ AP 在 DTIM beacon 之后直接发，legacy PS 模式下 STA 发 PS-Poll 取。
 
 ### 13.2 帧格式
 
-三种帧型只差帧头，PM 位的位置完全一样（帧控制第二字节 bit 4，即 `0x10`）：
+早期三种帧型只差帧头，PM 位的位置完全一样（帧控制第二字节 bit 4，即 `0x10`）。下表保留下来
+是为了说明"哪种字段属于哪种帧"，现行模块只走 `qosnull` 那一列：
 
 ```
 null     24B: FC 0x1148 | Dur 2B | Addr1 BSSID | Addr2 受害STA | Addr3 BSSID | Seq 2B
@@ -1065,17 +1069,16 @@ action   29B: FC 0x10D0 | Dur 2B | Addr1 BSSID | Addr2 受害STA | Addr3 BSSID |
 | 额外字段 | 无载荷 | QoS Control 2B：TID=0、Normal Ack、无 A-MSDU | category 127 + action 0 + 3B OUI |
 | PM=0 版本 | 高字节 `0x01` | 高字节 `0x01` | 高字节 `0x00` |
 
-【实现】`PSPOLLTEST` 把三种帧（PM=1）与 PM=0 版本一次性打出来，例如实测输出：
+【实现】`QOSNULLTEST` 把 PM=1 与 PM=0 两帧一次性打出来（2026-11-22 台架实测输出）：
 
 ```
-PSPOLLTEST null    hex=4811000002112233445502AABBCCDDEE021122334455F0FF
-PSPOLLTEST qosnull hex=C811000002112233445502AABBCCDDEE021122334455F0FF0000
-PSPOLLTEST action  hex=D010000002112233445502AABBCCDDEE021122334455F0FF7F00001122
-PSPOLLTEST awake   len=24 fc=0x0148 pm=0
+QOSNULLTEST pm=1 len=26 fc=0x11C8 tods=1 tid=0 ra=02:11:22 ta=02:AA:BB da=02:11:22
+QOSNULLTEST hex=C811000002112233445502AABBCCDDEE021122334455F0FF0000
+QOSNULLTEST pm=0 len=26 fc=0x01C8 tods=1 tid=0 ra=02:11:22 ta=02:AA:BB da=02:11:22
+QOSNULLTEST hex=C801000002112233445502AABBCCDDEE021122334455F0FF0000
 ```
 
-【实现】本模块**不使用 `ie_util.cpp`**：三种帧都没有元素（Action 的 body 是 category/action/OUI，
-不是 IE），见附录 D。
+【实现】本模块**不使用 `ie_util.cpp`**：QoS Null 没有元素（QoS Control 不是 IE），见附录 D。
 
 【历史·已删除】PS-Poll 是 16 字节控制帧：`FC 0x00A4 | Duration/ID = 0xC000|AID | Addr1=BSSID |
 Addr2=受害 STA`。它的 `Duration/ID` 确实能原样出空气（附录 A 有实测），但**单播**的这种帧本 MAC
@@ -1095,20 +1098,18 @@ Addr2=受害 STA`。它的 `Duration/ID` 确实能原样出空气（附录 A 有
 不是"断网"**。实测三种帧型都是这个量级（§13.4）。
 
 【标准】另外两个衰减机制：AP 对缓存帧有**老化超时**，且重传耗尽后会**丢弃**，所以效果是
-"延迟 + 丢包"，不是永久阻断；反过来，关联一直保持，`psprxp`（真 PS-Poll 计数）也不会动——
-ESP-IDF 站点按 DTIM 收帧，压根不发 PS-Poll。
+"延迟 + 丢包"，不是永久阻断；反过来，关联一直保持——ESP-IDF 站点按 DTIM 收帧，压根不发 PS-Poll。
 
 【实测】每第 6 帧的 PM=0 是**故意**的：它让 AP 把攒下的帧"放"给一个并不在听的站（这些帧被浪费
-掉），把"延迟"变成"丢失"；`PSPOLLREL` 就是把这件事手动做一次（撤销）。
+掉），把"延迟"变成"丢失"；`QOSNULLREL` 就是把这件事手动做一次（撤销）。
 
-【防护】PMF（802.11w）**不覆盖**：数据帧的 PM 位不在保护范围，而 `action` 用的类别 127 是
-robust 集合之外的那几个类别之一（§1 脚注）。这是本模块相对 §2 deauth、§5 DELBA、§7 BTM 的差异——
-那三条在强制 PMF 的 WPA3 网络上会被客户端驱动丢弃，这里不会。
+【防护】PMF（802.11w）**不覆盖**：数据帧的 PM 位不在保护范围（robust 集合只点了管理帧的类别）。
+这是本模块相对 §2 deauth、§5 DELBA、§7 BTM 的差异——那三条在强制 PMF 的 WPA3 网络上会被客户端
+驱动丢弃，这里不会。
 
 【失效条件】①受害者的上行帧持续翻盘（实测就是这个，见 §13.4）；②AP 的 PS 状态有很短的超时；
-③AP 只认某一种帧型（这就是三种可切的原因，实测这台 softAP 三种都认）；④TA 不属该 BSS；
-⑤多 AP/漫游场景里 TA 落到另一个 BSSID；⑥AP 对厂商自定义 Action 直接丢弃时，`action` 只退化成
-"一帧普通管理流量"（PM 位是否被读取决于 AP 的 MAC 实现，未单独量化）。
+③AP 不认非 QoS 的省电声明（QoS Null 是 WMM 关联下的通用形式，实测最稳）；④TA 不属该 BSS；
+⑤多 AP/漫游场景里 TA 落到另一个 BSSID。
 
 【标准/推测】**与 §8 TIM 投毒的叠加**（组合攻击，**未做双模块实测**）：TIM 让客户端"以为有帧/
 以为没帧"，PS 位让 AP"以为客户端睡了"。叠加的直觉效果是"AP 攒着、客户端也不来取"，但两条路径各有
@@ -1119,8 +1120,10 @@ robust 集合之外的那几个类别之一（§1 脚注）。这是本模块相
 【实现】注入路径与其它帧级模块相同：`tx_guard_send()` → `esp_wifi_80211_tx(WIFI_IF_STA, ...)`，
 单播（AP 会 ACK）所以走整流器。
 
-【实测】**三种帧型都上空气，PM 位都是我们写进去的**（2026-11-15，`lab/pspoll_air.py`：
-COM6 同时跑 softAP 与 `sniffpoll 6`，COM5 注入，每种 4 s）：
+【实测·历史】下面是三帧型版本（2026-11-15）留下的数据，脚本 `lab/pspoll_air.py` /
+`lab/pspoll_ps.py` 已随模块收敛删除。现行版本只发 `qosnull` 那一行：
+
+**三种帧型都上空气，PM 位都是我们写进去的**（COM6 同时跑 softAP 与 `sniffpoll 6`，COM5 注入，每种 4 s）：
 
 | 帧型 | 抓到的 PM=1 帧 | 抓到的 PM=0 帧 | 空口示例 |
 | --- | --- | --- | --- |
@@ -1130,8 +1133,7 @@ COM6 同时跑 softAP 与 `sniffpoll 6`，COM5 注入，每种 4 s）：
 
 （`len` 含 4 字节 FCS，所以是 24/26/29 + 4。）
 
-【实测】**三种帧型都能把下行压下去，QoS Null 最强**（2026-11-15，`lab/pspoll_ps.py`：
-AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
+【实测】**三种帧型都能把下行压下去，QoS Null 最强**（AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
 
 | 阶段 | AP 侧 RATE（KiB/s） | 相对 baseline | STA 掉线 |
 | --- | --- | --- | --- |
@@ -1139,10 +1141,10 @@ AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
 | `null` | 247 | **−29.6%** | 0 |
 | `qosnull` | 217 | **−38.2%** | 0 |
 | `action` | 280 | **−20.5%** | 0 |
-| 每次 `PSPOLLREL` 之后 | 407–449 | +16…+28% | 0 |
+| 每次撤销（PM=0）之后 | 407–449 | +16…+28% | 0 |
 
-所以默认帧型取 `qosnull`（CLI 不写帧型时用它）。`pspdl`（发向受害者的下行数据帧）在整个攻击期间
-一直增长——AP 仍在往那个 MAC 发帧，效果是"抢不到/被丢弃"，不是"完全静默"。
+这就是只留 `qosnull` 的依据。`qndl`（发向受害者的下行数据帧）在整个攻击期间一直增长——AP 仍在往
+那个 MAC 发帧，效果是"抢不到/被丢弃"，不是"完全静默"。
 
 【实测】**节拍必须 10 帧/s，不是 20**：20 帧/s 下约 170–400 帧（9–20 s）就 `FATAL tx 0x101 ...
 -> restart`；10 帧/s 下 60 s / 600 帧零拒收。机理推测（未证伪）：AP 把该 STA 当"睡了"，这些帧的
@@ -1150,17 +1152,16 @@ AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
 
 【实测】**`SCAN` 之后不要立刻开打**：扫描收尾时 STA 会拒绝 `esp_wifi_set_channel()`，模块若不检查
 就会把帧发在"扫描停下来的那个信道"上——现象是"计数器在涨、空口一帧没有"。现在回执带
-`OK PSPOLL 0 mode=pm frame=qosnull sta=.. ch=6 chset=0 ssid=..`，`chset≠0` 时再打 `WARN`。
+`OK QOSNULL 0 mode=pm sta=.. ch=6 chset=0 ssid=..`，`chset≠0` 时再打 `WARN`。
 复现脚本先用 `MON <ch> 2` 钉住信道。
 
-【实测】计数器（`STATUS`）：`psp`（off/pm）、`pspfrm`（当前帧型）、`pspf`（总帧数）、
-`pspnul`（PM=1 帧数）、`pspfl`（PM=0 释放帧数）、`pspc`（学到的受害 MAC 数）、`pspdl`（发向受害者的
-下行数据帧数，攻击生效时应停止增长）、`psprxp`（听到的真 PS-Poll 数）、`psprxn`/`psprxpm`
-（听到的 Null Data 及其 PM=1 计数）。
+【实测】计数器（`STATUS`）：`qn`（off/pm）、`qnf`（总帧数）、`qn1`（PM=1 帧数）、
+`qn0`（PM=0 帧数）、`qnc`（学到的受害 MAC 数）、`qndl`（发向受害者的下行数据帧数，攻击生效时应
+停止增长）、`qnrn`/`qnrp`（听到的 Null/QoS Null 及其 PM=1 计数）。
 
 【未实测/推测】①强制 PMF 的 WPA3 AP（手上没有可信 WPA3 AP，华为那台实测回 status 13）；
 ②真实手机/笔电客户端（只测了 ESP32-C5 板）；③多受害者（代码最多 8 个、轮转，未量化）；
-④与 §8 TIM 的组合；⑤AP 缓存老化的具体时长（只观察到停手后数秒内恢复）。
+④与 TIM 投毒的组合（该模块已下线，暂时做不了）；⑤AP 缓存老化的具体时长（只观察到停手后数秒内恢复）。
 
 ---
 
@@ -1299,7 +1300,8 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
 | NAV / Duration 预约信道（`nav.cpp` 及 `NAV*` 全部命令、LVGL/上位机的 NAV 页） | **已删除** | `esp_wifi_80211_tx()` 注入帧的 Duration 由驱动/MAC 重算：单播一律 `SIFS+ACK@1Mbps` = **314 µs**（30/26/20 字节的 action/BAR/data 全是），广播 CF-End 一律 **0**，RTS 随重发速率在 **990–1102 µs** 浮动。设 1 µs 与设 32767 µs 结果完全相同（`测试报告 §4.3.1`，C5 抓包）。所以"覆盖率 = 帧率 × 声明时长"的算法全部作废 |
 | CTS 注入 | **不可用** | 每帧永久吃掉一个短缓存：30/200/500 ms 节拍都是 32 帧封顶，静置 10 s 不恢复，之后连 `esp_wifi_set_channel()` 都卡死（`§4.3.3`） |
 | TSF 投毒（`TIMTSF ... tsf\|both`、`ttsf=` 状态字段） | **已删除**（本次） | MAC 用接口自己的 TSF 覆盖 beacon 的 24..31 字节（未关联的 STA 接口为 0）：`last_tsf=654632723879` vs 空口 `tsf=0`（`§4.4.3`）。与 Duration 同源的字段重写；乐鑫侧也有公开记录（esp-idf issue #6368 里的示例注释 "Timestamp (GETS OVERWRITTEN TO 0 BY HARDWARE)"） |
-| PS-Poll 欺骗（控制子类型 10，`PSPOLL ... poll\|both`） | **已删除**（本次） | 帧本身能发出去，但**单播**的 PS-Poll 一帧都上不了空口：`CTRLTEST 10 broadcast 0xC025` 两轮各 **10/10**（空口 `dur=0xC025 aid=37`，说明 Duration/ID **没有**被改写），把 RA 换成 AP 的 BSSID 后两轮各 **0/10**——同长度、同 TA、同 Duration，只有 RA 不同。PS-Poll 只有单播给 AP 才有意义，所以整条路径删除；探针留在 `CTRLTEST [subtype] [broadcast\|bssid] [dur]`，`测试报告 §4.4.9` |
+| TIM 投毒（克隆 beacon 改 TIM 位图，`TIM`） | **已下线**（2026-11-22） | 帧字段与占空比都对，但对真实省电 STA 的吞吐无可测影响（§8 实测），留着只是多一条命令 |
+| PS-Poll 欺骗（控制子类型 10） | **已删除** | 帧本身能发出去，但**单播**的 PS-Poll 一帧都上不了空口：`CTRLTEST 10 broadcast 0xC025` 两轮各 **10/10**（空口 `dur=0xC025 aid=37`，说明 Duration/ID **没有**被改写），把 RA 换成 AP 的 BSSID 后两轮各 **0/10**——同长度、同 TA、同 Duration，只有 RA 不同。PS-Poll 只有单播给 AP 才有意义，所以整条路径删除；探针留在 `CTRLTEST [subtype] [broadcast\|bssid] [dur]`，`测试报告 §4.4.9` |
 | TIM 的 AID 位编码 | **已修正**（不是删除） | 旧实现按 `(AID−1)` 落位，等于把 AID 1 写到组播位（AID 0）、AID 3 写到 AID 2。现在按 `AID/8` 字节、`AID%8` 位（见 §8.1）；空口复测已完成：`bitmap=08`（AID 3），见 §8.4 |
 | "BA 推窗"在 mac80211 上的证明 | **未证明** | 在 ESP-IDF 目标上 `step=0` 对照组同样冻结，无法把"窗口被推走"单独分离；Android 那次对照（`BARPUSH 512` 卡死 / `0` 正常）是用户现场观察、单设备、无抓包（`§4.2`） |
 | "BTM Request 天然绕 PMF" | **说法已改正** | category 10 属 robust 管理帧集合，PMF 强制时会被客户端驱动丢弃（§7.1）。`btm.cpp`/`btm.h`/README/GUI 的旧说法已改 |
@@ -1326,7 +1328,7 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
    | 20 帧/s（50 ms） | 45 s / 900 帧、60 s / 1200 帧，零拒收 |
    | 广播克隆 beacon 50 帧/s | 60 s / 3000 帧，零拒收 |
    | **PM 位帧（Null/QoS Null/Action）20 帧/s** | **约 170–400 帧后 `0x101`**（9–20 s）——帧类相关，见 §13.4 |
-   | **PM 位帧 10 帧/s** | 60 s / 600 帧，零拒收（`pspoll.cpp` 的默认节拍） |
+   | **PM 位帧 10 帧/s** | 60 s / 600 帧，零拒收（`qosnull.cpp` 的默认节拍） |
 
    机理：伪造 TA 的单播帧拿不到属于本机的 ACK，硬件重传到上限才放缓存；我们也不 ACK
    AP 的回复，AP 同样重发（实测每条 SAE commit 对应 **12.7** 个 AP 回复帧）。
@@ -1353,8 +1355,8 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
 | 命令 | 作用 | 为什么留在这里 |
 | --- | --- | --- |
 | `CTRLTEST [subtype] [broadcast\|bssid] [dur]` | 发 10 帧指定子类型的控制帧（默认 RTS=11，RA=广播，TA=`02:00:00:AA:BB:CC`，Duration 默认 0） | 验证控制帧能不能注入、能不能被第二块板收到。子类型/Duration 参数是 §13.4 判定"PS-Poll 单播发不出去"的探针；NAV 删除后它仍是控制帧通道唯一的活证据 |
-| `PSPOLLTEST` | 打印三种帧型（Null Data / QoS Null / 单播 Action）与 PM=0 版本的字段与十六进制 | 帧构造错了先看这里（PM=1 与 PM=0 只差 `frame[1]` 的 0x10 位） |
-| `PSPOLLREL` | 给每个受害者补一帧 PM=0 后停止 | 撤销/对照：证明"AP 攒下的帧被放出来"（§13.3） |
+| `QOSNULLTEST` | 打印 QoS Null 的 PM=1 / PM=0 两帧的字段与十六进制 | 帧构造错了先看这里（PM=1 与 PM=0 只差 `frame[1]` 的 0x10 位） |
+| `QOSNULLREL` | 给受害者补一帧 PM=0 后停止 | 撤销/对照：证明"AP 攒下的帧被放出来"（§13.3） |
 | `BARSEQ <n> [gap]` | 按固定节拍只发 BAR | 证明"BAR 会回收缓存"（30 ms 节拍 100 帧零失败），这是附录 B 第 4 条的来源 |
 | `BATX` | 发一帧 DELBA/ADDBA/BAR 并打印驱动返回值 | 帧构造错了先看这里 |
 | `MON <ch> [sec]` | 被动监听（可跳信道） | 观测 `RXMIX`：帧真的上了空口吗 |
@@ -1385,7 +1387,7 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
   没走 `ie_find()`。行为等价，但属于重复实现；将来统一时改这一处即可。
 - `rsn_mfpr_required()` 定义了却没有调用点。写代码时不要以为"PMF 判别已经自动做了"——
   模块里没有任何运行时 MFPR 判断，PMF 这条边界只在文档/注释里说明（§1 总表、§2.3、§7.1、§5.1）。
-- `pspoll.cpp` **不在**这张表里：Null Data 帧没有元素（也没走 AP 的 beacon），它不需要
+- `qosnull.cpp` **不在**这张表里：QoS Null 帧没有元素（也没走 AP 的 beacon），它不需要
   任何解析工具，只用 `WiFi.BSSID()/channel()` 拿目标。
 
 ---
@@ -1400,17 +1402,15 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
 | "BTM Request 不在 PMF 的 robust 集合里，PMF 不校验"（`btm.cpp` 头注释、`btm.h`、`firmware/README §5`、GUI 文案） | Action 帧里只有 Public(4)/HT(7)/Unprotected WNM(11)/Self-protected(15)/VHT(21)/厂商自定义(127) 不算 robust；category 10 **在**集合里。Linux 的 `_ieee80211_is_robust_mgmt_frame()` + `net/mac80211/rx.c` 会在协商了 PMF 时丢弃未保护的这类帧 | "PMF 关闭或可选（大多数 WPA2）时有效；强制 PMF 时被驱动丢弃"，见 §7.1 |
 | "CSA 不受 802.11w/PMF 保护"（`csa.cpp` 头注释、`firmware/README §5`、GUI 文案） | Spectrum Management action 帧**是** robust；真正不受保护的是 **beacon 里的 CSA IE** | 两条路径分开写，见 §4.1 |
 | "DELBA 不是 robust 管理帧，PMF 不校验"（`delba.cpp` 头注释、`delba.h`） | category 3（Block Ack）**在** robust 集合里 | "实测的 −99% 属于非 PMF 链路"，见 §5.1 |
-| `TIMTSF ... tsf|both` 可用（有效部分只有 TIM） | beacon 的 timestamp 被 MAC 用自己的 TSF 覆盖（未关联时为 0），写字无效 | 模块改名 `TIM`，TSF 那半删除，见附录 A 与 §11 第 8 条 |
-| TIM 位图按 `AID-1` 落位（代码与其注释） | Partial Virtual Bitmap 按 AID 编号索引（bit 0 = AID 0 = 组播） | 改 `AID/8`+`AID%8`，空口复测 `bitmap=08`，见 §8.1 与 `测试报告 §4.4.7` |
+| ~~`TIMTSF ... tsf|both` 可用~~（该模块已下线） | beacon 的 timestamp 被 MAC 用自己的 TSF 覆盖（未关联时为 0），写字无效 | 模块改名 `TIM`，TSF 那半删除，见附录 A 与 §11 第 8 条 |
+| ~~TIM 位图按 `AID-1` 落位~~（该模块已下线，记录保留） | Partial Virtual Bitmap 按 AID 编号索引（bit 0 = AID 0 = 组播） | 改 `AID/8`+`AID%8`，空口复测 `bitmap=08`，见 §8.1 与 `测试报告 §4.4.7` |
 | "五个新模块只有 CLI，没有 LVGL 页面"（`AGENTS §11`） | 现在有了，而且六个帧级模块**共用一个页面**（`SCR_FRAME`） | 见 `firmware/README §7.2`；`UISCREEN` 认 `btm/tim/eapol/pspoll/sae/authflood` |
-| "帧级模块一律 20 帧/s"（`firmware/README §5`、`AGENTS §11`） | 只对管理帧/数据帧成立。**PM 位帧在 20 帧/s 下会在几百帧后打满缓存池并重启** | `pspoll.cpp` 自降到 10 帧/s（`kSendMs=100`），见 §13.4 与附录 B |
-| "PS 位欺骗只能用 Null Data"（上一版 §13、`firmware/README §5`） | 同一 bit 还能装在 QoS Null 与单播 Action(127) 里，三种实测都上空气、都能压吞吐 | 三种帧型可切（默认 `qosnull`），见 §13.2/§13.4 |
+| "帧级模块一律 20 帧/s"（`firmware/README §5`、`AGENTS §11`） | 只对普通管理帧/数据帧成立。**PM 位帧在 20 帧/s 下会在几百帧后打满缓存池并重启** | `pspoll.cpp` 自降到 10 帧/s（`kSendMs=100`），见 §13.4 与附录 B |
+| "PS 位欺骗只能用 Null Data"（上一版 §13） | 同一 bit 还能装在 QoS Null 与单播 Action(127) 里，三种实测都上空气、都能压吞吐 | 后来只留 QoS Null（最强），见 §13.2/§13.4 |
 
 另外两条"不是冲突，但容易误读"的：
 
-- `STATUS timaid=` 是**显示用**位图（bit0 = AID 1），不是空口编码；空口编码见 §8.1。
-- `TIMTEST` 打印的 `bmp_mask=` 是"从 TIM 元素里读回来的位图字节"，`bitmap=08` 是同一份数据的十六进制；
-  两者和 `timaid` 不是同一个东西。
+- ~~`STATUS timaid=` 与 `TIMTEST bmp_mask=` 的口径差异~~ —— 随 TIM 模块下线一并作废，记录留在 §8。
 
 ---
 

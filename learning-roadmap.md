@@ -33,8 +33,8 @@
                         ▼                                │
         ┌──────────────────────────────────────────────┐ │
         │ 攻击模块层（每个模块一个 .cpp + 一个 .h）      │ │
-        │ deauth  csa  delba  btm  tim  eapol  sae      │ │
-        │ authflood  evil_twin                          │ │
+        │ deauth  csa  delba  btm  eapol  sae           │ │
+        │ authflood  qosnull  evil_twin                 │ │
         └──────┬──────────────────────────┬────────────┘ │
                │ 组帧：手写字节 + IE 解析   │ 发射          │
                ▼                          ▼              │
@@ -413,8 +413,7 @@ MAC 头 24 字节（本工程所有帧都从这几个偏移开始）：
 | 2 | SAE Commit 洪泛 | `sae.cpp`（`build_commit` → `store_token` → `sae_classify` → `sae_step`） | 每个 commit 让 WPA3 AP 做一次 ECC 标量乘 | `saef`、`saec`、`saeresp`、`saecode`（76=要 token） |
 | 3 | EAPOL | `eapol.cpp`（`build_eapol` → `eapol_step` → `eapol_on_rx`） | 伪造成 STA 发 Start/Logoff，搅 802.1X 端口状态机 | `eaprxreq>0` 才算真踢动（本工程对 PSK AP 实测为 0） |
 | 3 | BTM 强制漫游 | `btm.cpp`（`build_btm_request` → `learn_capabilities` → `btm_step`） | 伪造 AP 劝客户端漫游/离网 | `btmc`（支持 11v 的 STA 数）、`btmresp`（有应答才算端到端） |
-| 4 | TIM | `tim.cpp`（`build_tim` → `learn_beacon` → `note_aid` → `tim_step`） | 克隆 beacon 改 TIM 位图 | `timf`、`timreal>0`（学到真 beacon）、`timaid` |
-| 4 | PM 位欺骗 | `pspoll.cpp`（`build_null_data`/`build_qos_null`/`build_action` → `pspoll_step` → `pspoll_on_rx` → `pspoll_release`） | 伪造 STA 的"我睡了"（PM=1），让 AP 把下行缓存起来；PM 位可装在三种帧里 | `pspf`、`pspfrm`、`pspnul/pspfl`（PM=1/PM=0）、`pspdl`（发向受害者的下行帧） |
+| 4 | PM 位欺骗 | `qosnull.cpp`（`build_qos_null` → `qosnull_step` → `qosnull_on_rx` → `qosnull_release`） | 伪造 STA 的"我睡了"（单播 QoS Null + PM=1），让 AP 把下行缓存起来 | `qnf`、`qn1/qn0`（PM=1/PM=0）、`qndl`（发向受害者的下行帧） |
 | 4 | CSA | `csa.cpp`（`build_csa_action` → `build_beacon` → `send_csa_round` → `csa_step`） | 通告换信道，然后在新信道顶克隆 beacon | `csaf`、`csa=announce/hold`、`csaauth/csarej` |
 | 5 | DELBA / BA | `delba.cpp`（`build_delba` → `send_from_ap/sta/group` → 然后 `build_addba_req` → `build_bar` → `ba_tx`） | 拆聚合 / 种重排窗口 | `delbaf`、`delbat`、`babar`、`bassn` |
 | 5 | Deauth | `deauth.cpp`（`build_deauth_ex` → `queue_deauth` → `drain_tx_queue` → `attack_step`） | 老本行 + 注入队列 + 盲目兜底 | `txok/txerr/rev/blind/eliminated` |
@@ -476,7 +475,7 @@ lv_screen_active()
 ├── s_screens[SCR_DEAUTH]  ← 二级：One/All/Only/Except
 ├── s_screens[SCR_MODE]    ← 三级：Scan/Targets/Start/Stop/Reason
 ├── s_screens[SCR_CSA] / [SCR_DELBA] / [SCR_BA] / [SCR_PROBE] / [SCR_EVIL]
-├── s_screens[SCR_FRAME]   ← 六个帧级模块共用的那一页（WNM/TIM/EAPOL/SAE/AUTH/PS-Poll）
+├── s_screens[SCR_FRAME]   ← 五个帧级模块共用的那一页（BTM/EAPOL/SAE/AUTH/QoSNull）
 ├── s_popup（lv_layer_top 上的模态目标选择弹窗）
 ├── s_log label
 └── s_reason_popup（reason 选择弹窗）
@@ -576,13 +575,12 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
 | --- | --- | --- |
 | `lab/cap_pipe.py` + `lab/cap_frames.py` | 读 C5 的抓包管道，按模块解码帧字段 | C5 抓包固件 + 管道 |
 | `lab/air_check.py` | 逐模块"起-抓-停" | 同上 |
-| `lab/tim_air.py` | 用 lab 板的 `sniff <ch>` 复核 TIM 位图（不依赖管道） | 第二块 ESP32 + 攻击板 |
 | `lab/pool_limit.py` | 复现 0x101 边界 | 攻击板 |
 | `lab/soak.py` | 逐模块长跑，判据 `txgerr=0` 且无 `FATAL` | 攻击板 |
-| `lab/tim_ps.py` / `lab/btm_sta.py` | 端到端（PS STA / 11v STA） | 三块板（AP+STA+攻击） |
+| `lab/btm_sta.py` | 端到端（真实 11v STA） | 三块板（AP+STA+攻击） |
 
 **验收**：跑通 `python -m unittest discover -s tests`；给某个模块加一个计数器并在用例里断言它；
-用 `lab/tim_air.py` 亲手复核一次 TIM 位图。
+用 `lab/cap_frames.py` 亲手核实一次空口字节。
 
 ---
 
@@ -606,8 +604,8 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
         ├─ csa.cpp        ── tx_guard_send()
         ├─ delba.cpp      ── 自己的 tx()（长跑在排水速率以下，故意不接守卫）
         ├─ btm.cpp        ── tx_guard_send() + ie_util
-        ├─ tim.cpp        ── tx_guard_send() + ie_util
         ├─ eapol.cpp      ── tx_guard_send()
+        ├─ qosnull.cpp    ── tx_guard_send()
         ├─ sae.cpp        ── tx_guard_send() + ie_util
         └─ authflood.cpp  ── tx_guard_send() + ie_util + sae_classify()
 
@@ -620,8 +618,8 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
 | 底座 | 提供 | 使用者 |
 | --- | --- | --- |
 | `deauth.cpp` | `attack_sniffer_enable()`、`attack_stop()`、`attack_step()`、`attack_rx_*`、`find_ap`、注入队列 | 所有攻击模块（每个 `*_start()` 都会调 `attack_sniffer_enable()`；`attack_step()` 里依次调 7 个 `*_step()`） |
-| `tx_guard.cpp` | `tx_guard_send()` + 三个计数 | `csa`、`btm`、`tim`、`eapol`、`sae`、`authflood` |
-| `ie_util.cpp` | `ie_find` / `rsn_has_akm_sae` / `rsn_has_akm_psk` / `rsn_mfpr_required` / `extcap_has_bss_transition` | `tim`、`authflood`、`sae`、`btm`（`csa` 自己写了一份等价的 IE 遍历；`rsn_mfpr_required` 目前无人调用） |
+| `tx_guard.cpp` | `tx_guard_send()` + 三个计数 | `csa`、`btm`、`eapol`、`qosnull`、`sae`、`authflood` |
+| `ie_util.cpp` | `ie_find` / `rsn_has_akm_sae` / `rsn_has_akm_psk` / `rsn_mfpr_required` / `extcap_has_bss_transition` | `authflood`、`sae`、`btm`（`csa` 自己写了一份等价的 IE 遍历；`rsn_mfpr_required` 目前无人调用） |
 
 ## 2.2 分层拆解（每层只干一件事）
 
@@ -736,10 +734,10 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
 | CTS 发 32 帧后永久卡死，静置也不恢复 | CTS 的缓存**不回收** | ✅ 仍成立（本工程不再用 CTS） | `测试报告 §4.3.3` |
 | 写进帧里的 Duration 上不了空口 | 驱动/MAC 按"当前速率 + 预期应答"重算（单播恒 314 µs，广播 CF-End 0，RTS 990–1102 浮动） | ✅ 仍成立 → 所以 **NAV 模块已删除** | `测试报告 §4.3.1`、《攻击原理》附录 A |
 | beacon 的 timestamp 写多少都变 0 | MAC 用接口自己的 TSF 覆盖（未关联时为 0） | ✅ 仍成立 → 所以 **TSF 投毒已删除** | `测试报告 §4.4.3` |
-| 单播只能跑到 ~20 帧/s | 池子排水 ≈32 帧/s，20 帧/s 留余量 | ✅ 仍成立（**但 PM=1 的 Null Data 例外：20 帧/s 几百帧就 `0x101`**） | `tests` + `lab/pool_limit.py`、`pspoll.cpp` |
+| 单播只能跑到 ~20 帧/s | 池子排水 ≈32 帧/s，20 帧/s 留余量 | ✅ 仍成立（**但 PM=1 的 QoS Null 例外：20 帧/s 几百帧就 `0x101`**） | `tests` + `lab/pool_limit.py`、`qosnull.cpp` |
 | Action 帧的帧控制写成 `0x11D0` 却对不上 | 管理帧**没有** ToDS/FromDS 位：Action 的高字节只有 PM（`0x10`），`0x11` 是数据帧的 ToDS+PM | ✅ 仍成立（写用例时踩过） | `测试报告 §4.4.10` |
-| `PSPOLL ... poll/both` 一帧都上不了空口 | **单播的 PS-Poll（控制子类型 10）本 MAC 不发送**：广播 RA 10/10、RA=BSSID 0/10 | ✅ 仍成立 → 所以 **PS-Poll 那一半已删除** | `测试报告 §4.4.9`、《攻击原理》附录 A |
-| 攻击计数器在涨，空口一帧没有 | `SCAN` 收尾时 `esp_wifi_set_channel()` 被拒，模块没检查返回值 | ⚠️ `PSPOLL` 已在回执里打 `chset=`/`WARN`，其它模块仍不报 | `pspoll.cpp`、`测试报告 §4.4.9` |
+| PS-Poll 一帧都上不了空口 | **单播的 PS-Poll（控制子类型 10）本 MAC 不发送**：广播 RA 10/10、RA=BSSID 0/10 | ✅ 仍成立 → 所以 **PS-Poll 那一半已删除，改发单播 QoS Null** | `测试报告 §4.4.9`、《攻击原理》附录 A |
+| 攻击计数器在涨，空口一帧没有 | `SCAN` 收尾时 `esp_wifi_set_channel()` 被拒，模块没检查返回值 | ⚠️ `QOSNULL` 已在回执里打 `chset=`/`WARN`，其它模块仍不报 | `qosnull.cpp`、`测试报告 §4.4.9` |
 | 连发 300 条命令只回 233 条 | UART RX 环形缓冲默认 256 B，整行丢失 | ❌ 已修（`SERIAL_RX_BUFFER_SIZE=4096`） | 缺陷 #23 |
 | `RXMIX ctrl=0 rts=0`，控制帧一帧都收不到 | 混杂模式**两级**过滤，第二级默认丢弃控制帧 | ❌ 已修（`MASK_ALL`） | 缺陷 #34 |
 | 只看到 HE 客户端却抓不到它的上行帧 | ESP32 的 11n 射频解不出 Wi-Fi 6 PPDU | ✅ 仍成立（靠 `blind=` 兜底） | `AGENTS §11` |
@@ -758,7 +756,7 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
 - 协议层：`firmware/src/serial_console.cpp`（`dispatch` / `do_*` / `handle_serial_console` / `scan_task`）
 - 守卫：`firmware/src/tx_guard.cpp`（`tx_guard_send`）
 - 解析：`firmware/src/ie_util.cpp`（5 个函数）
-- 攻击：`firmware/src/{deauth,csa,delba,btm,rrm,tim,eapol,sae,authflood,evil_twin}.cpp`
+- 攻击：`firmware/src/{deauth,csa,delba,ba,btm,rrm,eapol,qosnull,sae,authflood,evil_twin}.cpp`
 - 界面：`firmware/components/wireless_ui/src/{ui.c,ui_port.c,calib.c}`、`include/wireless_ui.h`
 - 字库：`firmware/tools/gen_cjk_font.py`、`components/wireless_ui/fonts/lv_font_ui_cjk.c`
 - 存储：`firmware/src/storage.cpp`、`components/wireless_ui/src/calib.c`

@@ -1,6 +1,6 @@
 """How many frames does each module get before the driver answers 0x101?
 
-    python lab/pool_limit.py --port COM5 --bssid BE:41:99:0B:20:36 --module tim
+    python lab/pool_limit.py --port COM5 --bssid BE:41:99:0B:20:36 --module qosnull
 
 Each module is started on its own and the serial line is read until the tx guard prints
 its FATAL line (which carries the number of frames that went through). The board
@@ -61,8 +61,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", default="COM5")
     ap.add_argument("--bssid", required=True)
-    ap.add_argument("--module", default="tim",
-                    choices=("tim", "sae", "eapol", "authflood", "wnm"))
+    ap.add_argument("--module", default="qosnull",
+                    choices=("qosnull", "sae", "eapol", "authflood", "btm"))
     ap.add_argument("--timeout", type=float, default=90.0)
     ap.add_argument("--gap", type=int, default=20, help="SAE gap_ms (frame spacing)")
     args = ap.parse_args()
@@ -82,7 +82,7 @@ def main():
 
     fake = "02AABBCCDDEE"
     commands = {
-        "tim": "TIM %d tim 0" % index,
+        "qosnull": "QOSNULL %d %s" % (index, fake),
         "sae": "SAE %d point %d" % (index, args.gap),
         "eapol": "EAPOL %d 6 %s" % (index, fake),
         "authflood": "AUTHFLOOD %d both noauto" % index,

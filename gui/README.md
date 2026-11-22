@@ -30,7 +30,7 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 ```
 一级  [Deauth 攻击] [Probe 攻击] [CSA 欺骗]
       [DELBA 欺骗] [BA 会话攻击] [Evil Twin]
-      [BTM 强制漫游] [TIM 投毒] [EAPOL 洪泛] [SAE 洪泛] [Auth 洪泛]
+      [BTM 强制漫游] [EAPOL 洪泛] [SAE 洪泛] [Auth 洪泛] [QoS Null PM 位]
       [PM 位欺骗] [设备状态] [日志]
 
 二级  Deauth 攻击 -> [单个 AP] [全部 AP] [只打勾选] [排除勾选]
@@ -127,18 +127,17 @@ python main.py --self-test     # 只建界面然后退出（CI 冒烟）
 - 实验室结论：只发 2 帧伪造 ADDBA 就能让该 TID 冻结且不自愈（需重新关联）；
   "窗口被推走"这一步未单独证明（见 [测试报告](../firmware/测试报告.md)）
 
-### 2.6 六个帧级模块（BTM / TIM / EAPOL / SAE / Auth / PM 位）
+### 2.6 五个帧级模块（BTM / EAPOL / SAE / Auth / QoS Null）
 
 六页版式相同：`扫描 AP` → `选择目标…`（单选）→ 调参数 → `开始` / `停止`，都只对**一个 AP** 生效。
 
 | 页面 | 参数 | 发出的命令（停止命令） |
 | --- | --- | --- |
 | `BTM 强制漫游`（802.11v BTM Request） | disassoc timer（1..65535 TBTT）、目标 STA（可空）、候选 BSSID + 候选信道（可空，填了才带 Neighbor Report 元素） | 最简 `BTM <idx> <timer>`；填了可选项走 `CALL btm.start idx=.. timer=.. sta=.. cand=.. cand-ch=..`（`BTMSTOP`） |
-| `TIM 投毒`（克隆 beacon 改 TIM） | 模式 `tim/clear`、受害 AID（0 = 学到的全部，1..255 指定） | `TIM <idx> <mode> <aid>`（`TIMSTOP`） |
 | `EAPOL 洪泛` | QoS TID（`6`/`-1`/`0`/`5`/`7`）、受害 STA MAC（可空 = 嗅探学习，12 位十六进制） | `EAPOL <idx> <tid> [mac]`（`EAPOLSTOP`） |
 | `SAE 洪泛` | Commit 元素 `point/rand`、帧间隔 ms（<50 会被固件抬到 50） | `SAE <idx> <elem> <gap>`（`SAESTOP`） |
 | `Auth 洪泛` | 模式 `both/auth/assoc`、勾选"嗅到 WPA3 自动升级 SAE" | `AUTHFLOOD <idx> <mode> [noauto]`（`AUTHFLOODSTOP`） |
-| `PM 位欺骗`（电源管理） | 帧型 `qosnull`（默认）/`null`/`action`、受害 STA MAC（可空 = 嗅探学习） | `PSPOLL <idx> [mac] <shape>`（`PSPOLLSTOP`），另有 `解除（发 PM=0）` = `PSPOLLREL` |
+| `QoS Null PM 位`（电源管理） | 受害 STA MAC（可空 = 嗅探学习） | `QOSNULL <idx> [mac]`（`QOSNULLSTOP`），另有 `解除（发 PM=0）` = `QOSNULLREL` |
 
 界面上只做参数校验（范围、MAC 格式），**不判断对端支不支持**：BTM 需要 11v 客户端、
 SAE 需要 WPA3 AP、EAPOL 需要 802.1X；PM 位欺骗则相反——它对所有 AP 都成立（PM 位不在 PMF 的
@@ -158,7 +157,7 @@ SAE 需要 WPA3 AP、EAPOL 需要 802.1X；PM 位欺骗则相反——它对所�
 ### 2.8 底栏
 
 两行。第一行：`模式 / Deauth 帧 / Probe 帧 / reason / CSA / DELBA / BA`；
-第二行：`BTM / RRM / TIM / EAPOL / PS-Poll / SAE / Auth` 的状态与帧数 + `网络 / 堆 / 双频(5G)`。
+第二行：`BTM / RRM / EAPOL / QoS Null / SAE / Auth` 的状态与帧数 + `网络 / 堆 / 双频(5G)`。
 攻击中每 2 秒自动拉一次 `STATS`。
 
 ---

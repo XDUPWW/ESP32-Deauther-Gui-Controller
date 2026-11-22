@@ -26,13 +26,15 @@ ESP32 / ESP32-C5 的 **802.11 无线安全测试工具**，由三块代码组成
 改功能时不要为某个界面单独写一条执行路径。
 
 已实现的攻击：deauth（单/全/白/黑名单）、Probe/Beacon 泛洪、CSA 欺骗、DELBA 欺骗、BA 会话劫持、Evil Twin、
-802.11v BTM Request 欺骗（BTM）、802.11k Neighbor Report 伪造（RRM）、TIM 投毒（克隆 beacon）、EAPOL-Start/Logoff 洪泛、SAE Commit 洪泛、
-Auth/Assoc 洪泛（WPA3 时自动升级成 SAE）、电源管理（PM 位）欺骗（`pspoll.cpp`）。
+802.11v BTM Request 欺骗（BTM）、802.11k Neighbor Report 伪造（RRM）、EAPOL-Start/Logoff 洪泛、SAE Commit 洪泛、
+Auth/Assoc 洪泛（WPA3 时自动升级成 SAE）、单播 QoS Null 的 PM 位欺骗（`qosnull.cpp`）。
+**TIM 投毒（克隆 beacon 改省电位图）已按计划下线**，代码与命令都不在了。
 **NAV（虚拟载波侦听）已删除**：注入帧的 Duration 字段由驱动/MAC 重算，应用层改不了，详见 `attack-principles.md` 附录 A。
 **PS-Poll 欺骗（控制子类型 10）也已删除**：单播的 PS-Poll 在本 MAC 上发不出去（广播 RA 10/10 上空气、
-RA=BSSID 0/10），只留下 PM 位那一半，实测见 `attack-principles.md` §13 与附录 A。
+RA=BSSID 0/10），只留下 PM 位那一半，实测见 `attack-principles.md` §13 与附录 A；
+    2026-11 这一半也收敛成单播 QoS Null（`QOSNULL`），另两种承载帧一起下线。
 **TSF 投毒也已删除**：beacon 的时间戳字段同样被 MAC 覆盖成接口自己的 TSF（未关联时为 0），
-见 §11 第 11 条；留下的是 `TIM`（只做 TIM 位图）。
+见 §11 第 11 条；当时留下的 `TIM`（只做 TIM 位图）后来整体下线。
 攻击原理的完整梳理见根目录 `attack-principles.md`（逐模块四层：协议层定位 / 帧格式 / 有效与失效 /
 实现与实测），改模块时同步它。新人上手看 `learning-roadmap.md`（分阶段路线 + 架构分层 + API 盘点），
 加模块时把新文件/新命令补进它的第 2/3 章。
@@ -127,7 +129,7 @@ P0/P1 已落地的实际白名单与三条实测踩坑（组件清单见 `firmwa
 - `hal_wifi` 已实现：STA 初始化（不关联、PS 关）、国家码、信道租约（PINNED/ROAMING + 过期）、
   注入（45 ms 单播节流、`0x101` → `esp_restart`、覆盖 `ieee80211_raw_frame_sanity_check` + `-Wl,-z,muldefs`）、
   混杂接收（RX 队列 16 深、帧长上限 512、订阅扇出）、主动扫描、SoftAP、TSF、统计与驱动读回。
-- `wifi_frame` 目前只实现 probe request 组帧与 IE/beacon/TIM/CSA 解析，其余帧构造仍是空实现（返回 `-1`）。
+- `wifi_frame` 目前只实现 probe request 组帧与 IE/beacon/TIM IE/CSA 解析，其余帧构造仍是空实现（返回 `-1`）。
 - `wtarget` 已实现（AP 按 BSSID upsert、RSSI 取最强、STA 记归属 AP）；`services` 的 `scan`/`radio`
   对象把扫描与信道操作暴露成方法。
 - `idf_component_register` 不能放进 `if(...)`：条件分支里的 `REQUIRES` 不生效（只登记 `SRCS`/`INCLUDE_DIRS`），
@@ -160,7 +162,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 
 - wbus（`components/wbus/`）是对象注册表 + 参数策略 + 事件的最小总线，**一个命令搬到对象表后，
   回执文本必须与旧 `strcmp` 分支逐字节一致**（测试与 `lab/*.py` 都靠它解析）。当前已迁移
-  **14 个对象 / 43 条别名**：`deauth` / `csa` / `delba` / `ba` / `btm` / `rrm` / `tim` / `eapol` / `pspoll` /
+  **13 个对象 / 40 条别名**：`deauth` / `csa` / `delba` / `ba` / `btm` / `rrm` / `eapol` / `qosnull` /
   `sae` / `authflood` / `probe` / `evil` / `radio`。新增/迁移命令时，回执一律走 `wb_reply_*()`，
   不要在新对象里直接 `Serial.print`。
 
@@ -173,10 +175,10 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
   驱动拒收（`ESP_ERR_NO_MEM`）时退避 5 ms 重试。这条约束修掉过"计数在涨但帧没出去"的缺陷，别改回去。
 - **所有注入走 `tx_guard_send()` / `tx_guard_send_as()`**（`src/tx_guard.cpp`，两个策略）：
   `kTxPolicyGuard`（45 ms 节拍，首个 `0x101` 打 `FATAL tx 0x101 ... policy=…` 后 `esp_restart()`）覆盖
-  CSA 与七个帧级模块（含 RRM）；`kTxPolicyBurst`（不节拍，`0x101` 只计错退避）覆盖 deauth 与 DELBA/BA
+  CSA 与各帧级模块（含 RRM）；`kTxPolicyBurst`（不节拍，`0x101` 只计错退避）覆盖 deauth 与 DELBA/BA
   （它们的多帧序列必须连发）。`BARSEQ` / `BATX` / `CTRLTEST` 这类"故意把池打空"的探针**必须**留在
   守卫之外，否则测不到它要测的东西。单播注入节拍上限约 20 帧/s（§11 第 7 条）——唯一例外是
-  `pspoll.cpp`：PM 位帧在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s。
+  `qosnull.cpp`：PM 位帧在 20 帧/s 下几百帧就触发 `0x101`，它用 10 帧/s。
 - **攻击模块只在一张表里注册**（`attack_module_t`，`include/deauth.h`）：`attack_modules_register_defaults()`
   在 `main.cpp` 的 `setup()` 里调用一次，之后混杂回调扇出、`attack_step()`、`attack_stop()` 全部遍历这张表。
   加模块 = 表里加一行，不要再往那三处手写调用。P6 计划把这张表搬到 `attacks/include/attack.h`。
@@ -200,14 +202,13 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 | `delba.cpp` | DELBA 欺骗 + BA 会话劫持（DELBA → 伪造 ADDBA → BAR）、TID 学习 |
 | `btm.cpp` | 802.11v BTM Request 欺骗：11v 能力学习、候选 Neighbor Report、Response 计数 |
 | `rrm.cpp` | 802.11k Neighbor Report Response 伪造：幻影邻居元素（52/13）、按 STA 轮询发送、count 限次 |
-| `tim.cpp` | 克隆 beacon 篡改 TIM（AID bitmap/DTIM）、AID 学习（TSF 那半已删除） |
 | `eapol.cpp` | EAPOL-Start/Logoff 洪泛：ToDS 数据帧 + LLC/SNAP 0x888E，收侧统计 EAP 包 |
 | `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
 | `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
-| `pspoll.cpp` | 电源管理（PM 位）欺骗：伪造 PM=1 的帧让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；三种承载帧 `null`/`qosnull`（默认）/`action`；`pspoll_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
+| `qosnull.cpp` | PM 位欺骗：伪造单播 QoS Null（ToDS，26 字节）让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；`qosnull_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
 | `tx_guard.cpp` | 统一注入入口 + 策略：`kTxPolicyGuard`（45 ms、首个 `0x101` 重启）/ `kTxPolicyBurst`（不节拍、`0x101` 退避），并集中记录 ok/err/throttled |
 | `radio.cpp` | 信道仲裁：`radio_set_channel(owner, ch)` 记录 owner，两个 owner 在 2 s 内抢同一信道时打 `WARN radio:`；`RADIO` 的 `owner=`/`rtake=` 来自这里 |
-| `bus_objects.cpp` | wbus 对象表：14 个对象（`deauth` / `csa` / `delba` / `ba` / `btm` / `rrm` / `tim` / `eapol` / `pspoll` / `sae` / `authflood` / `probe` / `evil` / `radio`）的参数策略、handler、事件；handler 从 `serial_console.cpp` 原样搬来，回执字节不变 |
+| `bus_objects.cpp` | wbus 对象表：13 个对象（`deauth` / `csa` / `delba` / `ba` / `btm` / `rrm` / `eapol` / `qosnull` / `sae` / `authflood` / `probe` / `evil` / `radio`）的参数策略、handler、事件；handler 从 `serial_console.cpp` 原样搬来，回执字节不变 |
 | `include/console_commands.h` | 总线与控制台的桥：`console_scan_count()`、`console_apply_reason()`、`console_ui_log()`、`wbus_register_all()` |
 | `components/wbus/` | 迷你 ubus：对象注册表、`wb_arg_spec_t` 参数策略、`wb_reply_t` 注入式输出、`EVT` 事件订阅。纯 C++，不依赖 Arduino/esp_* |
 | `ie_util.cpp` | IE 遍历、RSN AKM（SAE/PSK）、MFPR、Extended Capabilities bit19 判定 |
@@ -219,7 +220,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 
 上位机：`gui/protocol.py` 是纯函数解析层（`classify/parse_net/parse_status/parse_cred/parse_caps/band_of_channel`，
 无 Tk 无 IO），`gui/main.py` 是串口线程 + 页面 + 目标弹窗（`SerialLink`、`TargetDialog`、`DeautherApp`）。
-页面键：`home / deauth / one / all / only / except / probe / csa / delba / ba / evil / btm / tim / eapol / sae / authflood / status / log`。
+页面键：`home / deauth / one / all / only / except / probe / csa / delba / ba / evil / btm / eapol / sae / authflood / qosnull / status / log`。
 
 **新增源文件必须同时加进 `firmware/main/CMakeLists.txt` 的 `SRCS`**，否则不会参与编译。
 **新增功能的两端顺序**：先在 `gui/protocol.py` 加解析（可单测）→ 再在 `main.py` 加控件；固件侧先加头文件 + 计数器，再在 `dispatch()` 接线。
@@ -304,9 +305,7 @@ python -m unittest discover -s tests -v
   错误文案逐字比对、OK/TEST 行比对结构（计数器和随机元素自动屏蔽），判据是 `0 command(s) differ`。
   基线 `lab/compat_baseline.json` 由 `baseline` 模式生成；**只有确实要改对外文案时才重新抓基线，
   并在提交信息里说明**。
-- 管道没起时的兜底：`lab/tim_air.py` 用 `lab/rf_throughput` 的 `sniff <ch>`（COM6 当 beacon
-  嗅探器）核对 TIM 元素字节。端到端脚本 `lab/tim_ps.py`（TIM vs 真实省电 STA）与
-  `lab/btm_sta.py`（BTM vs 真实 11v STA，判据 `btmresp>0`）需要两块 lab 板 + 攻击板同时在位，
+- 端到端脚本 `lab/btm_sta.py`（BTM vs 真实 11v STA，判据 `btmresp>0`）需要两块 lab 板 + 攻击板同时在位，
   `lab/rf_throughput` 的 STA 角色要 `ps 1` / `btm 1`（后者需要 `CONFIG_ESP_WIFI_11KV_SUPPORT=y`）。
 - 客户端侧的 BTM / RRM 判据用 `lab/victim_btm/`（11KV 打开，日志里找 `reason=12 BSS_TRANSITION!`）。
   实测结论见 `firmware/测试报告.md §4.4.12`：候选是幻影时 STA 回 BTM Response 但不动；
@@ -384,8 +383,7 @@ python main.py --self-test
    `STATUS` 的 `txg=` 是被策略挡下的帧数（不算错误）。`BARSEQ`/`BATX` 这类"故意打空池"的探针永在守卫外。
 8. **beacon 的 TSF 上不了空口（TSF 投毒因此删除）**：MAC 用接口自己的 TSF 覆盖 beacon 的
    24..31 字节（未关联 STA 时为 0）。实测交给驱动的 `last_tsf=654632723879` vs 空口 `tsf=0`，
-   同一帧的 TIM/SSID/interval/capability 逐字节保留。与第 1 条（Duration）同源的驱动字段重写；
-   `TIM` 现在只做 TIM 位图。
+   同一帧的 TIM/SSID/interval/capability 逐字节保留。与第 1 条（Duration）同源的驱动字段重写。
 9. **`STATUS` 一行约 1.1 KB**：机器读到完整一行 ~80 ms（115200）。`tests` 里 STATUS 往返阈值
    因此从 60 ms 放宽到 120 ms——这是串口带宽，不是固件变慢。
 

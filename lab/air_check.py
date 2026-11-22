@@ -96,7 +96,7 @@ def main():
     ap.add_argument("--port", default="COM5")
     ap.add_argument("--bssid", required=True)
     ap.add_argument("--seconds", type=float, default=4.0)
-    ap.add_argument("--only", default=None, help="run one test: btm|tim|eapol|sae|authflood")
+    ap.add_argument("--only", default=None, help="run one test: btm|qosnull|eapol|sae|authflood")
     args = ap.parse_args()
     target = args.bssid.upper()
 
@@ -132,7 +132,7 @@ def main():
 
     tests = [
         ("btm", "BTM %d 10 %s" % (index, fake_sta), "BTMSTOP"),
-        ("tim", "TIM %d tim 0" % index, "TIMSTOP"),
+        ("qosnull", "QOSNULL %d %s" % (index, fake_sta), "QOSNULLSTOP"),
         ("eapol", "EAPOL %d 6 %s" % (index, fake_sta), "EAPOLSTOP"),
         ("sae", "SAE %d point 20" % index, "SAESTOP"),
         ("authflood", "AUTHFLOOD %d both noauto" % index, "AUTHFLOODSTOP"),

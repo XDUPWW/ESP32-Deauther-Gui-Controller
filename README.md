@@ -29,9 +29,9 @@
 | BA 会话劫持（DELBA→伪造 ADDBA→BAR） | `BAATTACK <idx> [step]` / `BAPLANT` / `BARPUSH` | ✅ | ✅ | ✅ | 帧格式逐字节校验；伪造 ADDBA 可让 4 Mbit/s 的流冻结且不自愈（需重连）；**Android 客户端 A/B 判定：step=512 卡死、step=0 无影响 → 推窗机制成立** |
 | Probe 泛洪（Beacon + Probe Response） | `PROBE_BROADCAST` | ✅ | ✅ | ✅ | **双板实测**（另一块板扫到 37 个伪造 SSID） |
 | 802.11v BTM Request 欺骗 | `BTM <idx> [timer] [sta-mac]` | ✅ | ✅ | ✅ | **端到端已验**（真华为 AP + 同名第二个 BSS）：伪造 BTM 让真实 STA 漫游到我们软 AP（`reason=207`，0.07 s）|
-| TIM 投毒（克隆 beacon） | `TIM <idx> [tim\|clear] [aid]` | ✅ | ✅ | ✅ | 空口抓包 TIM 元素逐字节正确、克隆 50 帧/s（真 AP 10 帧/s）；**对省电客户端的效果未量化** |
 | ~~TSF 投毒~~ | —（已删除） | ❌ | ❌ | ❌ | **本硬件不可实现**：MAC 用接口自己的 TSF 覆盖 beacon 时间戳（未关联时报 0），与 Duration 同源；`tsf`/`both` 模式与 `ttsf=` 字段一并删除 |
 | EAPOL-Start/Logoff 洪泛 | `EAPOL <idx> [tid\|-1] [sta-mac]` | ✅ | ✅ | ✅ | 空口抓包 `ver=2 type=1/2`；**WPA2-PSK 的 AP 忽略**，需 802.1X 环境验证效果 |
+| QoS Null PM 位欺骗 | `QOSNULL <idx> [sta-mac]` | ✅ | ✅ | ✅ | 单播 QoS Null（`0x11C8`/`0x01C8`）让 AP 缓存受害者下行，实测吞吐 **−38%**、零掉线，`QOSNULLREL` 立刻恢复 |
 | SAE Commit 洪泛（WPA3） | `SAE <idx> [point\|rand] [gap_ms]` | ✅ | ✅ | ✅ | 空口抓包 1076 帧 `alg=3 seq=1 group=19`、AP 回 `status=13`；**token 回显缺 WPA3 AP 实测** |
 | Auth/Assoc 洪泛（WPA3 自动升级） | `AUTHFLOOD <idx> [both\|auth\|assoc] [noauto]` | ✅ | ✅ | ✅ | 空口 817 帧、AP 回 `status=0`（接受伪造身份）；**未压到表满** |
 | STA 嗅探 | `STATIONS [sec]` | ✅ | ✅ | ✅ | 实测（能给出 STA 及其所属 AP） |
@@ -135,7 +135,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 ├── README.md                     ← 你正在看的这个文件
 ├── LICENSE                       ← GPLv3（继承上游 ESP32-Deauther）
 ├── .gitignore
-├── TODO.md                       ← 路线图：PMKID / 企业网络 / BTM-SAE-TIM 的效果验证 / Android / BLE / 框架重构 P0–P10
+├── TODO.md                       ← 路线图：PMKID / 企业网络 / BTM-SAE 的效果验证 / Android / BLE / 框架重构 P0–P10
 ├── 架构与路线图-v2.md              ← 框架架构演进方案（分层红线 / transport 插件 / wtarget / 功能对照清单 / 阶段闸门）
 ├── attack-principles.md          ← 攻击原理全量梳理（逐模块：协议层 / 帧格式 / 有效与失效 / 实测）
 ├── learning-roadmap.md           ← 学习路线（零嵌入式经验 → 读懂本工程，含架构与 API 盘点）
@@ -151,12 +151,8 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 │   └── tools/gen_cjk_font.py     ← 生成界面用 CJK 子集字库
 ├── lab/                          ← 实验脚本（需人明确执行，不在自动化里）
 │   ├── cap_pipe.py               ← 读 C5 的抓包管道并解 pcap/radiotap
-│   ├── cap_frames.py             ← 抓包并按模块解码（WNM/TIM/SAE/EAPOL/Auth）
+│   ├── cap_frames.py             ← 抓包并按模块解码（BTM/TIM/SAE/EAPOL/Auth）
 │   ├── air_check.py              ← 逐模块"起-抓-停"的空口验证
-│   ├── tim_air.py                ← 用 lab 板的 beacon 嗅探复核 TIM 位图（不依赖 C5 管道）
-│   ├── tim_ps.py                 ← TIM 打真实省电 STA 的吞吐对比（AP/STA/攻击三块板）
-│   ├── pspoll_air.py             ← PM 位/PS-Poll 的空口字段核对（一块板同时当 AP 与嗅探器）
-│   ├── pspoll_ps.py              ← PM 位欺骗对下行吞吐的影响（含 PSPOLLREL 撤销阶段）
 │   ├── btm_sta.py                ← BTM Request 打真实 11v STA 的端到端（看 btmresp）
 │   ├── pool_limit.py             ← 单播注入的缓冲池速率上限（0x101 边界）
 │   ├── soak.py                   ← 帧级模块长跑稳定性（判据：txgerr 恒 0、无 FATAL）
@@ -192,7 +188,7 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 | `DELBA <idx> [reason]` / `DELBASTOP` / `DELBATEST` | DELBA 拆聚合 / 停止 / 帧字节自检 |
 | `BAATTACK` / `BAPLANT` / `BARPUSH` / `BASTOP` | BA 会话劫持三步 / 只种窗口 / 只推 BAR / 停止 |
 | `BTM <idx> [timer] [sta-mac]` / `BTMSTOP` / `BTMTEST` | 802.11v BTM Request 强制漫游 / 停止 / 帧自检 |
-| `TIM <idx> [tim\|clear] [aid]` / `TIMSTOP` / `TIMTEST` | 克隆 beacon 篡改 TIM / 停止 / 自检 |
+| `QOSNULL <idx> [sta-mac]` / `QOSNULLSTOP` / `QOSNULLREL` | 单播 QoS Null 的 PM 位欺骗 / 停止 / 发 PM=0 善后 |
 | `EAPOL <idx> [tid\|-1] [sta-mac]` / `EAPOLSTOP` / `EAPOLTEST` | EAPOL-Start/Logoff 洪泛 / 停止 / 帧自检 |
 | `SAE <idx> [point\|rand] [gap_ms]` / `SAESTOP` / `SAETEST` | SAE Commit 洪泛 / 停止 / 帧自检 |
 | `AUTHFLOOD <idx> [both\|auth\|assoc] [noauto]` / `AUTHFLOODSTOP` / `AUTHFLOODTEST` | Auth/Assoc 洪泛（WPA3 自动升级）/ 停止 / 帧自检 |
@@ -254,17 +250,17 @@ Evil   → [Scan] [Targets] [Clone] [Stop] [Creds] [Back]
 3. ~~屏上弹窗的观感~~：已人工确认（描边/圆角/字号/行高/滑动/点击都正常）。
 4. **C5 无触摸屏界面**：Kconfig 宏 `depends on IDF_TARGET_ESP32`，属设计选择。
 5. **五个新模块的"效果"层**：帧上空气与字段都逐字节验证过（`测试报告 §4.4`）。端到端补了两项
-   （2026-11-15，三块板，见 `§4.4.8`）：**TIM 对真实省电 STA 的吞吐无可测影响**（deauth 阳性对照
-   成立，说明不是帧没到）、**BTM 在 ESP-IDF STA 上拿不到 BTM Response**（`btmc=1` 但 `btmresp=0`）。
+   （2026-11-15，三块板，见 `§4.4.8`）：**BTM 在 ESP-IDF STA 上当时拿不到 BTM Response**
+   （`btmc=1` 但 `btmresp=0`，后来查明是没钉 `sta=`、请求摊薄 + 收发互斥漏帧）。
    仍缺环境的：SAE 需要真的 WPA3 AP、EAPOL 需要 802.1X 环境、Auth 洪泛没压到 station 表满。
-6. **PS 位欺骗（PM 位）已实现并量化**（2026-11-15，见 `测试报告 §4.4.9`/`§4.4.10`）：伪造 PM=1 的帧
-   让 AP 把下行缓存起来；PM 位可装在三种帧里（`null`/`qosnull`/`action`），实测下行吞吐分别
-   **−30% / −38% / −21%**、零掉线，`PSPOLLREL`（发 PM=0）立刻恢复。
-   边界是受害者自己的上行帧（PM=0）会把 AP 的状态翻回来，所以是降级不是断网；
-   同一模块里"伪造 PS-Poll"那一半**已删除**：单播的控制子类型 10 在本 MAC 上发不出去
-   （广播 RA 10/10、RA=BSSID 0/10）。
+6. **PM 位欺骗已实现并量化**（2026-11-15，见 `测试报告 §4.4.9`/`§4.4.10`）：现在只发单播
+   QoS Null（`QOSNULL`），PM=1 让 AP 把下行缓存起来，每第 6 帧 PM=0 把缓存"放"给不在听的站，
+   实测下行吞吐 **−38%**、零掉线，`QOSNULLREL` 立刻恢复。
+   边界是受害者自己的上行帧（PM=0）会把 AP 的状态翻回来，所以是降级不是断网。
+   早期三种承载形态（Null Data / 厂商 Action）已下线；"伪造 PS-Poll"那一半更早以前就删了：
+   单播的控制子类型 10 在本 MAC 上发不出去（广播 RA 10/10、RA=BSSID 0/10）。
 7. **TSF 投毒做不了，模块已删**：beacon 的时间戳字段被 MAC 覆盖（未关联 STA 接口值为 0），
-   与 Duration 同源，所以 `tsf`/`both` 模式与 `ttsf=` 状态字段都删了；`TIM` 只做 TIM 位图。
+   与 Duration 同源，所以 `tsf`/`both` 模式与 `ttsf=` 状态字段都删了。
 
 上述 1、2 与 UART 丢行已记入[待修清单](firmware/测试报告.md#71-待修清单已记录尚未动手)，暂未动手。
 

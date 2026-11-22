@@ -85,9 +85,9 @@ def main():
     plan = [
         ("sae", "SAE {idx} point 50", "SAESTOP", "saef"),
         ("authflood", "AUTHFLOOD {idx} both noauto", "AUTHFLOODSTOP", "aff"),
-        ("tim", "TIM {idx} tim 0", "TIMSTOP", "timf"),
+        ("qosnull", "QOSNULL {idx} " + fake, "QOSNULLSTOP", "qnf"),
         ("eapol", "EAPOL {idx} 6 " + fake, "EAPOLSTOP", "eapf"),
-        ("wnm", "WNM {idx} cand 10 6 " + fake, "WNMSTOP", "wnmf"),
+        ("btm", "BTM {idx} 10 " + fake, "BTMSTOP", "btmf"),
     ]
     failures = 0
     print("%-10s %8s %8s %8s %8s  %s" % ("module", "frames", "guard+", "txg", "txgerr", "result"))

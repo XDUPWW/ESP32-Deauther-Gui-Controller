@@ -32,15 +32,13 @@ COMMANDS = [
     ("BAATTACK", 0.6), ("BAATTACK 0", 0.8), ("BAATTACK 9999", 0.6),
     ("BAPLANT", 0.6), ("BAPLANT 0 0", 0.8), ("BARPUSH", 0.6), ("BARPUSH 0 0", 0.8),
     ("BATEST", 1.0), ("BATX", 0.8), ("BASTOP", 0.6),
-    ("WNM", 0.6), ("WNM 0", 0.8), ("WNM 0 bare", 0.8), ("WNM 0 nope", 0.6),
-    ("WNM 9999", 0.6), ("WNMTEST", 1.0), ("WNMSTOP", 0.6),
-    ("TIM", 0.6), ("TIM 0", 0.8), ("TIM 0 clear 3", 0.8), ("TIM 0 nope", 0.6),
-    ("TIM 9999", 0.6), ("TIMSTOP", 0.6),
+    ("BTM", 0.6), ("BTM 0", 0.8), ("BTM 0 10", 0.8), ("BTM 0 nope", 0.6),
+    ("BTM 9999", 0.6), ("BTMTEST", 1.0), ("BTMSTOP", 0.6),
     ("EAPOL", 0.6), ("EAPOL 0", 0.8), ("EAPOL 0 -1", 0.8), ("EAPOL 0 6 02:AA:BB:CC:DD:EE", 0.8),
     ("EAPOL 9999", 0.6), ("EAPOLTEST", 1.0), ("EAPOLSTOP", 0.6),
-    ("PSPOLL", 0.6), ("PSPOLL 0", 0.8), ("PSPOLL 0 null", 0.8), ("PSPOLL 0 action", 0.8),
-    ("PSPOLL 0 02:AA:BB:CC:DD:EE qosnull", 0.8), ("PSPOLL 0 poll", 0.6),
-    ("PSPOLL 9999", 0.6), ("PSPOLLTEST", 1.0), ("PSPOLLREL", 0.8), ("PSPOLLSTOP", 0.6),
+    ("QOSNULL", 0.6), ("QOSNULL 0", 0.8), ("QOSNULL 0 02:AA:BB:CC:DD:EE", 0.8),
+    ("QOSNULL 0 nope", 0.6), ("QOSNULL 9999", 0.6), ("QOSNULLTEST", 1.0),
+    ("QOSNULLREL", 0.8), ("QOSNULLSTOP", 0.6),
     ("SAE", 0.6), ("SAE 0", 0.8), ("SAE 0 rand 200", 0.8), ("SAE 0 nope", 0.6),
     ("SAE 9999", 0.6), ("SAETEST", 1.0), ("SAESTOP", 0.6),
     ("AUTHFLOOD", 0.6), ("AUTHFLOOD 0", 0.8), ("AUTHFLOOD 0 auth", 0.8),
@@ -92,7 +90,7 @@ def run_matrix(ser):
         ser.write(command.encode() + b"\r\n")
         ser.flush()
         result[command] = read_lines(ser, duration)
-        if command.startswith(("DEAUTH", "DELBA", "BA", "WNM", "TIM", "EAPOL", "PSPOLL",
+        if command.startswith(("DEAUTH", "DELBA", "BA", "BTM", "EAPOL", "QOSNULL",
                                "SAE", "AUTHFLOOD", "CSA")):
             ser.write(b"STOP\r\n")
             ser.flush()
@@ -115,8 +113,8 @@ def stable_lines(first, second):
 
 # Words that carry meaning in an OK line and must survive the skeleton reduction.
 MODE_WORDS = {
-    "auto", "fixed", "auto(opposite-band)", "point", "rand", "cand-bssid", "nbr", "tim",
-    "clear", "both", "auth", "assoc", "noauto", "null", "qosnull", "action", "all",
+    "auto", "fixed", "auto(opposite-band)", "point", "rand", "cand-bssid", "nbr",
+    "both", "auth", "assoc", "noauto", "qosnull", "all",
     "none", "on", "off", "pm", "upgraded", "single", "multi",
 }
 
