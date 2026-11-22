@@ -395,22 +395,25 @@ wf_csa_parse(ie, len, &channel, &count)
 
 ---
 
-## 六、现有 12 个空目录，各自的难点
+## 六、还没迁的目录与已经踩过的坑
 
-`components/attacks/` 下已经有目录占位，但**全是空壳**（只有 `.gitkeep`）。按难度排：
+`components/attacks/` 下现在只有 `common`、`pspoll`、`tim` 还是空壳，其余都已落地。
+剩下几个的难点：
 
 | 目录 | 依赖什么 | 真正的难点 |
 |---|---|---|
-| `deauth` | 单播 deauth + 目标表 | 没有，最适合当第一个 |
-| `probe` | beacon / probe response 洪泛 | 帧长（带一堆 IE 会到 600+），广播限速 |
-| `csa` | Action 帧 + beacon 克隆 | 要克隆真 AP 的 RSN IE，否则客户端不认 |
-| `ba` / `delba` | BAR / DELBA Action | 20 字节控制帧，**以前被 RX 门槛整条丢过**，注意 `sig_len` 含 FCS |
-| `wnm` | Action cat=10 act=7 + Ext Cap 判别 | 受害 STA 不支持 802.11v 就得跳过 |
 | `tim` | beacon 克隆 + TIM IE | AID 从哪来（关联响应或按位图推算） |
-| `eapol` | QoS data + LLC/SNAP(0x888E) | PSK 网络下 AP 可能根本不理，要做 bench |
 | `pspoll` | Null / QoS Null / Action 帧的 PM 位 | 效果边界大：AP 有缓存老化，不是永久阻断 |
-| `sae` | Auth algo=3 + SAE Commit 元素 | 得先确认目标是 WPA3，否则白打 |
-| `authflood` | Auth/Assoc 洪泛 + 随机 MAC | 要自己处理 AP 的拒绝和表项老化节奏 |
+
+已经迁完的模块里，有两个值得在动手前先读一眼：
+
+- `btm`：Action cat=10 act=7。**没有候选列表的请求会被客户端"接受但不动"**，必须配一个
+  同 SSID、同口令、扫得到的诱饵 AP（`radio.ap`）。帧里的序列号要逐帧递增，固定值会被
+  重复检测丢掉。
+- `ba` / `delba`：BAR/DELBA 是 20 字节控制帧，**以前被 RX 门槛整条丢过**，注意 `sig_len` 含 FCS。
+
+诱饵 AP 那条路还有两个坑：`hal_wifi_ap_start` 必须 `WIFI_MODE_APSTA`（纯 AP 下
+`WIFI_IF_STA` 不存在，注入静默失败）；AP netif 在 APSTA 下可能拿到 `1.0.0.0`，DHCP 等于死。
 
 ---
 

@@ -657,13 +657,32 @@ esp_err_t hal_wifi_ap_start(const char *ssid, const char *password, uint8_t chan
     } else {
         cfg.ap.authmode = WIFI_AUTH_OPEN;
     }
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_AP), TAG, "ap mode");
+    // APSTA，别用纯 AP：所有注入走 esp_wifi_80211_tx(WIFI_IF_STA)，纯 AP 下这个接口
+    // 不存在，攻击会全部静默失败。切模式时已启动的 WiFi 会自己重启，不用再 start。
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_APSTA), TAG, "ap mode");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &cfg), TAG, "ap config");
     const esp_err_t err = esp_wifi_start();
-    if (err == ESP_OK) {
-        s_ap_running = true;
+    if (err != ESP_OK && err != ESP_ERR_WIFI_STATE) {
+        return err;
     }
-    return err;
+    // AP netif 在 APSTA 下有时拿不到地址（1.0.0.0），DHCP 就是死的：
+    // 客户端连上来也拿不到 IP，看起来像"攻击成功但网不通"。这里兜一层。
+    esp_netif_t *ap = esp_netif_get_handle_from_ifkey("WIFI_AP_DEF");
+    if (ap != NULL) {
+        esp_netif_ip_info_t ip = {0};
+        if (esp_netif_get_ip_info(ap, &ip) != ESP_OK || ip.ip.addr == 0 ||
+            ip.ip.addr == ESP_IP4TOADDR(1, 0, 0, 0)) {
+            esp_netif_ip_info_t want = {0};
+            want.ip.addr = ESP_IP4TOADDR(192, 168, 4, 1);
+            want.gw.addr = want.ip.addr;
+            want.netmask.addr = ESP_IP4TOADDR(255, 255, 255, 0);
+            esp_netif_dhcps_stop(ap);
+            esp_netif_set_ip_info(ap, &want);
+            esp_netif_dhcps_start(ap);
+        }
+    }
+    s_ap_running = true;
+    return ESP_OK;
 }
 
 esp_err_t hal_wifi_ap_stop(void) {

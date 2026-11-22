@@ -1,6 +1,7 @@
 # firmware-v2
 
-按分层重写的 ESP32 无线测试固件工程。当前完成屏幕与串口的最小闭环，攻击模块尚未实现。
+按分层重写的 ESP32 无线测试固件工程。屏幕、串口、总线、HAL 都已跑通，攻击侧已迁入 9 个模块
+（deauth / probe / delba / ba / eapol / csa / authflood / sae / btm）。
 
 ## 分层
 
@@ -52,12 +53,13 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 - `wifi_frame`：probe request 组帧、IE 查找、beacon/probe response 解析（SSID/信道/RSN AKM/MFPR/
   扩展能力）、TIM 与 CSA 解析；其余帧构造仍是空实现
 - `wtarget`：设备登记表（AP 按 BSSID upsert、RSSI 取最强、STA 带归属 AP）
-- `attacks`：攻击驱动描述符与登记表（空，无攻击注册）
+- `attacks`：攻击驱动描述符与登记表，已注册 9 个（`deauth` `probe` `delba` `ba` `eapol`
+  `csa` `authflood` `sae` `btm`），每个模块自带上限节拍与计数，`attacks_tick` 统一驱动
 - `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、主页（标题/运行时长/剩余堆/回执行）、触摸校准存 NVS、作为 `transport` 插件显示同一份回执
 - `main`：按层序编排与常驻循环
 
-仍需补齐的帧构造：deauth/disassoc/auth/assoc/beacon/action/data/null/LLC-SNAP/BAR/RTS
-（签名已固定，实现返回 `-1`）。
+`wifi_frame` 的帧构造已全部落地：deauth/disassoc/auth(+扩展体)/assoc/probe req/beacon/
+probe resp/action/data/null/LLC-SNAP/BAR/RTS，签名没变、实现不再是空壳。
 
 串口命令一律是 `对象.方法 [key=value ...]`：
 
@@ -89,6 +91,45 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 参数校验由 `wbus` 统一负责，报错文案形如
 `ERR ui.screen: count must be 1..4` / `ERR ui.screen: count is not a number` /
 `ERR ui.screen: extra is not a parameter of screen` / `ERR bogus.ping: unknown object`。
+
+## 攻击对象
+
+每个攻击都挂成 wbus 对象，签名统一为 `start` / `stop` / `test`（个别多一个动作）。
+`start` 的 `idx` 指的是 `scan.list` 里从 1 开始的编号。
+
+| 对象 | 命令 |
+| --- | --- |
+| `deauth` | `deauth.start idx=.. [reason=1..65535]` / `.stop` / `.test` |
+| `probe` | `probe.start [ssid=""] [ch=..]` / `.stop` / `.test` |
+| `delba` | `delba.start idx=.. [reason=..]` / `.stop` / `.test` |
+| `ba` | `ba.attack idx=.. [step=..]` / `.plant` / `.push` / `.stop` / `.test` |
+| `eapol` | `eapol.start idx=.. [tid=0..15] [qos=bool]` / `.stop` / `.test` |
+| `csa` | `csa.start idx=.. [ch=..]` / `.stop` / `.test` |
+| `authflood` | `authflood.start idx=..` / `.stop` / `.test` |
+| `sae` | `sae.start idx=..` / `.stop` / `.test` |
+| `btm` | `btm.start idx=.. [timer=..] [sta=mac] [cand=mac] [cand-ch=..] [cand-info=..]` / `.stop` / `.test` |
+
+### BTM 强制漫游：必须自带一个可加入的目标 BSS
+
+BTM Request 只是建议，帧里不带凭据。实测（2026-11-22，ESP32-C5 受害者）**没有候选列表的
+请求会被接受但不动**，候选指向幻影也只会换来一条 Response。要让客户端真的走，得先给它一个
+同 SSID、同口令、扫得到的落点——`radio.ap` 就是干这个的：
+
+```
+scan.ap                                   # 找目标 AP 的 idx
+radio.ap idx=2 pass=******                # 克隆成同名同口令的诱饵 AP（APSTA + DHCP）
+btm.start idx=2 sta=D0:CF:13:E2:6D:8C cand=a0:a3:b3:ab:58:f9 cand-ch=12
+```
+
+实测结果：受害者 `reason=207 ROAMING` → 1.47 s 内重关联到诱饵 AP → 拿到 `192.168.4.2`。
+`radio.ap_stop` 后它以 `AUTH_EXPIRE` 掉线并 0.21 s 回连原 AP。
+
+两个坑记在这里：`hal_wifi_ap_start` 必须用 `WIFI_MODE_APSTA`（纯 AP 模式下 `WIFI_IF_STA`
+不存在，所有注入静默失败）；AP netif 在 APSTA 下可能拿到 `1.0.0.0`，DHCP 等于没起，
+`ap_start` 里会显式兜一层 `192.168.4.1/24`。
+
+已知短板：诱饵 AP 起来后混杂接收只报 `rx=1`，BTM Response 的计数（`responses`）一直是 0，
+抓包能看到客户端确实回了——统计链路在 AP 模式下没打通，攻击效果不受影响。
 
 ## 板级接线（ESP32-2432S028R）
 
@@ -147,8 +188,8 @@ UI 层不用改一行。
 - [x] 总线骨架：注册表 / 调用 / 参数策略 / 回执 / 事件；插件化传输；对象方法命令
 - [x] 各层契约头文件（`hal_wifi`、`wifi_frame`、`wtarget`、`attacks`）
 - [x] 射频底座：注入与节流、混杂接收、信道租约、两条扫描、SoftAP、目标表
-- [ ] 其余帧构造（deauth/auth/assoc/beacon/action/data/BAR/RTS）
-- [ ] 攻击模块重写
+- [x] 帧构造全套（deauth/auth/assoc/beacon/action/data/BAR/RTS）
+- [x] 攻击模块重写：9 个已迁入，`BTM` 配 `radio.ap` 完成单板漫游闭环
 - [ ] 其余上层接口插件（LVGL 队列以外的 TCP / BLE）
 
 ## 已知约束

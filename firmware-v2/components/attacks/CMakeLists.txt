@@ -8,6 +8,7 @@ idf_component_register(
         "deauth/deauth.c"
         "delba/delba.c"
         "eapol/eapol.c"
+        "btm/btm.c"
         "probe/probe.c"
         "sae/sae.c"
     INCLUDE_DIRS "include"

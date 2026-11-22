@@ -59,6 +59,7 @@ void attacks_start(void) {
     attack_register(csa_attack());
     attack_register(authflood_attack());
     attack_register(sae_attack());
+    attack_register(btm_attack());
 }
 
 void attacks_stop_all(void) {

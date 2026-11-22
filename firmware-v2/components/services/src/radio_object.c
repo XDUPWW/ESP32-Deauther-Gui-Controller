@@ -8,6 +8,7 @@
 #include "platform/plat_storage.h"
 #include "services_private.h"
 #include "wbus/wbus.h"
+#include "wtarget/wtarget.h"
 #include "esp_random.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -119,23 +120,39 @@ static esp_err_t radio_sta_list(wb_args_t *args, wb_reply_t *reply) {
 }
 
 static const wb_policy_t kApPolicy[] = {
-    {.name = "ssid", .type = WB_T_STR, .required = false, .def_str = "v2-ap"},
+    // idx 指向扫描表里的某个 BSS：SSID 和信道都照抄，省得手打中文 SSID
+    {.name = "idx", .type = WB_T_U32, .required = false, .min = 0, .max = 64, .def = 0},
+    {.name = "ssid", .type = WB_T_STR, .required = false, .def_str = ""},
     {.name = "pass", .type = WB_T_STR, .required = false, .def_str = ""},
     {.name = "ch", .type = WB_T_U32, .required = false, .min = 1, .max = 196, .def = 6},
 };
 
 static esp_err_t radio_ap(wb_args_t *args, wb_reply_t *reply) {
+    const uint32_t idx = wb_args_u32(args, "idx");
     const char *ssid = wb_args_str(args, "ssid");
     const char *pass = wb_args_str(args, "pass");
-    const uint8_t ch = (uint8_t)wb_args_u32(args, "ch");
+    uint8_t ch = (uint8_t)wb_args_u32(args, "ch");
+    if (idx > 0) {
+        // 从扫描表克隆：SSID 带中文时手打容易传坏，直接用表里那份
+        const wt_entry_t *e = wt_at(idx - 1);
+        if (e == NULL || e->kind != WT_KIND_AP) {
+            wb_reply_fail(reply, "idx 不是 AP，先跑 scan.ap");
+            return ESP_ERR_INVALID_ARG;
+        }
+        ssid = e->ssid;
+        ch = e->channel;
+    }
+    if (ssid == NULL || ssid[0] == '\0') {
+        wb_reply_fail(reply, "要么给 idx，要么给 ssid");
+        return ESP_ERR_INVALID_ARG;
+    }
     const esp_err_t err = hal_wifi_ap_start(ssid, pass, ch);
     if (err != ESP_OK) {
         wb_reply_fail(reply, "ap start failed (%s)", esp_err_to_name(err));
         return err;
     }
-    // 切到 AP 模式会把混杂关掉，剩下的事得调用方自己重开
-    wb_reply_line(reply, "ap up ssid=%s ch=%u（混杂已关，sta_list 自动改用 AP 表）", ssid,
-                  (unsigned)ch);
+    wb_reply_line(reply, "ap up ssid_len=%u ch=%u（混杂已关，重开由攻击模块负责）",
+                  (unsigned)strlen(ssid), (unsigned)ch);
     return ESP_OK;
 }
 
