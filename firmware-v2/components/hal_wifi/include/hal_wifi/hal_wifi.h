@@ -83,7 +83,8 @@ typedef struct {
 } hal_wifi_stats_t;
 
 typedef struct {
-    bool promiscuous;
+    bool promiscuous;      // 驱动实际状态
+    bool sniffer_wanted;   // 我们要的状态；切模式后两者不一致就说明补开失败
     uint32_t filter_mask;
     uint32_t ctrl_filter_mask;
     uint8_t channel;

@@ -151,8 +151,10 @@ static esp_err_t radio_ap(wb_args_t *args, wb_reply_t *reply) {
         wb_reply_fail(reply, "ap start failed (%s)", esp_err_to_name(err));
         return err;
     }
-    wb_reply_line(reply, "ap up ssid_len=%u ch=%u（混杂已关，重开由攻击模块负责）",
-                  (unsigned)strlen(ssid), (unsigned)ch);
+    hal_wifi_diag_t diag;
+    hal_wifi_diag(&diag);
+    wb_reply_line(reply, "ap up ssid_len=%u ch=%u promisc=%d", (unsigned)strlen(ssid),
+                  (unsigned)diag.channel, diag.promiscuous ? 1 : 0);
     return ESP_OK;
 }
 
@@ -170,10 +172,10 @@ static esp_err_t radio_diag(wb_args_t *args, wb_reply_t *reply) {
     (void)args;
     hal_wifi_diag_t diag;
     hal_wifi_diag(&diag);
-    wb_reply_line(reply, "promisc=%d filter=0x%x ctrl=0x%x ch=%u cc=%s/%u",
-                  diag.promiscuous ? 1 : 0, (unsigned)diag.filter_mask,
-                  (unsigned)diag.ctrl_filter_mask, (unsigned)diag.channel, diag.country,
-                  (unsigned)diag.country_nchan);
+    wb_reply_line(reply, "promisc=%d wanted=%d filter=0x%x ctrl=0x%x ch=%u cc=%s/%u",
+                  diag.promiscuous ? 1 : 0, diag.sniffer_wanted ? 1 : 0,
+                  (unsigned)diag.filter_mask, (unsigned)diag.ctrl_filter_mask,
+                  (unsigned)diag.channel, diag.country, (unsigned)diag.country_nchan);
     return ESP_OK;
 }
 
@@ -428,7 +430,7 @@ static const wb_method_t kRadioMethods[] = {
      kRatePolicy, 1},
     {"diag", radio_diag, "", NULL, 0},
     {"sta_list", radio_sta_list, "[src=auto|passive|ap]", kStaPolicy, 1},
-    {"ap", radio_ap, "[ssid=\"v2-ap\"] [pass=\"\"] [ch=1..196]", kApPolicy, 3},
+    {"ap", radio_ap, "[idx=0..64] [ssid=\"v2-ap\"] [pass=\"\"] [ch=1..196]", kApPolicy, 4},
     {"ap_stop", radio_ap_stop, "", NULL, 0},
     {"tx_bench", radio_tx_bench,
      "[count=1..2000] [gap=0..500] [kind=probe|bar|data] [unicast=bool] [pad=0..1440]",

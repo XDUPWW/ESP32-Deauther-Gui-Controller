@@ -55,6 +55,9 @@ static uint32_t s_last_unicast_ms;
 static uint32_t s_last_bcast_ms;
 static bool s_ap_netif_done;
 static bool s_ap_running;
+// 混杂是我们自己要的，还是驱动当前开着的？两者必须分开记：切换模式/重启 WiFi
+// 会把驱动的混杂状态清掉，但订阅方（monitor、攻击模块）以为自己还开着。
+static bool s_sniffer_wanted;
 
 static volatile uint32_t s_tx_ok;
 static volatile uint32_t s_tx_err;
@@ -579,12 +582,46 @@ esp_err_t hal_wifi_rx_set_filter(bool mgmt, bool ctrl, bool data) {
     return esp_wifi_set_promiscuous_ctrl_filter(&ctrl_filter);
 }
 
+// 滤镜 + 回调 + 打开，一套齐全。重启 WiFi 之后要原样再走一遍，缺一步就是静默没包。
+static esp_err_t sniffer_apply(void) {
+    ESP_RETURN_ON_ERROR(hal_wifi_rx_set_filter(true, true, true), TAG, "filter");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_promiscuous_rx_cb(sniffer_cb), TAG, "rx cb");
+    return esp_wifi_set_promiscuous(true);
+}
+
 esp_err_t hal_wifi_sniffer_enable(bool enable) {
-    if (enable) {
-        ESP_RETURN_ON_ERROR(hal_wifi_rx_set_filter(true, true, true), TAG, "filter");
-        ESP_RETURN_ON_ERROR(esp_wifi_set_promiscuous_rx_cb(sniffer_cb), TAG, "rx cb");
+    s_sniffer_wanted = enable;
+    if (!enable) {
+        return esp_wifi_set_promiscuous(false);
     }
-    return esp_wifi_set_promiscuous(enable);
+    return sniffer_apply();
+}
+
+// 切模式（radio.ap / radio.ap_stop 内部都会重启 WiFi）之后调用：
+// 驱动会把混杂关掉、把信道打回 1，订阅方不会知道，这里按记下的意图补回去。
+static void radio_after_restart(void) {
+    uint8_t primary = 0;
+    wifi_second_chan_t second = WIFI_SECOND_CHAN_NONE;
+    const bool have_channel = esp_wifi_get_channel(&primary, &second) == ESP_OK;
+    if (s_ap_running && have_channel) {
+        // AP 起来了就听 AP 的信道，别把 AP 拽回旧信道踢掉客户端
+        s_channel = primary;
+        if (s_lease.used && s_lease.mode == HAL_CH_PINNED) {
+            s_lease.channel = primary;
+        }
+    } else if (s_lease.used && s_lease.mode == HAL_CH_PINNED && s_lease.channel != 0) {
+        if (esp_wifi_set_channel(s_lease.channel, WIFI_SECOND_CHAN_NONE) == ESP_OK) {
+            s_channel = s_lease.channel;
+        }
+    } else if (have_channel) {
+        s_channel = primary;
+    }
+    if (s_sniffer_wanted) {
+        const esp_err_t err = sniffer_apply();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "sniffer restore failed: %s", esp_err_to_name(err));
+        }
+    }
 }
 
 esp_err_t hal_wifi_scan_blocking(uint8_t dwell_ms) {
@@ -682,14 +719,21 @@ esp_err_t hal_wifi_ap_start(const char *ssid, const char *password, uint8_t chan
         }
     }
     s_ap_running = true;
+    radio_after_restart();
     return ESP_OK;
 }
 
 esp_err_t hal_wifi_ap_stop(void) {
+    if (!s_ap_running) {
+        // 没起 AP 就别碰 WiFi：一次 stop/start 会把混杂和信道全清掉
+        return ESP_OK;
+    }
     s_ap_running = false;
     esp_wifi_stop();
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "sta mode");
-    return esp_wifi_start();
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start");
+    radio_after_restart();
+    return ESP_OK;
 }
 
 uint64_t hal_wifi_tsf(void) {
@@ -726,6 +770,7 @@ void hal_wifi_diag(hal_wifi_diag_t *out) {
         out->channel = primary;
     }
     esp_wifi_get_promiscuous(&out->promiscuous);
+    out->sniffer_wanted = s_sniffer_wanted;
     wifi_promiscuous_filter_t type_filter = {0};
     if (esp_wifi_get_promiscuous_filter(&type_filter) == ESP_OK) {
         out->filter_mask = type_filter.filter_mask;

@@ -75,9 +75,9 @@ probe resp/action/data/null/LLC-SNAP/BAR/RTS，签名没变、实现不再是空
 | `radio.info` | MAC、信道与占用者、国家码、收发与信道统计、TSF |
 | `radio.chan ch=1..196 [hold=0..600000]` | 申请并切换信道（租约），被占时返回占用者 |
 | `radio.release` | 释放信道租约 |
-| `radio.diag` | 从驱动读回混杂/过滤/信道/国家码 |
+| `radio.diag` | 从驱动读回混杂/过滤/信道/国家码，外加 `wanted`（我们自己记着的意图） |
 | `radio.sta_list [src=auto\|passive\|ap]` | STA 表。`passive` 是混杂嗅出来的，`ap` 是 softAP 已关联的，`auto` 按当前模式自动选（没起 AP 就用被动表） |
-| `radio.ap [ssid="v2-ap"] [pass=""] [ch=1..196]` / `radio.ap_stop` | 起停 softAP。切 AP 模式会关掉混杂 |
+| `radio.ap [idx=0..64] [ssid="v2-ap"] [pass=""] [ch=1..196]` / `radio.ap_stop` | 起停 softAP。`idx` 指向扫描表，SSID 和口令照抄那个 BSS |
 | `radio.rate rate=default\|1m\|2m\|5m5\|11m\|6m..54m\|mcs0..mcs7\|mcs0sgi..mcs7sgi` | 写 NVS，重启后生效——驱动只支持在 `esp_wifi_start()` 之前设速率 |
 | `radio.tx_test [kind=probe\|bar\|data\|qosnull] [ta=mac\|random] [ra=mac] [ssid=""] [tid] [ssn]` | 注入一帧并回报长度/信道/速率/TA/RA；`kind=bar` 发 20 字节控制帧，`kind=qosnull` 发 26 字节 QoS Null（唯一能上 HT 速率的载体） |
 | `radio.tx_bench [count=1..2000] [gap=0..500] [kind=probe\|bar\|data] [unicast=bool] [pad=0..1000]` | 连发测吞吐，回报成功/被拒/节流计数与帧构建耗时 |
@@ -124,12 +124,20 @@ btm.start idx=2 sta=D0:CF:13:E2:6D:8C cand=a0:a3:b3:ab:58:f9 cand-ch=12
 实测结果：受害者 `reason=207 ROAMING` → 1.47 s 内重关联到诱饵 AP → 拿到 `192.168.4.2`。
 `radio.ap_stop` 后它以 `AUTH_EXPIRE` 掉线并 0.21 s 回连原 AP。
 
-两个坑记在这里：`hal_wifi_ap_start` 必须用 `WIFI_MODE_APSTA`（纯 AP 模式下 `WIFI_IF_STA`
+三个坑记在这里：`hal_wifi_ap_start` 必须用 `WIFI_MODE_APSTA`（纯 AP 模式下 `WIFI_IF_STA`
 不存在，所有注入静默失败）；AP netif 在 APSTA 下可能拿到 `1.0.0.0`，DHCP 等于没起，
-`ap_start` 里会显式兜一层 `192.168.4.1/24`。
+`ap_start` 里会显式兜一层 `192.168.4.1/24`；切模式会让驱动重启 WiFi，混杂被关、信道打回 1，
+而订阅方毫不知情——HAL 现在自己记着"要不要混杂"和信道租约，重启后逐项补开，
+`radio.diag` 的 `promisc` 与 `wanted` 不一致就说明补开失败了。
 
-已知短板：诱饵 AP 起来后混杂接收只报 `rx=1`，BTM Response 的计数（`responses`）一直是 0，
-抓包能看到客户端确实回了——统计链路在 AP 模式下没打通，攻击效果不受影响。
+`responses` 一直是 0 不是 AP 模式收不到（三板联测，第三块板当 monitor 看空口）：
+
+- 不钉 `sta=` 时请求按被动 STA 表轮着发给周围所有客户端，受害者只摊到几帧，它那条 Response
+  又落在注入的收发互斥窗口里被漏掉，计数就停在 0；
+- 钉住 `sta=` 后 monitor 看到客户端回了 3 帧 Action（`a2=D0:CF:…`），本板记到 1 帧、
+  `last_status=0`，随后 `reason=207` 漫游到诱饵 AP。计数链路是通的，漏帧来自单射频收发互斥。
+
+判"客户端到底回没回"，要么钉 `sta=`，要么另开一块板当 monitor。
 
 ## 板级接线（ESP32-2432S028R）
 
