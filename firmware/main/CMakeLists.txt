@@ -12,6 +12,7 @@ set(SRCS
     "../src/radio.cpp"
     "../src/ie_util.cpp"
     "../src/btm.cpp"
+    "../src/baitap.cpp"
     "../src/tim.cpp"
     "../src/eapol.cpp"
     "../src/pspoll.cpp"

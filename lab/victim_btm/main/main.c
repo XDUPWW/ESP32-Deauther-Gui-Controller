@@ -21,6 +21,9 @@
 //                           sleeping station misses injected unicast frames
 //                           between DTIMs, which would silently invalidate every
 //                           "the station ignored it" conclusion.
+//   band <2g|5g|auto>       restrict the station's band. On a target that also
+//                           publishes the same SSID on 5 GHz, "auto" lets it hop
+//                           up and away from a 2.4 GHz-only attacker.
 //   status                  flags, counters, last reason, station MAC
 //   scan                    active scan, one line per AP
 //   clear / reboot          wipe the saved role / restart
@@ -116,6 +119,10 @@ static char s_pass[65];
 static char s_country[3] = "01";
 static bool s_btm = true;
 static bool s_rm = true;
+// 0 = auto, 1 = 2.4 GHz only, 2 = 5 GHz only. The AP under test publishes the same
+// SSID on both bands, so a station that is free to roam hops to 5 GHz and stops
+// hearing anything the 2.4 GHz attacker sends -- the whole run measures nothing.
+static int s_band = 0;
 // Always awake by default. The driver's own default is WIFI_PS_MIN_MODEM, and a
 // station that sleeps only listens around DTIM -- a unicast frame injected from a
 // third board between those windows is simply not heard. Learned the hard way: the
@@ -278,6 +285,7 @@ static void config_save(void) {
     nvs_set_i32(h, "btm", s_btm ? 1 : 0);
     nvs_set_i32(h, "rm", s_rm ? 1 : 0);
     nvs_set_i32(h, "ps", (int32_t)s_ps);
+    nvs_set_i32(h, "band", s_band);
     nvs_commit(h);
     nvs_close(h);
 }
@@ -290,11 +298,31 @@ static bool s_netif_ready;
 static bool s_wifi_started;
 static bool s_ap_started;
 
+static void apply_band(void) {
+#if CONFIG_SOC_WIFI_SUPPORT_5G
+    wifi_band_mode_t mode = WIFI_BAND_MODE_AUTO;
+    if (s_band == 1) {
+        mode = WIFI_BAND_MODE_2G_ONLY;
+    } else if (s_band == 2) {
+        mode = WIFI_BAND_MODE_5G_ONLY;
+    }
+    const esp_err_t err = esp_wifi_set_band_mode(mode);
+    printf("INFO band=%d mode=%d err=%d\n", s_band, (int)mode, (int)err);
+    fflush(stdout);
+#else
+    if (s_band != 0) {
+        printf("INFO band=%d ignored (this target has no 5 GHz)\n", s_band);
+        fflush(stdout);
+    }
+#endif
+}
+
 static void start_sta(const char* ssid) {
     strncpy(s_ssid, ssid, sizeof(s_ssid) - 1);
     // Country code first: with the default "01" the driver refuses channels 12/13,
     // and a real AP happily sits on channel 12.
     esp_wifi_set_country_code(s_country, true);
+    apply_band();
     if (!s_netif_ready) {
         esp_netif_create_default_wifi_sta();
         s_netif_ready = true;
@@ -491,6 +519,30 @@ static void run_command(char* line) {
         esp_wifi_set_ps(s_ps);
         config_save();
         printf("OK ps=%d (was %d)\n", (int)s_ps, want);
+    } else if (strcmp(cmd, "band") == 0) {
+        char* arg = strtok(nullptr, " ");
+        if (arg == nullptr) {
+            printf("OK band=%d (0 auto / 1 2.4 GHz / 2 5 GHz)\n", s_band);
+            return;
+        }
+        int want = 0;
+        if (strcmp(arg, "2g") == 0) {
+            want = 1;
+        } else if (strcmp(arg, "5g") == 0) {
+            want = 2;
+        } else if (strcmp(arg, "auto") == 0) {
+            want = 0;
+        } else {
+            printf("ERR usage: band <2g|5g|auto>\n");
+            return;
+        }
+        s_band = want;
+        config_save();
+        apply_band();
+        printf("OK band=%d (reconnecting)\n", s_band);
+        if (s_ssid[0] != 0) {
+            esp_wifi_disconnect();
+        }
     } else if (strcmp(cmd, "scan") == 0) {
         do_scan();
     } else if (strcmp(cmd, "status") == 0) {
@@ -500,10 +552,11 @@ static void run_command(char* line) {
         wifi_second_chan_t sec = WIFI_SECOND_CHAN_NONE;
         esp_wifi_get_channel(&ch, &sec);
         print_time("t", now_ms());
-        printf(" STATUS up=%d ap=%d ssid=%s cc=%s auth=%s ps=%d btm=%d rm=%d 11kv=%d ch=%u"
+        printf(" STATUS up=%d ap=%d band=%d ssid=%s cc=%s auth=%s ps=%d btm=%d rm=%d 11kv=%d ch=%u"
                " mac=%02X:%02X:%02X:%02X:%02X:%02X"
                " disc=%u reconnect=%u last_reason=%d %s target_reason=%d\n",
-               s_connected ? 1 : 0, s_ap_started ? 1 : 0, s_ssid[0] ? s_ssid : "-", s_country,
+               s_connected ? 1 : 0, s_ap_started ? 1 : 0, s_band, s_ssid[0] ? s_ssid : "-",
+               s_country,
                s_pass[0] ? "wpa2-psk" : "open", (int)s_ps, s_btm ? 1 : 0,
                s_rm ? 1 : 0,
 #if CONFIG_ESP_WIFI_11KV_SUPPORT
@@ -529,7 +582,7 @@ static void run_command(char* line) {
         vTaskDelay(pdMS_TO_TICKS(50));
         esp_restart();
     } else {
-        printf("ERR unknown '%s' (ssid/pass/country/join/ap/sta/btm/rm/ps/scan/status/clear/reboot)\n", cmd);
+        printf("ERR unknown '%s' (ssid/pass/country/join/ap/sta/btm/rm/ps/band/scan/status/clear/reboot)\n", cmd);
     }
 }
 
@@ -569,6 +622,10 @@ void app_main(void) {
         v = 0;
         if (nvs_get_i32(h, "ps", &v) == ESP_OK && v >= 0 && v <= 2) {
             s_ps = (wifi_ps_type_t)v;
+        }
+        v = 0;
+        if (nvs_get_i32(h, "band", &v) == ESP_OK && v >= 0 && v <= 2) {
+            s_band = (int)v;
         }
         nvs_close(h);
     }

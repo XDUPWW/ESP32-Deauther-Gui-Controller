@@ -20,6 +20,7 @@
 #include "sae.h"
 #include "tim.h"
 #include "tx_guard.h"
+#include "baitap.h"
 #include "wbus.h"
 #include "btm.h"
 #include "rrm.h"
@@ -80,9 +81,9 @@ const char* attack_mode_label() {
 
 const char* capabilities() {
 #if CONFIG_SOC_WIFI_SUPPORT_5G
-  return "deauth,eviltwin,probe,5g,btm,rrm,tim,eapol,pspoll,sae,authflood";
+  return "deauth,eviltwin,probe,5g,baitap,btm,rrm,tim,eapol,pspoll,sae,authflood";
 #else
-  return "deauth,eviltwin,probe,btm,rrm,tim,eapol,pspoll,sae,authflood";
+  return "deauth,eviltwin,probe,baitap,btm,rrm,tim,eapol,pspoll,sae,authflood";
 #endif
 }
 
@@ -129,6 +130,9 @@ void print_help() {
   Serial.println("INFO BATX                          send one DELBA/ADDBA/BAR and print the driver verdict");
   Serial.println("INFO BAPLANT <idx> [step]          plant the reorder window once, then stay silent (window-hijack test)");
   Serial.println("INFO BARPUSH <idx> [step]          send only BARs (no ADDBA/DELBA), then stay silent");
+  Serial.println("INFO BAITAP <idx> [pass] [ch] [max]   clone a BSS as the roaming target for BTM/RRM");
+  Serial.println("INFO                               idx from SCAN; pass/skip = keep it open, ch 0 = same as the AP");
+  Serial.println("INFO BAITAPSTOP                    tear the bait AP down");
   Serial.println("INFO BTM <idx> [timer] [sta-mac] [cand-bssid] [cand-ch] [cand-info]");
   Serial.println("INFO                               802.11v BTM Request: forced roam (needs PMF off)");
   Serial.println("INFO BTMSTOP                       stop the BTM Request spoof");
@@ -302,6 +306,12 @@ void start_scan() {
     Serial.println("ERR scanner task not ready");
     return;
   }
+  // A scan walks every channel, which would drag the bait AP off its channel and
+  // drop whoever roamed onto it.
+  if (baitap_running()) {
+    Serial.println("ERR bait AP is up: BAITAPSTOP first, or clone from the last scan");
+    return;
+  }
   if (s_scan_busy) {
     Serial.println("ERR scan already running");
     return;
@@ -374,6 +384,16 @@ void do_status() {
   Serial.print((unsigned)csa_auth_replies());
   Serial.print(" csarej=");
   Serial.print((unsigned)csa_assoc_rejects());
+  Serial.print(" bait=");
+  Serial.print(baitap_running() ? "on" : "off");
+  Serial.print(" baitch=");
+  Serial.print((unsigned)baitap_channel());
+  Serial.print(" baitcl=");
+  Serial.print((unsigned)baitap_clients());
+  Serial.print(" baitj=");
+  Serial.print((unsigned)baitap_joins());
+  Serial.print(" baitl=");
+  Serial.print((unsigned)baitap_leaves());
   Serial.print(" btm=");
   Serial.print(btm_state_name());
   Serial.print(" btmf=");
@@ -394,6 +414,8 @@ void do_status() {
   Serial.print((unsigned)rrm_clients());
   Serial.print(" rrmleft=");
   Serial.print((unsigned)rrm_remaining());
+  Serial.print(" rrmtokhit=");
+  Serial.print((unsigned)rrm_token_hits());
   Serial.print(" rrmreq=");
   Serial.print((unsigned)rrm_requests());
   Serial.print(" rrmresp=");
@@ -1003,6 +1025,9 @@ const bus_alias_t kBusAliases[] = {
     {"DEAUTH_ONLY", "deauth", "only"},
     {"DEAUTH_EXCEPT", "deauth", "except"},
     {"PROBE_BROADCAST", "probe", "broadcast"},
+    {"BAITAP", "baitap", "start"},
+    {"BAITAPSTOP", "baitap", "stop"},
+    {"BAITAPSTAT", "baitap", "status"},
     {"BTM", "btm", "start"},
     {"BTMSTOP", "btm", "stop"},
     {"BTMTEST", "btm", "test"},

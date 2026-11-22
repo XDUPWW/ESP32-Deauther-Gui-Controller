@@ -51,7 +51,7 @@
 | 4.2 | CSA（Beacon IE） | `csa.cpp` | `CSA` | 同上，两条路径同一轮发出 | mgmt / 8 + IE 37 | 信道管理 | beacon 里的 CSA 元素 | **不受保护**（beacon 不是 robust 帧） | 帧上空气 ✅，客户端是否跟随未实测 |
 | 5 | DELBA 欺骗 | `delba.cpp` | `DELBA` `DELBATEST` | 双向单播（学了 TID）或广播兜底 | mgmt / 13，cat 3 act 2 | Block Ack 会话管理 | 每个 TID 的聚合会话 | **被拦**（cat 3 属 robust） | 吞吐 −99%（非 PMF 链路）✅ |
 | 6 | BA 会话劫持 | `delba.cpp` | `BAATTACK` `BAPLANT` `BARPUSH` `BATEST` `BATX` `BARSEQ` | DELBA+ADDBA+BAR 持续 / 只种窗口 / 只推 BAR | mgmt / 13 cat 3 act 0 + ctrl / 8 | Block Ack 重排窗口 | ADDBA 的 SSN → WinStartB | **被拦**（同上） | ESP-IDF 目标 ✅ 冻结；mac80211 未实测 |
-| 7 | BTM 强制漫游（steering） | `btm.cpp` | `BTM` `BTMTEST` | Disassociation Imminent + timer；默认不带候选列表，可选用 `cand-bssid` 指定一个真 BSS | mgmt / 13，cat 10 act 7 | 802.11v / 漫游决策 | BTM Request + Extended Capabilities | **被拦**（cat 10 属 robust，需 PMF 关闭） | 端到端 ✅（真实 STA 漫游到我们软 AP，`reason=207`）|
+| 7 | BTM 强制漫游（steering） | `btm.cpp` | `BTM` `BTMTEST` | Disassociation Imminent + timer；诱饵 AP 在跑时自动把候选指向它，也可用 `cand-bssid` 显式指定 | mgmt / 13，cat 10 act 7 | 802.11v / 漫游决策 | BTM Request + Extended Capabilities | **被拦**（cat 10 属 robust，需 PMF 关闭） | 端到端 ✅（真实 STA 漫游到我们软 AP，`reason=207`）|
 | 8 | TIM 投毒 | `tim.cpp` | `TIM` `TIMTEST` | tim（按 AID 置位）/ clear（清空位图） | mgmt / 8 + IE 5 | 省电（PS）调度 | DTIM/TIM 位图 | **不受保护**（beacon） | 帧字段 ✅，客户端省电行为未实测 |
 | 13 | PS 位欺骗（电源管理） | `pspoll.cpp` | `PSPOLL` `PSPOLLREL` `PSPOLLSTOP` `PSPOLLTEST` | 持续伪造 PM=1（每第 6 帧换 PM=0 释放）；帧型可选 null/qosnull/action | data 4 / data 12 / mgmt 13 cat 127 | 省电（PS）状态机 | PM 位声明 + TIM 缓存 | **不受保护**（PM 位与厂商自定义 Action 都不在 robust 集合里） | 三种帧型空口 ✅，吞吐 −21…−38%、零掉线 ✅ |
 | 9 | EAPOL-Start/Logoff | `eapol.cpp` | `EAPOL` `EAPOLTEST` | Start 与 Logoff 交替；非 QoS 与 QoS(TID) 交替 | data / 0、8 + LLC/SNAP 0x888E | 802.1X 认证（端口状态机） | EAPOL PDU、受控/非受控端口 | 未加密数据帧可能被丢 | 帧上空气 ✅，该 AP 无回应 |
@@ -540,7 +540,7 @@ Android / 桌面 Linux 更合适）。
 【实测】2026-11-22，用 `lab/victim_btm`（11KV 打开、`ps 0` 一直醒、记录断开 reason 与最终关联 BSS）
 在两种受害者上跑：软 AP 和**本机真实的华为 WPA2 AP**（`BE:41:99:0B:20:36`，ch12）。
 
-**带候选列表（旧 `cand` 形态，已从代码删除）：收到、回应、不漫游**
+**带候选列表（旧 `cand` 形态，候选是随机幻影）：收到、回应、不漫游**
 
 | 场景 | 当时的形态 | 请求/响应 | 结果 |
 | --- | --- | --- | --- |
@@ -551,8 +551,9 @@ Android / 桌面 Linux 更合适）。
 | 真华为 AP | 不带候选 | 152 / 19 | 不断开 |
 
 带候选时几乎每条请求都回一条 BTM Response —— 只有解析了 dialog token 的 STA 才会回，所以帧确实
-被收下并处理了；但候选 BSSID 是随机幻影，扫不到，STA 没有可去的地方。所以那一半代码没有用，
-干脆删掉：**现在模块只发不带候选列表的形态**。
+被收下并处理了；但候选 BSSID 是随机幻影，扫不到，STA 没有可去的地方。所以幻影候选没有意义。
+2026-11-22 又把候选放回命令里（`cand-bssid`），但它只在指向**真实存在、能连上**的 BSS 时有用，
+见本节的单板闭环小节。
 
 **第二 BSS 真实存在时：STA 被拐走**（同 SSID、同 WPA2 口令、ch6，我们自己的软 AP；旧 AP 在 ch12）
 
@@ -577,6 +578,40 @@ Android / 桌面 Linux 更合适）。
 【实测/教训】第一轮 victim 用驱动默认 `WIFI_PS_MIN_MODEM`，空口能看到它发 `NULL ... pm=1`：
 睡着的 STA 只在 DTIM 附近开窗，第三方注入的单播帧大部分听不见（那几轮 `btmresp` 只有 0~3）。
 **任何"注入进去了但对方没反应"的实验，先确认对方醒着**。详见 `firmware/测试报告.md §4.4.12`。
+
+**单板闭环：攻击板自己当诱饵（`BAITAP`，2026-11-22）**
+
+前面的弯路由第二块板开软 AP 完成。现在攻击板自己开：`BAITAP <idx> <pass>` 克隆扫描到的目标
+BSS（同 SSID、同口令、同信道），`WIFI_MODE_APSTA` + 自带 DHCP，然后一条 `BTM` 就能闭环。
+实测（COM5 = ESP32-CYD，COM8 = ESP32-C5 victim，华为 AP @ ch12）：
+
+```
+BAITAP 1 ****            -> bssid=A0:A3:B3:AB:58:F9 ch=12 ip=192.168.4.1 cost=7236
+（不发 BTM，等 12 s）    -> joins=0                     客户端不会自己过去
+BTM 1 10 D0:CF:13:E2:6D:8C
+                         -> cand 自动填成 A0:A3:B3:AB:58:F9 ch=12
+[STA] reason=207 ROAMING -> sta_connected bssid=A0:A3:B3:AB:58:F9 back_after=1.385s
+[STA] sta_got_ip 192.168.4.2
+BAITAPSTOP               -> [STA] BEACON_TIMEOUT，0.25 s 回连原 AP
+```
+
+三个必须知道的细节：
+
+- **不设国家码就白干**：ch12/13 上的 SoftAP 会报 `up`，但 beacon 不上空口，对端扫描列表里
+  根本没有它。必须先 `esp_wifi_set_country(CN)`（代码里复用 `prepare_radio_for_scan()`）。
+- **APSTA 下 AP netif 可能是 `1.0.0.0`**：DHCP 等于没起，客户端连上也拿不到 IP，
+  表现就像"攻击成功但网不通"。显式 `softAPConfig(192.168.4.1/24)`。
+- **不能是纯 AP 模式**：所有模块都用 `esp_wifi_80211_tx(WIFI_IF_STA, ...)`，纯 AP 下这个接口
+  不存在，注入会全部失败。必须 `WIFI_MODE_APSTA`。
+
+**无候选的 BTM 到底行不行**：本轮给了反面证据。`MON 12 5` + `RXLOG` 确认帧上了空口
+（`type=0 sub=13 len=35 cat=10 act=7`），但客户端既不回 Response 也不断开。
+所以"不带候选，客户端会自己找"这条在 ESP32-C5 上不成立；手机是否如此没复测。
+现在的做法是诱饵 AP 在跑时自动填候选，而不是赌客户端自己会扫。
+
+**RRM 的否结果**：诱饵 AP 在场、`RRM <idx> nbr <诱饵BSSID> 12 0 1` 连发 65 帧，
+客户端 35 s 一动不动（`rrmreq=0`，它从不发 Neighbor Report Request）。
+11k 的邻居报告是"参考信息"，没有强制力；能把人赶走的只有 BTM。RRM 单独只能算帧级验证。
 
 ## 8. TIM 投毒（`tim.cpp`）
 
@@ -1230,6 +1265,15 @@ action = 4（Neighbor Report Request）/ 5（Neighbor Report Response）。本�
 RTS 的 TA 与注入帧的 Addr2 相同，**推测**是注入路径给每帧做了 RTS/CTS 保护、没人回 CTS
 （RA 是假 STA）导致重传吃空口——与附录 B 的单播 20 帧/s 上限同源，但"是驱动发的 RTS"这一点
 本轮没有独立证据。
+
+【代码】应答式：`rrm_on_rx()` 认客户端的 Neighbor Report Request（cat 5 / act 4），记下它的
+dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=`）。设计意图是"先投毒
+邻居表，再用 BTM 把人赶过去"——只有应答过的响应才可能被写进邻居表。
+
+【实测】2026-11-23：victim（11KV 打开、`rm_enabled=1`、`ps 0`、挂在真 AP）在 9 s 内
+**一帧 Neighbor Report Request 都没发**（`rrmreq=0`），所以应答式在这块端点上无对象可打，
+`rrmtokhit=0`；随后单独的 BTM 仍把它拐走（`reason=207`）。要量化"投毒+BTM"的协同增量，
+需要一个会主动问邻居的客户端（wpa_supplicant / Android）。
 
 【实测】2026-11-22，用 `lab/victim_btm`（802.11v/802.11k 打开、`ps 0` 一直醒的 ESP32-C5）当受害者：
 伪造 16 帧 NRREP（`token=7`、`info=0x00000001`），空口可见 16 条 `cat=5 len=46`（42+4，AP 板

@@ -70,6 +70,8 @@ uint8_t rrm_remaining(void);
 // the victim ever asked its AP for neighbours, the second how often the real AP
 // overrides our phantom record.
 uint32_t rrm_requests(void);
+// 带受害者自己 dialog token 发出去的帧数（应答式投毒命中数）
+uint32_t rrm_token_hits(void);
 uint32_t rrm_responses(void);
 uint8_t rrm_candidate_channel(void);
 uint8_t rrm_token(void);

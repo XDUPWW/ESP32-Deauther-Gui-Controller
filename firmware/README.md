@@ -38,6 +38,7 @@ firmware/
 │   ├── deauth.h              攻击接口、计数器、扫描/射频预设
 │   ├── csa.h / delba.h       CSA 欺骗 / DELBA + BA 会话劫持
 │   ├── btm.h / rrm.h        802.11v BTM Request / 802.11k Neighbor Report
+│   ├── baitap.h              诱饵 AP：BTM/RRM 的漫游落点
 │   ├── tim.h                TIM 投毒
 │   ├── eapol.h / sae.h       EAPOL-Start/Logoff / SAE Commit 洪泛
 │   ├── pspoll.h              电源管理（PM 位）欺骗
@@ -56,6 +57,7 @@ firmware/
 │   ├── csa.cpp               CSA 欺骗（倒计时播报 + 新信道克隆 beacon + 接应）
 │   ├── delba.cpp             DELBA 欺骗 + BA 会话劫持（DELBA→ADDBA→BAR）
 │   ├── btm.cpp               802.11v BTM Request 欺骗
+│   ├── baitap.cpp            诱饵 SoftAP（APSTA + DHCP + 客户端事件）
 │   ├── rrm.cpp               802.11k Neighbor Report Response 伪造
 │   ├── tim.cpp               克隆 beacon 篡改 TIM
 │   ├── eapol.cpp             EAPOL-Start/Logoff 洪泛（ToDS 数据帧 + LLC/SNAP）
@@ -162,7 +164,7 @@ HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否�
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. txg=.. txgok=.. txgerr=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. btm=.. btmf=.. btmc=.. btmskip=.. btmresp=.. btms=.. rrm=.. rrmf=.. rrmc=.. rrmleft=.. rrmreq=.. rrmresp=.. rrmch=.. rrmtok=.. rrminfo=0x.. rrmoc=.. rrmphy=.. tim=.. timf=.. timaid=.. timreal=.. eap=.. eapf=.. eaprx=.. eaprxreq=.. eaprxsta=.. sae=.. saesec=.. saef=.. saec=.. saeresp=.. saecode=.. saetok=.. saeecho=.. af=.. aff=.. afa=.. afs=.. afids=.. afst=.. afup=.. delba=.. delbaf=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. txg=.. txgok=.. txgerr=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. bait=<on\|off> baitch=.. baitcl=.. baitj=.. baitl=.. btm=.. btmf=.. btmc=.. btmskip=.. btmresp=.. btms=.. rrm=.. rrmf=.. rrmc=.. rrmleft=.. rrmreq=.. rrmresp=.. rrmch=.. rrmtok=.. rrminfo=0x.. rrmoc=.. rrmphy=.. tim=.. timf=.. timaid=.. timreal=.. eap=.. eapf=.. eaprx=.. eaprxreq=.. eaprxsta=.. sae=.. saesec=.. saef=.. saec=.. saeresp=.. saecode=.. saetok=.. saeecho=.. af=.. aff=.. afa=.. afs=.. afids=.. afst=.. afup=.. delba=.. delbaf=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
 | `WBUS` | wbus 对象表：列出已迁移到总线的对象、方法、事件 | `WBUS objects=2` / `WBUS deauth "Deauth / disassoc flood" methods=start,stop events=state` |
 | `DESCRIBE [obj]` | 对象的 UI 元数据（标题 / 方法 / 参数名·类型·默认值·枚举），供 GUI 与触屏生成页面；不带参数=全部对象 | `OBJ csa "CSA spoof"` / `METHOD csa.start ".."` / `ARG csa.start ch type=enum default=-1 values=auto` / `EVT csa state` |
 | `CALL <obj>.<method> [k=v ...]` | wbus 关键字调用，与同名旧命令等价（`CALL deauth.start idx=3 reason=7` ≡ `DEAUTH 3 7`）；未知对象/方法/参数各有独立 `ERR` | `OK DEAUTH 3 ssid` / `ERR unknown arg nope (try DESCRIBE deauth)` |
@@ -181,7 +183,10 @@ HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否�
 | `BAATTACK <idx> [step]` | BA 会话劫持：DELBA 清场 → 伪造 ADDBA 种窗口 → BAR 推窗，循环（`step` 0–2047，<128 为对照） | `OK BAATTACK 0 step=512 ch=1 ssid=dt` |
 | `BAPLANT <idx> [step]` | 只种窗口（≤8 帧 ADDBA）然后**完全静默**，用于判断静默期是否也会瘫 | `OK BAPLANT 0 step=512 ch=1` |
 | `BARPUSH <idx> [step]` | 只发 BAR（不发 ADDBA/DELBA）后静默，用来隔离"推窗"与"会话改写" | `OK BARPUSH 0 step=512 ch=1` |
-| `BTM <idx> [timer] [sta-mac] [cand-bssid] [cand-ch] [cand-info]` | 802.11v BTM Request 强制漫游。默认**不带候选列表**（客户端自己扫，实测能漫游到同 SSID 的 BSS）；给了 `cand-bssid` 才追加一个 Neighbor Report 元素，把客户端**指定**到那个 BSS——`cand-ch=0` 表示从扫描结果里按 BSSID 查信道（查不到会报错，不瞎填），`cand-info` 是 BSSID Information 字，默认 0（位含义未核实）。`sta-mac` 直接指定受害者 | `OK BTM 0 timer=10 ssid=..` / `OK BTM 0 timer=10 cand=88:13:BF:B9:01:91 ch=6 info=0x00000000 ssid=..` |
+| `BAITAP <idx> [pass] [ch] [max]` | 克隆扫描结果里的一个 BSS 作为**诱饵 AP**（同 SSID、同口令、同信道），给 `BTM` 一个真正可加入的目标。`idx` 来自 `SCAN`（SSID 和信道都从它取），`pass` 省略即开放网络，`ch=0` 用目标 AP 的信道，`max` 是最多几个客户端（默认 2，省堆）。内部走 `WIFI_MODE_APSTA` + 自带 DHCP（`192.168.4.1`）；手写 SSID 用 `CALL baitap.start ssid=.. pass=.. ch=..` | `INFO BAITAP up ssid=.. bssid=A0:A3:B3:AB:58:F9 ch=12 auth=WPA2 max=2 ip=192.168.4.1 heap=67160 cost=7236`<br>`OK BAITAP ssid=.. bssid=.. ch=12 auth=WPA2 clients=0 heap=7236` |
+| `BAITAPSTOP` | 关掉诱饵 AP（客户端会以 `BEACON_TIMEOUT` 掉线并回连原 AP） | `EVT baitap_leave mac=.. reason=2` / `OK BAITAPSTOP joins=1 leaves=0 heap=72576` |
+| `BAITAPSTAT` | 诱饵 AP 状态：SSID/BSSID/信道/在线客户端/累计上下线/堆开销 | `BAITAP state=up ssid=.. bssid=A0:A3:B3:AB:58:F9 ch=12 clients=1 joins=1 leaves=0 heap_cost=7236` |
+| `BTM <idx> [timer] [sta-mac] [cand-bssid] [cand-ch] [cand-info]` | 802.11v BTM Request 强制漫游。**诱饵 AP 在跑时自动把候选填成它**（OK 行会回显 `cand=.. ch=..`）；也可以显式给 `cand-bssid`——`cand-ch=0` 表示从扫描结果里按 BSSID 查信道（查不到会报错，不瞎填），`cand-info` 是 BSSID Information 字，默认 0（位含义未核实）。`sta-mac` 直接指定受害者。没有候选列表的请求实测会被 ESP32 客户端「接受但不动」（§4.4.13），所以这条命令的正经用法是先 `BAITAP` 再 `BTM` | `OK BTM 0 timer=10 cand=A0:A3:B3:AB:58:F9 ch=12 info=0x00000000 ssid=..` |
 | `BTMSTOP` | 停止 BTM 欺骗 | `OK BTMSTOP frames=45 responses=0 last_status=0` |
 | `BTMTEST` | 两种形态都打：默认 31 字节，带候选 46 字节（元素 52/13），各自 hex | `BTMTEST state=off len=31 cat=10 act=7 ... candlist=0` / `BTMTEST cand len=46 req_mode=0x05 eid=52 ie_len=13 ...` |
 | `RRM <idx> nbr <bssid> <ch> [count] [token] [info] [opclass] [phy] [sta-mac]` | 802.11k Neighbor Report Response 伪造。`nbr` 是目前唯一的子命令；`bssid`/`ch` 是通告给客户端的幻影邻居；`count` 是本次总共注入多少帧（0 = 一直发到 `RRMSTOP`）；`token`/`info`/`opclass`/`phy` 是元素里那几个“按真帧抄”的字段，默认全 0；给了 `sta-mac` 就直接对那个 MAC 发 | `OK RRM 0 nbr count=3 token=7 cand=02:CA:FE:BA:BE:01 ch=3 info=0x00000001 ssid=..` / `OK RRMSTA 02:AA:BB:CC:DD:EE` |
@@ -320,16 +325,31 @@ while True:
   action 类别里只有 Public/HT/未保护类(11)/Self-protected/VHT/厂商自定义不算 robust，**category 10
   在 robust 集合里**——所以 PMF 强制（WPA3）的客户端会在驱动里直接丢弃，本模块打的是
   PMF 关闭或可选（大多数 WPA2）的网络。伪造 TA 为 AP BSSID 即被客户端接受。
-  **只有一种形态：不带候选列表**（31 字节）。实测（§4.4.12）：带一个幻影候选 BSS 时客户端会回
-  BTM Response 但原地不动；不带列表时它会自己扫，只要环境里有一个同 SSID、同安全模式的 BSS，
-  就在 ~0.1 s 内漫游过去（`reason=207 ROAMING`）。所以这条攻击要跟"造一个同名 BSS"配套使用。
+  **必须配一个可加入的目标 BSS**。实测（§4.4.13）：不带候选列表的请求，ESP32-C5 会回
+  BTM Response 或干脆沉默，**但不断开、不移动**——它只把请求当建议，没有可去的 BSS 就不动。
+  所以标准用法是 `BAITAP` 先起同名同口令的诱饵 AP，再 `BTM`；此时模块**自动把候选填成诱饵 AP**
+  （OK 行回显 `cand=.. ch=..`），实测 1.4 s 内完成重关联（`reason=207 ROAMING`）并从诱饵 DHCP
+  拿到地址。带一个幻影候选 BSS 时客户端回 Response 后原地不动（§4.4.12）。
   **disassociation timer 必须非 0**：wpa_supplicant 只在
   `DISASSOC_IMMINENT 且 timer != 0` 时才 `wpa_supplicant_req_scan()`，置 0 等于什么都没发生。
   客户端能力从它的 Probe/（重）Association Request 里的 Extended Capabilities（id 127, bit 19）
   学出来，明确不支持的会被跳过（`btmskip=`）；`sta-mac` 参数可以绕过学习直接指定目标。
   每个客户端 300 ms 重发一次，全局节拍 50 ms（见 §11 第 10 条）。可观测：`btmresp=`（BTM Response
   数量）、`btms=`（最后一次的 status，1=reject unspecified，说明它解析了但拒绝）。
+- **诱饵 AP**（`BAITAP`）：把扫描结果里的目标 BSS 克隆成 SoftAP——同 SSID、同口令、同信道，
+  `WIFI_MODE_APSTA` + 自带 DHCP（`192.168.4.1`）。这是 BTM 能真正落地的前提：BTM 建议里
+  不带凭据，客户端只会漫游到它**已有凭据且扫得到**的 BSS。
+  三个实测踩点：① 国家码必须先置 CN，否则 ch12/13 的 AP 起不来、beacon 不上空口
+  （客户端扫描列表里根本看不到它）；② APSTA 模式下 AP netif 可能拿到 `1.0.0.0`，DHCP 就是死的，
+  必须显式 `softAPConfig`；③ 信道一经 AP 占用就不能再跳，模块会拒绝在诱饵 AP 运行时 `SCAN`，
+  `BTM`/`RRM` 在目标信道不一致时直接报错。堆开销实测 7.2–7.3 KB（起 AP 前后
+  `esp_get_free_heap_size()` 之差；关闭后 netif 不回收，这部分是常驻成本）。
+  可观测：`EVT baitap_join/leave`（带 MAC、AID、`reason`）、`baitcl=`（在线数）、
+  `baitj=`/`baitl=`（累计上下线）。
 - **802.11k Neighbor Report 伪造**（`RRM`）：Radio Measurement Action（category 5 / action 5），
+  **应答式**：认客户端的 Neighbor Report Request（cat 5 / act 4），5 s 内用**它自己的** dialog
+  token 回（`rrmtokhit=` 是命中数），这样响应才可能被写进邻居表；配合 `BTM` 就是
+  "先投毒邻居表、再把人赶过去"。实测 ESP-IDF 站点一帧 NRREQ 都不发，所以 `rrmtokhit` 在它身上恒 0。
   伪造 AP 的 TA 告诉客户端“还有个邻居 BSS，去连它”。category 5 同样在 robust 集合里，
   所以 PMF 强制时会被客户端驱动丢弃——和 BTM 一样的边界，不是绕过。元素固定 id 52 / len 13，
   没有可选子元素；`info`/`opclass`/`phy` 三个字段默认 0，是为了先按真帧逐位抄再回填，

