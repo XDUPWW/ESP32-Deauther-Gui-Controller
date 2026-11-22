@@ -56,8 +56,8 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 - `attacks`：攻击驱动描述符与登记表，已注册 10 个（`deauth` `probe` `delba` `ba` `eapol`
   `csa` `authflood` `sae` `btm` `qosnull`），每个模块自带上限节拍与计数，`attacks_tick` 统一驱动
 - `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、触摸校准存 NVS、作为 `transport` 插件显示同一份回执；
-  主界面的攻击列表从 wbus 注册表长出来（对象填了 `title` 就有一个按钮），点一下就发
-  `<obj>.start idx=<选中的目标>`
+  首页是 `WiFi Attack` / `BLE Attack` / `Touch` / 诊断入口，WiFi 页的攻击格子从 wbus 注册表长出来
+  （对象填了 `title` 就占一格），点一下就发 `<obj>.start idx=<选中的目标>`
 - `main`：按层序编排与常驻循环
 
 `wifi_frame` 的帧构造已全部落地：deauth/disassoc/auth(+扩展体)/assoc/probe req/beacon/
@@ -217,22 +217,38 @@ UI 层不用改一行。
 一块 240x320 的屏（横过来 320x240），从上到下四层：
 
 ```
-状态行      up 12s 38KB tgt 2 > probe        ← 运行时长 / 剩余堆 / 当前目标 / 正在跑的攻击
-列表        可滚动；两副面孔（Atk = 攻击列表，Tgt = 目标列表）
+标题+状态   AirBench                       up 12s 38KB tgt 2 > deauth
+内容        一级菜单 / WiFi 攻击格子 / 目标列表 / BLE / 触摸测试，一次只露一页
 日志        最近两行回执，攻击启动的 OK/ERR 直接落在这里
-导航        [Atk] [Tgt] [Scan] [Stop] / [Info] [Touch] [LED] [Cal]
 ```
 
-- **攻击列表不是写死的**：遍历 `wb_count()/wb_at()`，对象声明了 `title` 就上一个按钮。
+首页是新旧功能的入口，一行一个/三个：
+
+```
+[WiFi Attack]
+[BLE Attack]
+[Touch] [Info] [LED]
+[Calibrate]
+```
+
+`WiFi Attack` 进去是 3 列的攻击格子（10 个攻击排 4 行），最底下一行
+`[Scan] [Targets] [Stop] [Back]`；`BLE Attack` 是 `ble.scan` / `ble.adv` 的按钮页，
+没编 `CONFIG_WB_BLE` 时显示一行 "BLE not in this build"。
+
+- **设计语言照旧工程**：LVGL 默认主题、行高 33、按钮 29、一行三个，标题用 Montserrat 14，
+  灰字（`0x666666`）只用于状态与日志。别在这上面加自绘配色，深色卡片那版选起来很费劲。
+- **攻击格子不是写死的**：遍历 `wb_count()/wb_at()`，对象声明了 `title` 就占一格。
   加一个攻击 = 注册对象 + 填一行 `title`，屏幕不用动。
 - **点一下就是启动**：命令是 `<obj>.start idx=<tgt>`；参数表里没有 `idx` 的模块（`probe`）自动
-  省掉这一段。再点同一行等于 `<obj>.stop`，`Stop` 键停当前那个。
+  省掉这一段。再点同一格等于 `<obj>.stop`，正在跑的那格变成橙底加 `> ` 前缀。
+  换一个攻击会先把上一个停掉——两个模块抢信道只会互相踩。
 - **参数只给默认值**：`timer`、`cand`、`sta` 这类要打字的东西留在串口/GUI；
   屏上只做"选目标 → 一键开打 → 一键停"。
-- **目标列表**：`wtarget` 的前 16 个 AP，显示 `序号 SSID ch RSSI`；`Scan` 键发 `scan.ap`，
-  扫完列表自己刷新（比较表里条数，不是等固定时间）。
+- **目标列表**：`wtarget` 的前 24 个 AP，显示 `序号 SSID ch RSSI`，点一行选中并回到攻击格子；
+  `Scan` 键发 `scan.ap` 并跳到目标页，扫完列表自己刷新（比较表里条数，不是等固定时间）。
+- **Touch 页**：中间一块可点区域，按下就把 `x= y=` 打在区域中央和日志里，用来判断校准还准不准。
 - 界面文字全 ASCII：LVGL 里只编了内置 Montserrat，没有中文字库。
-- 自检：`ui.dump` 把对象树打出来（位置/尺寸/文本/可点标志），`ui.tap x= y=` 合成一次点击，
+- 自检：`ui.dump` 把对象树打出来（位置/尺寸/文本/可点标志，向下 6 层），`ui.tap x= y=` 合成一次点击，
   两者合起来不用手也能验一遍按钮。
 
 ## 已知约束

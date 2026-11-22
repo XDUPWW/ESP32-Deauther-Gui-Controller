@@ -162,7 +162,7 @@ void wireless_ui_status(char *buf, size_t cap) {
 }
 
 static void dump_obj(lv_obj_t *obj, int depth) {
-    if (obj == NULL || depth > 4) {
+    if (obj == NULL || depth > 6) {
         return;
     }
     lv_area_t a;

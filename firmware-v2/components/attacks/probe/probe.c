@@ -165,7 +165,7 @@ static const wb_method_t kMethods[] = {
 
 static const wb_object_t kObject = {
     .name = "probe",
-    .title = "Probe/beacon flood",
+    .title = "Probe",
     .methods = kMethods,
     .n_methods = sizeof(kMethods) / sizeof(kMethods[0]),
 };
