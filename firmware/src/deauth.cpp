@@ -10,9 +10,8 @@
 #include "definitions.h"
 #include "delba.h"
 #include "eapol.h"
-#include "pspoll.h"
+#include "qosnull.h"
 #include "sae.h"
-#include "tim.h"
 #include "tx_guard.h"
 #include "types.h"
 #include "btm.h"
@@ -912,9 +911,8 @@ void attack_modules_register_defaults(void) {
         {"delba", delba_step, delba_stop, delba_on_rx},
         {"btm", btm_step, btm_stop, btm_on_rx},
         {"rrm", rrm_step, rrm_stop, rrm_on_rx},
-        {"tim", tim_step, tim_stop, tim_on_rx},
         {"eapol", eapol_step, eapol_stop, eapol_on_rx},
-        {"pspoll", pspoll_step, pspoll_stop, pspoll_on_rx},
+        {"qosnull", qosnull_step, qosnull_stop, qosnull_on_rx},
         {"sae", sae_step, sae_stop, sae_on_rx},
         {"authflood", authflood_step, authflood_stop, authflood_on_rx},
     };

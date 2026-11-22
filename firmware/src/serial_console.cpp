@@ -15,10 +15,9 @@
 #include "deauth.h"
 #include "delba.h"
 #include "eapol.h"
-#include "pspoll.h"
+#include "qosnull.h"
 #include "radio.h"
 #include "sae.h"
-#include "tim.h"
 #include "tx_guard.h"
 #include "baitap.h"
 #include "wbus.h"
@@ -81,9 +80,9 @@ const char* attack_mode_label() {
 
 const char* capabilities() {
 #if CONFIG_SOC_WIFI_SUPPORT_5G
-  return "deauth,eviltwin,probe,5g,baitap,btm,rrm,tim,eapol,pspoll,sae,authflood";
+  return "deauth,eviltwin,probe,5g,baitap,btm,rrm,eapol,qosnull,sae,authflood";
 #else
-  return "deauth,eviltwin,probe,baitap,btm,rrm,tim,eapol,pspoll,sae,authflood";
+  return "deauth,eviltwin,probe,baitap,btm,rrm,eapol,qosnull,sae,authflood";
 #endif
 }
 
@@ -115,7 +114,7 @@ void print_help() {
   Serial.println("INFO EVILTWIN <idx> / EVILTWIN_STOP / CREDS");
   Serial.println("INFO TOUCH / CALIBRATE             LVGL touch readback / recalibrate");
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
-  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/ba/evil/btm/tim/eapol/pspoll/sae/authflood)");
+  Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/ba/evil/btm/eapol/sae/authflood/qosnull)");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
   Serial.println("INFO CSA <idx> [ch] [cnt] [secs]   CSA spoof; no ch/auto = random opposite-band channel, loops");
@@ -141,16 +140,13 @@ void print_help() {
   Serial.println("INFO                               802.11k Neighbor Report Response spoof (count=0 keeps going)");
   Serial.println("INFO RRMSTOP                       stop the Neighbor Report spoof");
   Serial.println("INFO RRMTEST                       dump the Neighbor Report Response bytes (format check)");
-  Serial.println("INFO TIM <idx> [tim|clear] [aid]   tamper the TIM element of a cloned beacon");
-  Serial.println("INFO TIMSTOP                       stop the beacon clone");
-  Serial.println("INFO TIMTEST                       dump the cloned beacon (TIM check)");
   Serial.println("INFO EAPOL <idx> [tid|-1] [sta-mac] EAPOL-Start/Logoff flood as a forged station");
   Serial.println("INFO EAPOLSTOP                     stop the EAPOL flood");
   Serial.println("INFO EAPOLTEST                     dump the EAPOL data frames (format check)");
-  Serial.println("INFO PSPOLL <idx> [sta-mac] [null|qosnull|action]  PM-bit spoof frame shape");
-  Serial.println("INFO PSPOLLREL                     send PM=0 to every victim, then stop");
-  Serial.println("INFO PSPOLLSTOP                    stop the PM-bit spoof");
-  Serial.println("INFO PSPOLLTEST                    dump all three shapes (PM=1 / PM=0)");
+  Serial.println("INFO QOSNULL <idx> [sta-mac]       forge a unicast QoS Null as a victim, flip the PM bit");
+  Serial.println("INFO QOSNULLREL                    send PM=0 to every victim, then stop");
+  Serial.println("INFO QOSNULLSTOP                   stop the PM-bit spoof");
+  Serial.println("INFO QOSNULLTEST                   dump the QoS Null bytes (PM=1 / PM=0)");
   Serial.println("INFO SAE <idx> [point|rand] [gap_ms]  SAE Commit flood (WPA3), echoes anti-clogging token");
   Serial.println("INFO SAESTOP                       stop the SAE flood");
   Serial.println("INFO SAETEST                       dump the SAE Commit bytes (format check)");
@@ -430,14 +426,6 @@ void do_status() {
   Serial.print((unsigned)rrm_op_class());
   Serial.print(" rrmphy=");
   Serial.print((unsigned)rrm_phy_type());
-  Serial.print(" tim=");
-  Serial.print(tim_mode_name());
-  Serial.print(" timf=");
-  Serial.print((unsigned)tim_frames());
-  Serial.print(" timaid=");
-  Serial.print((unsigned)tim_aid_mask());
-  Serial.print(" timreal=");
-  Serial.print((unsigned)tim_real_beacons());
   Serial.print(" eap=");
   Serial.print(eapol_active() ? "on" : "off");
   Serial.print(" eapf=");
@@ -448,26 +436,22 @@ void do_status() {
   Serial.print((unsigned)eapol_rx_eap_packets());
   Serial.print(" eaprxsta=");
   Serial.print((unsigned)eapol_rx_from_sta());
-  Serial.print(" psp=");
-  Serial.print(pspoll_mode_name());
-  Serial.print(" pspf=");
-  Serial.print((unsigned)pspoll_frames());
-  Serial.print(" pspfrm=");
-  Serial.print(pspoll_frame_name());
-  Serial.print(" pspnul=");
-  Serial.print((unsigned)pspoll_null_frames());
-  Serial.print(" pspfl=");
-  Serial.print((unsigned)pspoll_flush_frames());
-  Serial.print(" pspc=");
-  Serial.print((unsigned)pspoll_clients());
-  Serial.print(" pspdl=");
-  Serial.print((unsigned)pspoll_dl_frames());
-  Serial.print(" psprxp=");
-  Serial.print((unsigned)pspoll_rx_polls());
-  Serial.print(" psprxn=");
-  Serial.print((unsigned)pspoll_rx_nulls());
-  Serial.print(" psprxpm=");
-  Serial.print((unsigned)pspoll_rx_pm1());
+  Serial.print(" qn=");
+  Serial.print(qosnull_mode_name());
+  Serial.print(" qnf=");
+  Serial.print((unsigned)qosnull_frames());
+  Serial.print(" qn1=");
+  Serial.print((unsigned)qosnull_pm1_frames());
+  Serial.print(" qn0=");
+  Serial.print((unsigned)qosnull_pm0_frames());
+  Serial.print(" qnc=");
+  Serial.print((unsigned)qosnull_clients());
+  Serial.print(" qndl=");
+  Serial.print((unsigned)qosnull_dl_frames());
+  Serial.print(" qnrn=");
+  Serial.print((unsigned)qosnull_rx_nulls());
+  Serial.print(" qnrp=");
+  Serial.print((unsigned)qosnull_rx_pm1());
   Serial.print(" sae=");
   Serial.print(sae_active() ? "on" : "off");
   Serial.print(" saesec=");
@@ -697,11 +681,9 @@ void do_ctrl_test(char* sub_token, char* ra_token, char* dur_token) {
 // stays dead while we are silent.
 // ---- 802.11v BTM Request ----
 
-// ---- TIM poisoning ----
-
 // ---- EAPOL ----
 
-// ---- power-management (PS bit) spoof ----
+// ---- QoS Null PM-bit spoof ----
 
 // ---- SAE commit flood ----
 
@@ -979,11 +961,11 @@ void do_ui_state() {
 void do_ui_screen(char* token) {
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
   if (token == nullptr) {
-    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|ba|evil|btm|tim|eapol|pspoll|sae|authflood>");
+    Serial.println("ERR usage: UISCREEN <menu|deauth|mode|probe|csa|delba|ba|evil|btm|eapol|sae|authflood|qosnull>");
     return;
   }
   if (!wireless_ui_show_by_name(token)) {
-    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba ba evil btm tim eapol pspoll sae authflood");
+    Serial.println("ERR unknown screen, try: menu deauth mode probe csa delba ba evil btm eapol sae authflood qosnull");
     return;
   }
   Serial.print("OK UISCREEN ");
@@ -1034,16 +1016,13 @@ const bus_alias_t kBusAliases[] = {
     {"RRM", "rrm", "start"},
     {"RRMSTOP", "rrm", "stop"},
     {"RRMTEST", "rrm", "test"},
-    {"TIM", "tim", "start"},
-    {"TIMSTOP", "tim", "stop"},
-    {"TIMTEST", "tim", "test"},
     {"EAPOL", "eapol", "start"},
     {"EAPOLSTOP", "eapol", "stop"},
     {"EAPOLTEST", "eapol", "test"},
-    {"PSPOLL", "pspoll", "start"},
-    {"PSPOLLREL", "pspoll", "release"},
-    {"PSPOLLSTOP", "pspoll", "stop"},
-    {"PSPOLLTEST", "pspoll", "test"},
+    {"QOSNULL", "qosnull", "start"},
+    {"QOSNULLREL", "qosnull", "release"},
+    {"QOSNULLSTOP", "qosnull", "stop"},
+    {"QOSNULLTEST", "qosnull", "test"},
     {"SAE", "sae", "start"},
     {"SAESTOP", "sae", "stop"},
     {"SAETEST", "sae", "test"},

@@ -65,7 +65,7 @@ static lv_obj_t *s_ba_label;
 static lv_obj_t *s_mod_label;          // the shared frame-module page's target line
 static lv_obj_t *s_mod_variant_label;  // its variant button's text (Clear/Plain/...)
 static lv_obj_t *s_mod_variant_btn;     // hidden on the BTM page: it has no variant
-// Which frame-level module the shared page is driving: 0 btm, 1 tim, 2 eapol, 3 sae, 4 auth.
+// Which frame-level module the shared page is driving: 0 btm, 1 eapol, 2 sae, 3 auth, 4 qosnull.
 static int s_atk_kind;
 static void reason_row_clicked(lv_event_t *event);
 // Deauth reason code picker on the mode page. Cycles through the three codes
@@ -297,7 +297,7 @@ typedef enum {
     SCR_DELBA,
     SCR_BA,
     SCR_EVIL,
-    SCR_FRAME,  // shared page for BTM / TIM / EAPOL / SAE / auth / PS-Poll
+    SCR_FRAME,  // shared page for BTM / EAPOL / SAE / auth / QoS Null
     SCR_COUNT
 } ui_screen_t;
 
@@ -316,18 +316,11 @@ static void show_screen(ui_screen_t target) {
     s_screen = target;
 }
 
-// The six frame-level modules share one page; these two tables name it.
-static const char *kModNames[6] = {"BTM", "TIM", "EAPOL", "SAE", "AUTH", "PSPOLL"};
-static const char *kModVariants[6] = {"", "Clear", "Plain", "Rand", "NoAuto",
-                                     "Release"};
+// The five frame-level modules share one page; these two tables name it.
+static const char *kModNames[5] = {"BTM", "EAPOL", "SAE", "AUTH", "QOSNULL"};
+static const char *kModVariants[5] = {"", "Plain", "Rand", "NoAuto", "PM=0"};
 // Screen names reported by `UISCREEN` / `UI` (lowercase, same spelling as the commands).
-static const char *kModScreenNames[6] = {"btm",  "tim",  "eapol",
-                                         "sae",  "authflood", "pspoll"};
-// PM-bit spoof: the frame shape is the one thing worth cycling from the panel
-// (stacks differ in which frame they honour, all three carry the PM bit).
-static int s_pspoll_shape = 1;  // QoS Null: the shape that measured strongest
-static const char *kPspollShapes[3] = {"null", "qosnull", "action"};
-static const char *kPspollShapeLabels[3] = {"Null", "QoSNull", "Action"};
+static const char *kModScreenNames[5] = {"btm", "eapol", "sae", "authflood", "qosnull"};
 
 static void update_mode_label(void) {
     if (s_mode_label == NULL) {
@@ -427,7 +420,7 @@ static void update_mode_label(void) {
     }
 
     if (s_mod_label != NULL) {
-        const char *name = kModNames[(s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind];
+        const char *name = kModNames[(s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind];
         if (s_selected < 0) {
             snprintf(text, sizeof(text), "%s: pick a target", name);
         } else {
@@ -598,12 +591,10 @@ static void ba_stop_clicked(lv_event_t *event) {
 // popup then stopped at 14 rows instead of 30). The kind picks the command and
 // retitles the variant button.
 static void goto_atk(int kind) {
-    s_atk_kind = (kind < 0 || kind > 5) ? 0 : kind;
+    s_atk_kind = (kind < 0 || kind > 4) ? 0 : kind;
     s_tap_pick = 0;  // every one of them targets a single AP
     if (s_mod_variant_label != NULL) {
-        lv_label_set_text(s_mod_variant_label,
-                          s_atk_kind == 5 ? kPspollShapeLabels[s_pspoll_shape]
-                                          : kModVariants[s_atk_kind]);
+        lv_label_set_text(s_mod_variant_label, kModVariants[s_atk_kind]);
     }
     // BTM has exactly one shape now (no candidate list, timer is the only knob),
     // so the variant key would be a second "Start" with a different number on it.
@@ -623,25 +614,21 @@ static void goto_btm(lv_event_t *event) {
     (void)event;
     goto_atk(0);
 }
-static void goto_tim(lv_event_t *event) {
+static void goto_eapol(lv_event_t *event) {
     (void)event;
     goto_atk(1);
 }
-static void goto_eapol(lv_event_t *event) {
+static void goto_sae(lv_event_t *event) {
     (void)event;
     goto_atk(2);
 }
-static void goto_sae(lv_event_t *event) {
+static void goto_authflood(lv_event_t *event) {
     (void)event;
     goto_atk(3);
 }
-static void goto_authflood(lv_event_t *event) {
+static void goto_qosnull(lv_event_t *event) {
     (void)event;
     goto_atk(4);
-}
-static void goto_pspoll(lv_event_t *event) {
-    (void)event;
-    goto_atk(5);
 }
 
 static void atk_start_clicked(lv_event_t *event) {
@@ -655,20 +642,16 @@ static void atk_start_clicked(lv_event_t *event) {
     char command[40];
     switch (s_atk_kind) {
         case 1:
-            snprintf(command, sizeof(command), "TIM %d", s_selected);
-            break;
-        case 2:
             snprintf(command, sizeof(command), "EAPOL %d", s_selected);
             break;
-        case 3:
+        case 2:
             snprintf(command, sizeof(command), "SAE %d", s_selected);
             break;
-        case 4:
+        case 3:
             snprintf(command, sizeof(command), "AUTHFLOOD %d", s_selected);
             break;
-        case 5:
-            // Both halves: PM=1 Null Data + PS-Poll (mode both is the default).
-            snprintf(command, sizeof(command), "PSPOLL %d", s_selected);
+        case 4:
+            snprintf(command, sizeof(command), "QOSNULL %d", s_selected);
             break;
         default:
             snprintf(command, sizeof(command), "BTM %d", s_selected);
@@ -689,25 +672,17 @@ static void atk_variant_clicked(lv_event_t *event) {
     char command[40];
     switch (s_atk_kind) {
         case 1:
-            snprintf(command, sizeof(command), "TIM %d clear", s_selected);
-            break;
-        case 2:
             snprintf(command, sizeof(command), "EAPOL %d -1", s_selected);
             break;
-        case 3:
+        case 2:
             snprintf(command, sizeof(command), "SAE %d rand", s_selected);
             break;
-        case 4:
+        case 3:
             snprintf(command, sizeof(command), "AUTHFLOOD %d both noauto", s_selected);
             break;
-        case 5:
-            // Cycle the frame shape and restart with it.
-            s_pspoll_shape = (s_pspoll_shape + 1) % 3;
-            snprintf(command, sizeof(command), "PSPOLL %d %s", s_selected,
-                     kPspollShapes[s_pspoll_shape]);
-            if (s_mod_variant_label != NULL) {
-                lv_label_set_text(s_mod_variant_label, kPspollShapeLabels[s_pspoll_shape]);
-            }
+        case 4:
+            // 善后那一下：给每个受害者补 PM=0，把 AP 那边"该站睡了"拨回来。
+            snprintf(command, sizeof(command), "QOSNULLREL");
             break;
         default:
             return;  // the button is hidden on the BTM page (single shape)
@@ -717,9 +692,9 @@ static void atk_variant_clicked(lv_event_t *event) {
 
 static void atk_stop_clicked(lv_event_t *event) {
     (void)event;
-    static const char *kStops[6] = {"BTMSTOP",   "TIMSTOP", "EAPOLSTOP",
-                                    "SAESTOP",   "AUTHFLOODSTOP", "PSPOLLSTOP"};
-    const int kind = (s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind;
+    static const char *kStops[5] = {"BTMSTOP", "EAPOLSTOP", "SAESTOP", "AUTHFLOODSTOP",
+                                    "QOSNULLSTOP"};
+    const int kind = (s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind;
     emit(kStops[kind]);
 }
 
@@ -1031,12 +1006,11 @@ static bool build_main_ui(void) {
     make_button(m2, "Evil", goto_evil);
     lv_obj_t *m3 = make_row(s_screens[SCR_MENU]);
     make_button(m3, "BTM", goto_btm);
-    make_button(m3, "TIM", goto_tim);
     make_button(m3, "EAPOL", goto_eapol);
+    make_button(m3, "SAE", goto_sae);
     lv_obj_t *m4 = make_row(s_screens[SCR_MENU]);
-    make_button(m4, "SAE", goto_sae);
     make_button(m4, "Auth", goto_authflood);
-    make_button(m4, "PS-Poll", goto_pspoll);
+    make_button(m4, "QoSNull", goto_qosnull);
 
     // ---- level 2: deauth mode menu
     s_screens[SCR_DEAUTH] = make_screen(root);
@@ -1561,17 +1535,16 @@ bool wireless_ui_show_by_name(const char *name) {
     } else if (strcmp(name, "evil") == 0) {
         s_tap_pick = 0;
         show_screen(SCR_EVIL);
-    } else if (strcmp(name, "btm") == 0 || strcmp(name, "tim") == 0 ||
-               strcmp(name, "eapol") == 0 || strcmp(name, "sae") == 0 ||
-               strcmp(name, "authflood") == 0 || strcmp(name, "pspoll") == 0) {
-        // "pspoll" shares its first letter with "probe", so the names are compared
+    } else if (strcmp(name, "btm") == 0 || strcmp(name, "eapol") == 0 ||
+               strcmp(name, "sae") == 0 || strcmp(name, "authflood") == 0 ||
+               strcmp(name, "qosnull") == 0) {
+        // "qosnull" shares its first letter with "probe", so the names are compared
         // explicitly instead of keying on name[0].
-        const int kind = (strcmp(name, "btm") == 0)        ? 0
-                         : (strcmp(name, "tim") == 0)      ? 1
-                         : (strcmp(name, "eapol") == 0)    ? 2
-                         : (strcmp(name, "sae") == 0)      ? 3
-                         : (strcmp(name, "authflood") == 0) ? 4
-                                                            : 5;
+        const int kind = (strcmp(name, "btm") == 0)         ? 0
+                         : (strcmp(name, "eapol") == 0)     ? 1
+                         : (strcmp(name, "sae") == 0)       ? 2
+                         : (strcmp(name, "authflood") == 0) ? 3
+                                                            : 4;
         goto_atk(kind);
     } else {
         ok = false;
@@ -1597,7 +1570,7 @@ const char *wireless_ui_screen_name(void) {
         case SCR_BA:
             return "ba";
         case SCR_FRAME:
-            return kModScreenNames[(s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind];
+            return kModScreenNames[(s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind];
         case SCR_MENU:
         default:
             return "menu";

