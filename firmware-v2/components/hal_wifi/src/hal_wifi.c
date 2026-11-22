@@ -205,6 +205,14 @@ static esp_err_t netif_base_init(void) {
 }
 
 esp_err_t hal_wifi_init(hal_rate_t startup_rate) {
+    // 驱动从 esp_wifi_start() 起就往默认事件循环里塞事件（STA_START、信道切换、扫描完成）。
+    // 循环不存在时每条事件都刷一行 `E wifi: failed to post WiFi event=..`，跳信道的模块
+    // （probe / csa）一分钟几千行，115200 的串口会被这几行占死，命令回执全排在后面。
+    // 这里只建循环、不建 netif：lwIP 还是等真要用 IP 栈（radio.ap）时才拉起来。
+    const esp_err_t loop_err = esp_event_loop_create_default();
+    if (loop_err != ESP_OK && loop_err != ESP_ERR_INVALID_STATE) {
+        return loop_err;
+    }
     wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_RETURN_ON_ERROR(esp_wifi_init(&init_cfg), TAG, "wifi init");
     ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG, "storage");
