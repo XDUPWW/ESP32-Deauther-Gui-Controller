@@ -55,7 +55,9 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 - `wtarget`：设备登记表（AP 按 BSSID upsert、RSSI 取最强、STA 带归属 AP）
 - `attacks`：攻击驱动描述符与登记表，已注册 10 个（`deauth` `probe` `delba` `ba` `eapol`
   `csa` `authflood` `sae` `btm` `qosnull`），每个模块自带上限节拍与计数，`attacks_tick` 统一驱动
-- `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、主页（标题/运行时长/剩余堆/回执行）、触摸校准存 NVS、作为 `transport` 插件显示同一份回执
+- `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、触摸校准存 NVS、作为 `transport` 插件显示同一份回执；
+  主界面的攻击列表从 wbus 注册表长出来（对象填了 `title` 就有一个按钮），点一下就发
+  `<obj>.start idx=<选中的目标>`
 - `main`：按层序编排与常驻循环
 
 `wifi_frame` 的帧构造已全部落地：deauth/disassoc/auth(+扩展体)/assoc/probe req/beacon/
@@ -71,6 +73,8 @@ probe resp/action/data/null/LLC-SNAP/BAR/RTS，签名没变、实现不再是空
 | `system.touch` | 采样一次触摸原始坐标与按下状态 |
 | `system.reset` | 重启 |
 | `ui.status` | 界面状态：就绪与否、累计刷屏次数、剩余堆 |
+| `ui.dump` | 把屏上对象树（位置/尺寸/文本/可点与否）逐行打出来，不用盯着屏幕看 |
+| `ui.tap x=0..319 y=0..239` | 软件点一下屏幕，用来验按钮事件有没有接上 |
 | `ui.screen [count=1..4]` | 全屏色块循环，验证 SPI 刷屏通路 |
 | `radio.info` | MAC、信道与占用者、国家码、收发与信道统计、TSF |
 | `radio.chan ch=1..196 [hold=0..600000]` | 申请并切换信道（租约），被占时返回占用者 |
@@ -199,12 +203,37 @@ UI 层不用改一行。
 
 - [x] 目录骨架、空组件、`REQUIRES` 白名单、可编译入口
 - [x] 屏幕点亮（ILI9341 + LVGL）、触摸采样、串口命令闭环
+- [x] 屏幕接上攻击：攻击列表由 wbus 注册表驱动，点一下就用当前目标启动，再点一次停；
+  目标列表来自 `wtarget`，扫描完自动刷新
 - [x] 总线骨架：注册表 / 调用 / 参数策略 / 回执 / 事件；插件化传输；对象方法命令
 - [x] 各层契约头文件（`hal_wifi`、`wifi_frame`、`wtarget`、`attacks`）
 - [x] 射频底座：注入与节流、混杂接收、信道租约、两条扫描、SoftAP、目标表
 - [x] 帧构造全套（deauth/auth/assoc/beacon/action/data/BAR/RTS）
 - [x] 攻击模块重写：10 个已迁入，`BTM` 配 `radio.ap` 完成单板漫游闭环
 - [ ] 其余上层接口插件（LVGL 队列以外的 TCP / BLE）
+
+## 触摸界面
+
+一块 240x320 的屏（横过来 320x240），从上到下四层：
+
+```
+状态行      up 12s 38KB tgt 2 > probe        ← 运行时长 / 剩余堆 / 当前目标 / 正在跑的攻击
+列表        可滚动；两副面孔（Atk = 攻击列表，Tgt = 目标列表）
+日志        最近两行回执，攻击启动的 OK/ERR 直接落在这里
+导航        [Atk] [Tgt] [Scan] [Stop] / [Info] [Touch] [LED] [Cal]
+```
+
+- **攻击列表不是写死的**：遍历 `wb_count()/wb_at()`，对象声明了 `title` 就上一个按钮。
+  加一个攻击 = 注册对象 + 填一行 `title`，屏幕不用动。
+- **点一下就是启动**：命令是 `<obj>.start idx=<tgt>`；参数表里没有 `idx` 的模块（`probe`）自动
+  省掉这一段。再点同一行等于 `<obj>.stop`，`Stop` 键停当前那个。
+- **参数只给默认值**：`timer`、`cand`、`sta` 这类要打字的东西留在串口/GUI；
+  屏上只做"选目标 → 一键开打 → 一键停"。
+- **目标列表**：`wtarget` 的前 16 个 AP，显示 `序号 SSID ch RSSI`；`Scan` 键发 `scan.ap`，
+  扫完列表自己刷新（比较表里条数，不是等固定时间）。
+- 界面文字全 ASCII：LVGL 里只编了内置 Montserrat，没有中文字库。
+- 自检：`ui.dump` 把对象树打出来（位置/尺寸/文本/可点标志），`ui.tap x= y=` 合成一次点击，
+  两者合起来不用手也能验一遍按钮。
 
 ## 已知约束
 
@@ -249,7 +278,10 @@ UI 层不用改一行。
   "不支持但能用"。能上 MCS 的结论锁在 ESP-IDF 6.1 + 经典 ESP32 上，换版本要重测。
 - 驱动文档写 `esp_wifi_80211_tx` 只支持 len >= 24，但实测 20 字节的 BAR 能发出去并被抓到。
   C5 侧收到时 `sig_len` 含 4 字节 FCS，同一个 BAR 报成 24。
-- WiFi 起来后剩余堆约 80 KB（LVGL 池 80 KB + WiFi 栈 + RX 队列 8 KB），后续攻击模块要按这个预算分配缓冲。
+- WiFi 起来后剩余堆约 38 KB（LVGL 池 + WiFi 栈 + RX 队列 + BLE 主机），攻击模块按这个预算分配缓冲：
+  `qosnull` 的候选 STA 表就放在栈上，`radio.tx_bench` 那 6 KB 静态缓冲是最大的固定开销。
+- 默认事件循环在 `hal_wifi_init()` 里建：WiFi 驱动从 `esp_wifi_start()` 起就往里塞事件，
+  循环不存在时每条事件都刷一行 `E wifi: failed to post WiFi event=..`，跳信道的模块能把串口塞死。
 
 ## 许可证
 

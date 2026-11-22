@@ -51,6 +51,9 @@ typedef struct {
 
 typedef struct {
     const char *name;
+    // 界面上显示的名字；NULL 表示这个对象不上界面（服务类的都不上）。
+    // 触摸屏的攻击列表就是照这个字段长出来的，加一个攻击 = 这里填一行。
+    const char *title;
     const wb_method_t *methods;
     uint8_t n_methods;
 } wb_object_t;

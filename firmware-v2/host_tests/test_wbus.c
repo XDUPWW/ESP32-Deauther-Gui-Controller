@@ -101,7 +101,7 @@ static const wb_method_t kMethods[] = {
     {"two", demo_two_lines, "", NULL, 0},
 };
 
-static const wb_object_t kObject = {"demo", kMethods, 4};
+static const wb_object_t kObject = {"demo", "Demo object", kMethods, 4};
 
 typedef struct {
     const char *filter;

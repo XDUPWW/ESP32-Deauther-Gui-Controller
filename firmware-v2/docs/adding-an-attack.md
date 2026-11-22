@@ -397,13 +397,15 @@ wf_csa_parse(ie, len, &channel, &count)
 
 ## 六、还没迁的目录与已经踩过的坑
 
-`components/attacks/` 下 9 个攻击都已落地；`tim`（克隆 beacon 改省电位图）按计划不再做，
+`components/attacks/` 下 10 个攻击都已落地；`tim`（克隆 beacon 改省电位图）按计划不再做，
 PS-Poll 那条路换成了单播 QoS Null 的 PM 位欺骗（`qosnull`）。
 剩下几个的难点：
 
-| 目录 | 依赖什么 | 真正的难点 |
-|---|---|---|
-| `qosnull` | 单播 QoS Null 的 PM 位（已落地，照 `attacks/qosnull/qosnull.c`） | 效果边界大：AP 有缓存老化，受害者自己发 PM=0 会把状态翻回来 |
+
+触摸屏是白送的，但有个前提：对象里要填 `title`。填了它，`wb_at()` 遍历时就会在屏上
+多出一个按钮，点了自动发 `<obj>.start idx=<当前选中的目标>`；参数表里没有 `idx` 的模块
+（`probe`）会自动省掉这一段。想让它上屏却忘记填 `title`，屏上就永远看不到它——这是
+新增攻击最容易漏的一步。
 
 已经迁完的模块里，有两个值得在动手前先读一眼：
 
@@ -428,6 +430,9 @@ PS-Poll 那条路换成了单播 QoS Null 的 PM 位欺骗（`qosnull`）。
 3. **参数没解析和"设置无效"长得一模一样**。`radio.rate rate=mcs0` 曾经因为
    `parse_rate()` 没实现 mcs 分支而被当成 default，测出来"MCS 不支持"——其实压根没设进去。
    **判据**：看回执里回显的值，别只看 `OK`。
+
+界面侧的自检不用手点屏幕：`ui.dump` 打印对象树（位置/尺寸/文本/可点标志），
+`ui.tap x= y=` 合成一次点击，两步就能确认按钮连没连上命令。
 
 手边能用的验证工具（`firmware-v2/tools/`）：
 

@@ -1,5 +1,5 @@
 set(ui_srcs "src/wireless_ui_stub.c")
-set(ui_reqs platform transport)
+set(ui_reqs platform transport wbus wtarget)
 
 if(CONFIG_WB_LVGL)
     set(ui_srcs

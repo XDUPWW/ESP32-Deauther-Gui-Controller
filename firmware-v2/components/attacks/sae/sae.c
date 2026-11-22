@@ -246,6 +246,7 @@ static const wb_method_t kMethods[] = {
 
 static const wb_object_t kObject = {
     .name = "sae",
+    .title = "SAE commit flood",
     .methods = kMethods,
     .n_methods = sizeof(kMethods) / sizeof(kMethods[0]),
 };

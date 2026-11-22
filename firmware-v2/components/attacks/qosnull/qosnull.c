@@ -255,6 +255,7 @@ static const wb_method_t kMethods[] = {
 
 static const wb_object_t kObject = {
     .name = "qosnull",
+    .title = "QoS Null PM spoof",
     .methods = kMethods,
     .n_methods = sizeof(kMethods) / sizeof(kMethods[0]),
 };
