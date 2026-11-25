@@ -20,6 +20,7 @@ ESP32 / ESP32-C5 的 **802.11 无线安全测试工具**，由三块代码组成
   `BSS_TRANSITION!`），用来判伪造 BTM Request / Neighbor Report 到底有没有被受害者处理。
   原 `rf_throughput` 一字未改，继续提供 `ap` 角色。命令：`ssid <文本>` / `pass <口令>` /
   `country <cc>` / `join` / `sta <ssid>` / `btm <0|1>` / `rm <0|1>` / `ps <0|1|2>` / `scan` / `status` /
+  `tcp rx|tx <host> <port> <secs>`（TCP 吞吐，判"攻击到底影响了多少带宽"；PC 侧需要推流/收流服务端）/
   `trigstat`（仅 Wi-Fi 6 目标：读 IDF 私有的 `esp_test_get_hw_tb_statistics()`，
   打 `rx_trig` / `tb_times` / `sifs_abort` / `pwr_oor`，用来判 11ax Trigger 到底有没有被收到、有没有被回应；
   `rx_mpdu` 是活性对照，它为 0 时其余数字无意义）。
@@ -206,7 +207,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 | `delba.cpp` | DELBA 欺骗 + BA 会话劫持（DELBA → 伪造 ADDBA → BAR）、TID 学习 |
 | `btm.cpp` | 802.11v BTM Request 欺骗：11v 能力学习、候选 Neighbor Report、Response 计数 |
 | `rrm.cpp` | 802.11k Neighbor Report Response 伪造：幻影邻居元素（52/13）、按 STA 轮询发送、count 限次 |
-| `bsrp.cpp` | HE BSRP Trigger（subtype 2 / Trigger Type 4）：32 字节单用户帧、AID/信道校验、45 ms 单播节拍；空口 10/10 可见且受害 STA 会回 HE-TB——但前提是 `ul_length ≥ 48` 且 AID 正确（`ap_tx_power`/`target_rssi` 不是闸门，别拿 `pwr_oor` 当判据），回应内容是 QoS Null，见 `测试报告.md §4.4.14`。`BSRPFIELD` 改这些字段 |
+| `bsrp.cpp` | HE BSRP Trigger（subtype 2 / Trigger Type 4）：32 字节单用户帧、AID/信道校验、45 ms 单播节拍；空口 10/10 可见且受害 STA 会回 HE-TB——但前提是 `ul_length ≥ 48` 且 AID 正确（`ap_tx_power`/`target_rssi` 不是闸门，别拿 `pwr_oor` 当判据），回应内容是 QoS Null；**吞吐上没有增量效果**，45 ms 节拍下的跌幅换成错误 AID 一样复现，全是我们自己注入的空口占用，见 `测试报告.md §4.4.14`。`BSRPFIELD` 改这些字段 |
 | `eapol.cpp` | EAPOL-Start/Logoff 洪泛：ToDS 数据帧 + LLC/SNAP 0x888E，收侧统计 EAP 包 |
 | `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
 | `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
