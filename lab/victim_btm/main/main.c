@@ -25,6 +25,10 @@
 //                           publishes the same SSID on 5 GHz, "auto" lets it hop
 //                           up and away from a 2.4 GHz-only attacker.
 //   status                  flags, counters, last reason, station MAC
+//   tcp rx|tx <host> <port> <secs>  pull/push TCP for N seconds and report Mbps.
+//                           Needed because a Trigger only costs air time when the
+//                           station has data to send; an idle station answers every
+//                           BSRP with a QoS Null.
 //   trigstat                Wi-Fi 6 only: how many Trigger frames the radio has
 //                           received, split by trigger type (BSRP / MU-BAR /
 //                           Basic / BFRP). Increments = the station heard the
@@ -61,6 +65,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/inet.h"
+#include "lwip/sockets.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
@@ -395,6 +400,74 @@ static void start_ap(const char* ssid, const char* pass, int channel) {
            mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+// Throughput leg of the Trigger experiment. A forged BSRP only costs air time if
+// the station has something to put in the TB PPDU; with an idle station every
+// answer is a QoS Null (seen as tb_qosnull == tb_times). So the bench needs a
+// station that is actually moving bytes, in both directions.
+//   tcp rx <host> <port> <secs>   download, report Mbps
+//   tcp tx <host> <port> <secs>   upload, report Mbps
+// Blocking on purpose: it runs from the console, and the console has nothing
+// better to do for those seconds.
+static void do_tcp(char* rest) {
+    char dir[4] = {0};
+    char host[40] = {0};
+    int port = 0;
+    int secs = 0;
+    if (rest == nullptr || sscanf(rest, "%3s %39s %d %d", dir, host, &port, &secs) != 4) {
+        printf("ERR usage: tcp rx|tx <host> <port> <seconds>\n");
+        return;
+    }
+    if (port <= 0 || port > 65535 || secs <= 0 || secs > 60) {
+        printf("ERR tcp: port 1..65535, seconds 1..60\n");
+        return;
+    }
+    struct sockaddr_in addr = {0};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((uint16_t)port);
+    if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
+        printf("ERR tcp: bad host %s\n", host);
+        return;
+    }
+    const int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
+        printf("ERR tcp: socket %d\n", fd);
+        return;
+    }
+    if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        printf("ERR tcp: connect failed\n");
+        close(fd);
+        return;
+    }
+    static uint8_t buf[4096];
+    memset(buf, 0x5A, sizeof(buf));
+    const bool upload = (strcmp(dir, "tx") == 0);
+    uint64_t total = 0;
+    const int64_t t0 = esp_timer_get_time();
+    const int64_t deadline = t0 + (int64_t)secs * 1000000;
+    while (esp_timer_get_time() < deadline) {
+        if (upload) {
+            const int n = send(fd, buf, sizeof(buf), 0);
+            if (n <= 0) {
+                break;
+            }
+            total += (uint64_t)n;
+        } else {
+            const int n = recv(fd, buf, sizeof(buf), 0);
+            if (n <= 0) {
+                break;
+            }
+            total += (uint64_t)n;
+        }
+    }
+    const int64_t elapsed = esp_timer_get_time() - t0;
+    close(fd);
+    const double mbps = elapsed > 0 ? ((double)total * 8.0) / (double)elapsed : 0.0;
+    print_time("t", now_ms());
+    printf(" TCP dir=%s host=%s port=%d ms=%d bytes=%llu mbps=%.3f\n", dir, host, port,
+           (int)(elapsed / 1000), (unsigned long long)total, mbps);
+    fflush(stdout);
+}
+
 static void do_scan(void) {
     wifi_scan_config_t scan = {0};
     scan.show_hidden = true;
@@ -559,6 +632,8 @@ static void run_command(char* line) {
         }
     } else if (strcmp(cmd, "scan") == 0) {
         do_scan();
+    } else if (strcmp(cmd, "tcp") == 0) {
+        do_tcp(rest != nullptr ? rest + 1 : nullptr);
     } else if (strcmp(cmd, "status") == 0) {
         uint8_t mac[6] = {0};
         esp_wifi_get_mac(WIFI_IF_STA, mac);
@@ -625,7 +700,7 @@ static void run_command(char* line) {
         vTaskDelay(pdMS_TO_TICKS(50));
         esp_restart();
     } else {
-        printf("ERR unknown '%s' (ssid/pass/country/join/ap/sta/btm/rm/ps/band/scan/status/trigstat/clear/reboot)\n", cmd);
+        printf("ERR unknown '%s' (ssid/pass/country/join/ap/sta/btm/rm/ps/band/scan/tcp/status/trigstat/clear/reboot)\n", cmd);
     }
 }
 
