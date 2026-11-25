@@ -8,6 +8,7 @@
     python -m unittest discover -s tests -v
 """
 
+import collections
 import os
 import statistics
 import subprocess
@@ -17,8 +18,11 @@ import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 GUI_DIR = os.path.abspath(os.path.join(HERE, "..", "..", "gui"))
+LAB_DIR = os.path.abspath(os.path.join(HERE, "..", "..", "lab"))
 sys.path.insert(0, GUI_DIR)
+sys.path.insert(0, LAB_DIR)
 
+import cap_frames  # noqa: E402
 import protocol  # noqa: E402
 
 PORT = os.environ.get("DEAUTHER_PORT", "COM5")
@@ -93,6 +97,23 @@ class ProtocolUnitTests(unittest.TestCase):
         cred = protocol.parse_cred("CRED 0 alice hunter2 12345")
         self.assertEqual(cred["username"], "alice")
         self.assertEqual(cred["password"], "hunter2")
+
+    def test_bsrp_trigger_decode(self):
+        pkt = bytes.fromhex(
+            "2400000002AABBCCDDEE021122334455"
+            "0400000000000000"
+            "0100E00000"
+            "000000"
+        )
+        out = collections.defaultdict(int)
+        out["trigger_samples"] = []
+        cap_frames.decode(pkt, None, out)
+        self.assertEqual(out["trigger"], 1)
+        self.assertEqual(out["bsrp"], 1)
+        sample = out["trigger_samples"][0]
+        for field in ("type=4", "aid=1", "ru_allocation=0", "mcs=7",
+                      "target_rssi=0", "padding=000000"):
+            self.assertIn(field, sample)
 
     def test_band_boundaries(self):
         self.assertEqual(protocol.band_of_channel(14), "2.4G")
@@ -877,14 +898,16 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
     def test_help_lists_new_commands(self):
         _, lines = self.client.command("HELP", lambda l: "AUTHFLOODTEST" in l, 5)
         text = "\n".join(lines)
-        for cmd in ("BTM ", "RRM ", "EAPOL ", "SAE ", "AUTHFLOOD ", "BTMTEST",
-                    "RRMTEST", "QOSNULL ", "QOSNULLREL ", "QOSNULLTEST"):
+        for cmd in ("BTM ", "RRM ", "BSRP ", "EAPOL ", "SAE ", "AUTHFLOOD ", "BTMTEST",
+                    "RRMTEST", "BSRPTEST", "QOSNULL ", "QOSNULLREL ", "QOSNULLTEST"):
             self.assertIn(cmd, text, f"HELP 应列出 {cmd}")
 
     def test_status_has_new_fields(self):
         info = self._status()
         for key in ("btm", "btmf", "btmskip", "btmresp", "rrm", "rrmf", "rrmc", "rrmleft",
                     "rrmch", "rrmtok", "rrmoc", "rrmphy",
+                    "bsrp", "bsrpf", "bsrpleft", "bsrptxerr", "bsrpref", "bsrpaid",
+                    "bsrpch", "bsrprate", "bsrpul", "bsrpru", "bsrpmcs", "bsrprssi",
                     "eap", "eapf", "eaprxreq", "sae", "saesec", "saef", "saecode", "saetok",
                     "af", "aff", "afa", "afs", "afids", "afst", "afup",
                     "qn", "qnf", "qn1", "qn0", "qnc", "qndl", "qnrn", "qnrp"):
@@ -979,6 +1002,60 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
         stop, _ = self.client.command("RRMSTOP", lambda l: l.startswith("OK RRMSTOP"), 5)
         self.assertIsNotNone(stop)
         self.assertEqual(self._status().get("rrm"), "off")
+
+    def test_bsrp_frame_format_and_run(self):
+        """HE BSRP：32 字节 Trigger、BSRP 无 BSR Control、5 字节 User Info。"""
+        self.client.send("BSRPTEST")
+        line, lines = self.client.command("", lambda l: l.startswith("BSRPTEST hex="), 6)
+        self.assertIsNotNone(line, "BSRPTEST 无输出")
+        text = "\n".join(lines)
+        self.assertIn("len=32", text)
+        self.assertIn("type=1 subtype=2", text)
+        self.assertIn("trigger_type=4", text)
+        self.assertIn("common[16..23]", text)
+        self.assertIn("user[24..28] aid=1", text)
+        self.assertIn("ru_region=0 ru_allocation=0", text)
+        self.assertIn("mcs=7", text)
+        self.assertIn("padding[29..31] hex=000000", text)
+        self.assertIn("reference=missing core_fields=placeholder", text)
+        expected = "2400000002AABBCCDDEE02112233445504000000000000000100E00000000000"
+        self.assertEqual(line.removeprefix("BSRPTEST hex="), expected)
+
+        channel = self._scan_first_ap()
+        for bad in ("BSRP 0 0 %d" % channel, "BSRP 0 2008 %d" % channel,
+                    "BSRP 0 1 0", "BSRP 0 1 %d 0" % channel):
+            line, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
+            self.assertIsNotNone(line, f"{bad} 应被拒绝")
+        wrong_channel = 1 if channel != 1 else 6
+        line, _ = self.client.command(f"BSRP 0 1 {wrong_channel}",
+                                      lambda l: l.startswith("ERR "), 3)
+        self.assertIsNotNone(line, "信道与所选 AP 不一致时应被拒绝")
+
+        ok, lines = self.client.command(
+            f"BSRP 0 1 {channel} 50 2 02AABBCCDDEE",
+            lambda l: l.startswith("OK BSRP "), 5)
+        self.assertIsNotNone(ok, f"BSRP 启动失败: {lines[-3:]}")
+        self.assertIn("rate=50 count=2", ok)
+        self.assertTrue(any(l.startswith("OK BSRPSTA") for l in lines))
+        time.sleep(0.4)
+        info = self._status()
+        print(f"\n  bsrpf={info.get('bsrpf')} bsrpleft={info.get('bsrpleft')} "
+              f"bsrptxerr={info.get('bsrptxerr')}")
+        self.assertEqual(info.get("bsrpf"), "2")
+        self.assertEqual(info.get("bsrpleft"), "0")
+        self.assertEqual(info.get("bsrp"), "off", "有限计数发完后应自动停止")
+        self.assertEqual(info.get("bsrptxerr"), "0")
+
+        ok, lines = self.client.command(
+            f"BSRP 0 1 {channel} 5 1 02AABBCCDDEE",
+            lambda l: l.startswith("OK BSRP "), 5)
+        self.assertIsNotNone(ok)
+        self.assertIn("rate=45", ok)
+        self.assertTrue(any("raised to 45" in l for l in lines))
+        time.sleep(0.2)
+        self.assertEqual(self._status().get("bsrp"), "off")
+        stop, _ = self.client.command("BSRPSTOP", lambda l: l.startswith("OK BSRPSTOP"), 4)
+        self.assertIsNotNone(stop)
 
     def test_eapol_frame_format(self):
         """EAPOL：ToDS 数据帧 + LLC/SNAP 0x888E + type 1/2，QoS 变体 TID=6。"""

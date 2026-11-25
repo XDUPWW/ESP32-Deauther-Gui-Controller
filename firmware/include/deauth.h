@@ -66,7 +66,7 @@ typedef struct {
 
 bool attack_module_register(const attack_module_t* module);
 int attack_module_count(void);
-// Registers the eight frame-level modules in their historical order.
+// Registers the nine frame-level modules in their historical order.
 void attack_modules_register_defaults(void);
 
 // Installs the promiscuous filter + receive callback (idempotent). Modules that

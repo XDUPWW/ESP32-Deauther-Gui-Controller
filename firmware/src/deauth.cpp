@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "authflood.h"
+#include "bsrp.h"
 #include "radio.h"
 #include "csa.h"
 #include "deauth.h"
@@ -33,7 +34,7 @@ const uint8_t kRates[8] = {0x82, 0x84, 0x8B, 0x96, 0x0C, 0x12, 0x18, 0x24};
 
 // Module driver table (see deauth.h): filled once at boot by
 // attack_modules_register_defaults(), read by the sniffer, attack_step() and
-// attack_stop(). 12 slots is twice today's eight modules.
+// attack_stop(). 12 slots leaves room for three more modules.
 const attack_module_t* s_modules[12];
 int s_module_count;
 
@@ -916,6 +917,7 @@ void attack_modules_register_defaults(void) {
         {"delba", delba_step, delba_stop, delba_on_rx},
         {"btm", btm_step, btm_stop, btm_on_rx},
         {"rrm", rrm_step, rrm_stop, rrm_on_rx},
+        {"bsrp", bsrp_step, bsrp_stop, bsrp_on_rx},
         {"eapol", eapol_step, eapol_stop, eapol_on_rx},
         {"qosnull", qosnull_step, qosnull_stop, qosnull_on_rx},
         {"sae", sae_step, sae_stop, sae_on_rx},

@@ -12,6 +12,8 @@ What it proves (one line per frame family, with the fields that matter):
            operating class, channel, PHY type
   * TIM    management subtype 8 beacon with the target BSSID -> TIM element
            (DTIM count/period, bitmap); the timestamp field is the MAC's, not ours
+  * BSRP   control subtype 2, Trigger Type 4 -> common scheduling fields, AID12,
+           RU region/allocation, MCS and Target RSSI from the 40-bit User Info
   * EAPOL  data frame whose LLC/SNAP carries EtherType 0x888E -> EAPOL version/type
   * SAE    management subtype 11 with algorithm 3 -> group, scalar/element sizes
   * AUTH    management subtype 11 with algorithm 0 -> transaction sequence
@@ -28,6 +30,32 @@ import cap_pipe
 
 def fmt_mac(raw, off):
     return cap_pipe.mac(raw, off)
+
+
+def decode_trigger(pkt, ta, out):
+    """HE Trigger common fields and the first Basic/BSRP User Info field."""
+    common = int.from_bytes(pkt[16:24], "little")
+    trigger_type = common & 0xF
+    out["trigger"] += 1
+    out["trigger_type_%d" % trigger_type] += 1
+    fields = ("len=%d ta=%s ra=%s type=%d ul_length=%d more_tf=%d cs_required=%d "
+              "ul_bw=%d gi_ltf=%d he_ltf=%d ap_tx_power=%d spatial_reuse=0x%04X "
+              "doppler=%d" % (
+                  len(pkt), ta, fmt_mac(pkt, 4), trigger_type, (common >> 4) & 0xFFF,
+                  (common >> 16) & 1, (common >> 17) & 1, (common >> 18) & 3,
+                  (common >> 20) & 3, (common >> 23) & 7, (common >> 28) & 0x3F,
+                  (common >> 37) & 0xFFFF, (common >> 53) & 1))
+    if trigger_type == 4 and len(pkt) >= 29:
+        out["bsrp"] += 1
+        user = int.from_bytes(pkt[24:29], "little")
+        fields += (" aid=%d ru_region=%d ru_allocation=%d fec=%d mcs=%d dcm=%d "
+                   "ss_start=%d ss_count=%d target_rssi=%d padding=%s" % (
+                       user & 0xFFF, (user >> 12) & 1, (user >> 13) & 0x7F,
+                       (user >> 20) & 1, (user >> 21) & 0xF, (user >> 25) & 1,
+                       (user >> 26) & 7, (user >> 29) & 7, (user >> 32) & 0x7F,
+                       pkt[29:].hex().upper()))
+    if len(out["trigger_samples"]) < 6:
+        out["trigger_samples"].append(fields)
 
 
 def decode_rrm(pkt, ta, out):
@@ -65,6 +93,9 @@ def decode(pkt, bssid_filter, out):
     ta = fmt_mac(pkt, 10) if len(pkt) >= 16 else "-"
     forged = ta.startswith("02:")
     bssid = fmt_mac(pkt, 16) if len(pkt) >= 24 else "-"
+
+    if ftype == 1 and subtype == 2 and len(pkt) >= 24:
+        decode_trigger(pkt, ta, out)
 
     if ftype == 0 and subtype == 13 and len(pkt) >= 26:
         cat, act = pkt[24], pkt[25]
@@ -210,8 +241,8 @@ def main():
     bssid_filter = args.bssid.upper() if args.bssid else None
     out = collections.defaultdict(int)
     for key in ("btm_samples", "btm_resp_samples", "rrm_samples", "rrm_req_samples",
-                "sae_samples", "auth_samples", "token_samples", "beacon_samples",
-                "eapol_samples"):
+                "trigger_samples", "sae_samples", "auth_samples", "token_samples",
+                "beacon_samples", "eapol_samples"):
         out[key] = []
 
     total = 0
@@ -234,6 +265,10 @@ def main():
         print("  rrm: %s" % s)
     for s in out["rrm_req_samples"]:
         print("  rrm-req: %s" % s)
+    print("Trigger frames=%d  BSRP(type=4)=%d  other types=%d"
+          % (out["trigger"], out["bsrp"], out["trigger"] - out["bsrp"]))
+    for s in out["trigger_samples"]:
+        print("  trigger: %s" % s)
     print("SAE commit(alg=3)=%d  auth(alg=0)=%d  status76 answers=%d"
           % (out["sae"], out["auth"], out["sae_token_resp"]))
     for s in out["sae_samples"]:

@@ -18,6 +18,7 @@ set(SRCS
     "../src/rrm.cpp"
     "../src/sae.cpp"
     "../src/authflood.cpp"
+    "../src/bsrp.cpp"
 )
 
 # wireless_ui is always a dependency: with CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT

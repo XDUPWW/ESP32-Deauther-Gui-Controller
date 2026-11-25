@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "authflood.h"
+#include "bsrp.h"
 #include "console_commands.h"
 #include "csa.h"
 #include "deauth.h"
@@ -80,9 +81,9 @@ const char* attack_mode_label() {
 
 const char* capabilities() {
 #if CONFIG_SOC_WIFI_SUPPORT_5G
-  return "deauth,eviltwin,probe,5g,baitap,btm,rrm,eapol,qosnull,sae,authflood";
+  return "deauth,eviltwin,probe,5g,baitap,btm,rrm,bsrp,eapol,qosnull,sae,authflood";
 #else
-  return "deauth,eviltwin,probe,baitap,btm,rrm,eapol,qosnull,sae,authflood";
+  return "deauth,eviltwin,probe,baitap,btm,rrm,bsrp,eapol,qosnull,sae,authflood";
 #endif
 }
 
@@ -140,6 +141,10 @@ void print_help() {
   Serial.println("INFO                               802.11k Neighbor Report Response spoof (count=0 keeps going)");
   Serial.println("INFO RRMSTOP                       stop the Neighbor Report spoof");
   Serial.println("INFO RRMTEST                       dump the Neighbor Report Response bytes (format check)");
+  Serial.println("INFO BSRP <idx> <aid> <ch> [rate_ms=5] [count] [sta-mac]");
+  Serial.println("INFO                               HE BSRP Trigger; ch must match AP, rates below 45 ms are raised");
+  Serial.println("INFO BSRPSTOP                      stop the BSRP Trigger poll");
+  Serial.println("INFO BSRPTEST                      annotate Trigger bytes; core schedule fields await a real capture");
   Serial.println("INFO EAPOL <idx> [tid|-1] [sta-mac] EAPOL-Start/Logoff flood as a forged station");
   Serial.println("INFO EAPOLSTOP                     stop the EAPOL flood");
   Serial.println("INFO EAPOLTEST                     dump the EAPOL data frames (format check)");
@@ -426,6 +431,30 @@ void do_status() {
   Serial.print((unsigned)rrm_op_class());
   Serial.print(" rrmphy=");
   Serial.print((unsigned)rrm_phy_type());
+  Serial.print(" bsrp=");
+  Serial.print(bsrp_active() ? "on" : "off");
+  Serial.print(" bsrpf=");
+  Serial.print((unsigned)bsrp_frames());
+  Serial.print(" bsrpleft=");
+  Serial.print((unsigned)bsrp_remaining());
+  Serial.print(" bsrptxerr=");
+  Serial.print((unsigned)bsrp_tx_errors());
+  Serial.print(" bsrpref=");
+  Serial.print((unsigned)bsrp_reference_triggers());
+  Serial.print(" bsrpaid=");
+  Serial.print((unsigned)bsrp_aid());
+  Serial.print(" bsrpch=");
+  Serial.print((unsigned)bsrp_channel());
+  Serial.print(" bsrprate=");
+  Serial.print((unsigned)bsrp_rate_ms());
+  Serial.print(" bsrpul=");
+  Serial.print((unsigned)bsrp_ul_length());
+  Serial.print(" bsrpru=");
+  Serial.print((unsigned)bsrp_ru_allocation());
+  Serial.print(" bsrpmcs=");
+  Serial.print((unsigned)bsrp_mcs());
+  Serial.print(" bsrprssi=");
+  Serial.print((unsigned)bsrp_target_rssi());
   Serial.print(" eap=");
   Serial.print(eapol_active() ? "on" : "off");
   Serial.print(" eapf=");
@@ -1019,6 +1048,9 @@ const bus_alias_t kBusAliases[] = {
     {"RRM", "rrm", "start"},
     {"RRMSTOP", "rrm", "stop"},
     {"RRMTEST", "rrm", "test"},
+    {"BSRP", "bsrp", "start"},
+    {"BSRPSTOP", "bsrp", "stop"},
+    {"BSRPTEST", "bsrp", "test"},
     {"EAPOL", "eapol", "start"},
     {"EAPOLSTOP", "eapol", "stop"},
     {"EAPOLTEST", "eapol", "test"},
