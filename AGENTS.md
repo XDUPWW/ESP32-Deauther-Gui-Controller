@@ -19,7 +19,10 @@ ESP32 / ESP32-C5 的 **802.11 无线安全测试工具**，由三块代码组成
   `btm_enabled`/`rm_enabled` 置 1，把每个连接事件的 reason code 打一行日志（`reason=12` 打成
   `BSS_TRANSITION!`），用来判伪造 BTM Request / Neighbor Report 到底有没有被受害者处理。
   原 `rf_throughput` 一字未改，继续提供 `ap` 角色。命令：`ssid <文本>` / `pass <口令>` /
-  `country <cc>` / `join` / `sta <ssid>` / `btm <0|1>` / `rm <0|1>` / `ps <0|1|2>` / `scan` / `status`。
+  `country <cc>` / `join` / `sta <ssid>` / `btm <0|1>` / `rm <0|1>` / `ps <0|1|2>` / `scan` / `status` /
+  `trigstat`（仅 Wi-Fi 6 目标：读 IDF 私有的 `esp_test_get_hw_tb_statistics()`，
+  打 `rx_trig` / `tb_times` / `sifs_abort` / `pwr_oor`，用来判 11ax Trigger 到底有没有被收到、有没有被回应；
+  `rx_mpdu` 是活性对照，它为 0 时其余数字无意义）。
   口令只存板子上的 NVS，**不要写进仓库任何文件**。
 
 核心设计：**串口行协议是唯一控制面**。触摸屏按钮、GUI、脚本都只发协议行；攻击实现只有一份（`firmware/src/`）。
@@ -27,7 +30,8 @@ ESP32 / ESP32-C5 的 **802.11 无线安全测试工具**，由三块代码组成
 
 已实现的攻击：deauth（单/全/白/黑名单）、Probe/Beacon 泛洪、CSA 欺骗、DELBA 欺骗、BA 会话劫持、Evil Twin、
 802.11v BTM Request 欺骗（BTM）、802.11k Neighbor Report 伪造（RRM）、EAPOL-Start/Logoff 洪泛、SAE Commit 洪泛、
-Auth/Assoc 洪泛（WPA3 时自动升级成 SAE）、单播 QoS Null 的 PM 位欺骗（`qosnull.cpp`）。
+Auth/Assoc 洪泛（WPA3 时自动升级成 SAE）、单播 QoS Null 的 PM 位欺骗（`qosnull.cpp`）、
+HE BSRP Trigger 轮询（`bsrp.cpp`，只有帧级证据，调度字段仍是占位值）。
 **TIM 投毒（克隆 beacon 改省电位图）已按计划下线**，代码与命令都不在了。
 **NAV（虚拟载波侦听）已删除**：注入帧的 Duration 字段由驱动/MAC 重算，应用层改不了，详见 `attack-principles.md` 附录 A。
 **PS-Poll 欺骗（控制子类型 10）也已删除**：单播的 PS-Poll 在本 MAC 上发不出去（广播 RA 10/10 上空气、
@@ -202,13 +206,14 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 | `delba.cpp` | DELBA 欺骗 + BA 会话劫持（DELBA → 伪造 ADDBA → BAR）、TID 学习 |
 | `btm.cpp` | 802.11v BTM Request 欺骗：11v 能力学习、候选 Neighbor Report、Response 计数 |
 | `rrm.cpp` | 802.11k Neighbor Report Response 伪造：幻影邻居元素（52/13）、按 STA 轮询发送、count 限次 |
+| `bsrp.cpp` | HE BSRP Trigger（subtype 2 / Trigger Type 4）：32 字节单用户帧、AID/信道校验、45 ms 单播节拍；空口 10/10 可见，受害 STA 也收得到但每帧都 `tb_pwr_outof_range` 放弃上行，调度字段仍是占位值（`测试报告.md §4.4.14`） |
 | `eapol.cpp` | EAPOL-Start/Logoff 洪泛：ToDS 数据帧 + LLC/SNAP 0x888E，收侧统计 EAP 包 |
 | `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
 | `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
 | `qosnull.cpp` | PM 位欺骗：伪造单播 QoS Null（ToDS，26 字节）让 AP 缓存受害 STA 的下行，每第 6 帧发 PM=0 释放；`qosnull_release()` 是撤销。节拍 10 帧/s（见 §11 第 8 条） |
 | `tx_guard.cpp` | 统一注入入口 + 策略：`kTxPolicyGuard`（45 ms、首个 `0x101` 重启）/ `kTxPolicyBurst`（不节拍、`0x101` 退避），并集中记录 ok/err/throttled |
 | `radio.cpp` | 信道仲裁：`radio_set_channel(owner, ch)` 记录 owner，两个 owner 在 2 s 内抢同一信道时打 `WARN radio:`；`RADIO` 的 `owner=`/`rtake=` 来自这里 |
-| `bus_objects.cpp` | wbus 对象表：13 个对象（`deauth` / `csa` / `delba` / `ba` / `btm` / `rrm` / `eapol` / `qosnull` / `sae` / `authflood` / `probe` / `evil` / `radio`）的参数策略、handler、事件；handler 从 `serial_console.cpp` 原样搬来，回执字节不变 |
+| `bus_objects.cpp` | wbus 对象表：14 个对象（`deauth` / `csa` / `delba` / `ba` / `btm` / `rrm` / `bsrp` / `eapol` / `qosnull` / `sae` / `authflood` / `probe` / `evil` / `radio`）的参数策略、handler、事件；handler 从 `serial_console.cpp` 原样搬来，回执字节不变 |
 | `include/console_commands.h` | 总线与控制台的桥：`console_scan_count()`、`console_apply_reason()`、`console_ui_log()`、`wbus_register_all()` |
 | `components/wbus/` | 迷你 ubus：对象注册表、`wb_arg_spec_t` 参数策略、`wb_reply_t` 注入式输出、`EVT` 事件订阅。纯 C++，不依赖 Arduino/esp_* |
 | `ie_util.cpp` | IE 遍历、RSN AKM（SAE/PSK）、MFPR、Extended Capabilities bit19 判定 |
@@ -279,7 +284,7 @@ python tools/pipecheck.py --port COM5      # 速率：读 C5 的 pcap 管道核 
 界面日志镜像（`ui.status` 的 `flush` 增长）、刷屏增量、主动扫描、信道仲裁拒绝、
 注入闭环（广播 probe request → AP 发回 probe response）与运行期稳定性。
 
-固件旧套件 `firmware/tests/test_wireless_attack.py`（50 个用例，unittest）：
+固件旧套件 `firmware/tests/test_wireless_attack.py`（58 个用例，unittest）：
 
 ```powershell
 cd firmware
@@ -294,9 +299,9 @@ python -m unittest discover -s tests -v
   的自动化用例——那是 `lab/` 脚本（需要人明确执行）该干的事。
 - 硬件类用例在 `setUp` 里先发 `STOP/CSASTOP/DELBASTOP/BASTOP` 清残留状态（CSA 自动模式会停在 5G 信道，残留会让后续扫描偶发失败），
   新用例也要遵守这个清理约定。
-- 自动化覆盖：协议解析、PING/HELP/STATUS/SCAN、参数校验、`DELBATEST`/`BATEST`/`BTMTEST`/`RRMTEST`/`TIMTEST`/
-  `EAPOLTEST`/`SAETEST`/`AUTHFLOODTEST` 帧字节、`UISCREEN` 逐屏切换、堆稳定性、命令洪泛、垃圾字节、
-  PING/STATUS/扫描耗时、LVGL 就绪与弹窗行数/堆余量。
+- 自动化覆盖：协议解析、PING/HELP/STATUS/SCAN、参数校验、`DELBATEST`/`BATEST`/`BTMTEST`/`RRMTEST`/
+  `BSRPTEST`/`EAPOLTEST`/`SAETEST`/`AUTHFLOODTEST` 帧字节、`UISCREEN` 逐屏切换、堆稳定性、命令洪泛、
+  垃圾字节、PING/STATUS/扫描耗时、LVGL 就绪与弹窗行数/堆余量。`BSRP` 另有纯 Python 的 Trigger 解码单测。
 - 空口层面的验证不在 unittest 里：用 C5 的抓包管道 + `lab/cap_frames.py`（帧字段）与
   `lab/air_check.py`（逐模块"起-抓-停"）、`lab/pool_limit.py`（缓冲池速率上限）、
   `lab/soak.py`（逐模块长跑，判据是 `STATUS` 的 `txgerr` 恒为 0 且无 `FATAL tx 0x101`）。
@@ -363,7 +368,10 @@ python main.py --self-test
    **RTS / CF-End / BAR 都能过 100 帧**，唯一例外是 **CTS**：每帧永久吃掉一个缓存，30/200/500 ms 节拍都是 32 帧封顶，
    10 s 静置也不恢复，之后连 wifi 配置 API 都会卡在锁上，只能硬复位。
 3. **混杂模式是两级过滤**：`esp_wifi_set_promiscuous_filter()` 的 CTRL 位只是第一级，
-   `esp_wifi_set_promiscuous_ctrl_filter()` 默认丢弃全部控制帧；`start_promiscuous()` 已固定设 `MASK_ALL`，别退回默认值。
+   `esp_wifi_set_promiscuous_ctrl_filter()` 默认丢弃全部控制帧；`start_promiscuous()` 已固定设
+   `MASK_ALL | (0x7C << 16)`，别退回默认值。掩码的位序是 `16 + subtype`，而 `MASK_ALL`（`0xFF800000`）
+   **只覆盖子类型 7–15**——11ax 的 Trigger(2)/TACK(3)/BFRP(4)/NDPA(5)/扩展(6) 全在掩码外，驱动直接丢。
+   BSRP 抓不到 subtype 2 就是这个原因，不是帧没发出去；`CTRLFILTER all` 同样按这个合成值设。
 4. **11n 射频解不出 Wi-Fi 6（HE）PPDU**：目标 BSS 里只有 HE 客户端时抓不到 client→AP 帧，
    靠 500 ms 广播兜底（`blind=`）保底；客户端是否真断开取决于对端是否强制 PMF（WPA3/802.11w）。
 5. **触摸板 PENIRQ（GPIO36）未引到排针**，只能用原始值窗口 + 稳定判据判断按压；屏幕花屏/上下颠倒靠 `invert_color` + `mirror_x/y`。

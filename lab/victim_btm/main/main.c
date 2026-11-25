@@ -25,6 +25,12 @@
 //                           publishes the same SSID on 5 GHz, "auto" lets it hop
 //                           up and away from a 2.4 GHz-only attacker.
 //   status                  flags, counters, last reason, station MAC
+//   trigstat                Wi-Fi 6 only: how many Trigger frames the radio has
+//                           received, split by trigger type (BSRP / MU-BAR /
+//                           Basic / BFRP). Increments = the station heard the
+//                           forged Trigger; a flat counter proves it never got
+//                           that far, which is a different failure than "heard it
+//                           and ignored it".
 //   scan                    active scan, one line per AP
 //   clear / reboot          wipe the saved role / restart
 //
@@ -43,6 +49,14 @@
 #include "esp_log.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
+
+#ifdef SOC_WIFI_HE_SUPPORT
+// Private, but exported from libnet80211.a (test.o) and the only way to see
+// whether the radio actually received an 802.11ax Trigger. Promiscuous mode
+// cannot answer that: it never reports the HE-TB uplink the station sends back.
+#include "esp_private/esp_wifi_he_private.h"
+#include "esp_private/esp_wifi_he_types_private.h"
+#endif
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -568,6 +582,35 @@ static void run_command(char* line) {
                (unsigned)s_disc_count, (unsigned)s_reconnects, s_last_reason,
                reason_name(s_last_reason), (int)REASON_BSS_TRANSITION);
         fflush(stdout);
+    } else if (strcmp(cmd, "trigstat") == 0) {
+#ifdef SOC_WIFI_HE_SUPPORT
+        esp_test_rx_ctrl_t rx = {0};
+        esp_test_hw_tb_statistics_t tb = {0};
+        esp_test_hw_rx_statistics_t hw = {0};
+        const esp_err_t err = esp_test_get_rx_ctrls(&rx);
+        const esp_err_t err_tb = esp_test_get_hw_tb_statistics(&tb);
+        const esp_err_t err_hw = esp_test_get_hw_rx_statistics(&hw);
+        printf("TRIGSTAT err=%d basic=%d bsrp=%d mubar=%d bfrp=%d bar=%d ndpa=%d"
+               " tbasic=%d id0=%d id2045=%d id2046=%d idother=%d\n",
+               (int)err, rx.basic, rx.bsrp, rx.mubar, rx.bfrp, rx.bar, rx.ndpa,
+               rx.trigger_basic_cnt, rx.trigger_basic_id_0_cnt,
+               rx.trigger_basic_id_2045_cnt, rx.trigger_basic_id_2046_cnt,
+               rx.trigger_basic_id_other_cnt);
+        // rx_trig > 0 means the radio accepted a Trigger; tb_times > 0 means it
+        // actually answered with an HE-TB PPDU. rx_mpdu is the liveness control:
+        // an associated station that shows 0 there is not receiving at all and
+        // the other two numbers mean nothing.
+        printf("TRIGTB err=%d rx_trig=%u tb_times=%u tb_qosnull=%u cca_cancel=%u sifs_abort=%u pwr_oor=%u\n",
+               (int)err_tb, (unsigned)tb.rx_trig, (unsigned)tb.tb_times,
+               (unsigned)tb.tb_qos_null, (unsigned)tb.tb_cca_cancel,
+               (unsigned)tb.tb_sifs_abort, (unsigned)tb.tb_pwr_outof_range);
+        printf("TRIGRX err=%d rx_mpdu=%u rx_datasuc=%u rx_fcs_err=%u nrx_err_heformat=%u\n",
+               (int)err_hw, (unsigned)hw.rx_mpdu, (unsigned)hw.rx_datasuc,
+               (unsigned)hw.rx_fcs_err, (unsigned)hw.nrx_err_heformat);
+#else
+        printf("ERR trigstat needs a Wi-Fi 6 target\n");
+#endif
+        fflush(stdout);
     } else if (strcmp(cmd, "clear") == 0) {
         nvs_handle_t h;
         if (nvs_open("vbtm", NVS_READWRITE, &h) == ESP_OK) {
@@ -582,7 +625,7 @@ static void run_command(char* line) {
         vTaskDelay(pdMS_TO_TICKS(50));
         esp_restart();
     } else {
-        printf("ERR unknown '%s' (ssid/pass/country/join/ap/sta/btm/rm/ps/band/scan/status/clear/reboot)\n", cmd);
+        printf("ERR unknown '%s' (ssid/pass/country/join/ap/sta/btm/rm/ps/band/scan/status/trigstat/clear/reboot)\n", cmd);
     }
 }
 
