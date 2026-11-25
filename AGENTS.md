@@ -206,7 +206,7 @@ LVGL 按钮 → 命令队列 → wireless_console_execute()
 | `delba.cpp` | DELBA 欺骗 + BA 会话劫持（DELBA → 伪造 ADDBA → BAR）、TID 学习 |
 | `btm.cpp` | 802.11v BTM Request 欺骗：11v 能力学习、候选 Neighbor Report、Response 计数 |
 | `rrm.cpp` | 802.11k Neighbor Report Response 伪造：幻影邻居元素（52/13）、按 STA 轮询发送、count 限次 |
-| `bsrp.cpp` | HE BSRP Trigger（subtype 2 / Trigger Type 4）：32 字节单用户帧、AID/信道校验、45 ms 单播节拍；空口 10/10 可见，受害 STA 也收得到但每帧都 `tb_pwr_outof_range` 放弃上行，调度字段仍是占位值（`测试报告.md §4.4.14`） |
+| `bsrp.cpp` | HE BSRP Trigger（subtype 2 / Trigger Type 4）：32 字节单用户帧、AID/信道校验、45 ms 单播节拍；空口 10/10 可见且受害 STA 会回 HE-TB——但前提是 `ul_length ≥ 48` 且 AID 正确（`ap_tx_power`/`target_rssi` 不是闸门，别拿 `pwr_oor` 当判据），回应内容是 QoS Null，见 `测试报告.md §4.4.14`。`BSRPFIELD` 改这些字段 |
 | `eapol.cpp` | EAPOL-Start/Logoff 洪泛：ToDS 数据帧 + LLC/SNAP 0x888E，收侧统计 EAP 包 |
 | `sae.cpp` | SAE Commit 洪泛、WPA3 判别（`sae_classify`，AUTHFLOOD 也用它）、反 clogging token 回显 |
 | `authflood.cpp` | Auth/Assoc 洪泛 + 随机身份轮换 + 嗅到 SAE 后自动转 `sae_start()` |
