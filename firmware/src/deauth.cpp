@@ -686,8 +686,13 @@ void start_promiscuous(void) {
     // so without this call ACK / BA / BAR / RTS never appear even though the
     // type mask has CTRL set. WIFI_PROMIS_CTRL_FILTER_MASK_ALL = pass them all;
     // measured on hardware: mask 0 -> ctrl=0, mask ALL -> rts/ack/ba/bar counted.
+    //
+    // "All" only covers subtypes 7..15 (bit = 16 + subtype). 802.11ax control
+    // frames -- Trigger(2), TACK(3), BFRP(4), NDPA(5), extension(6) -- sit
+    // outside that mask and were silently dropped, which is why an injected
+    // BSRP Trigger never showed up in MON/RXMIX. Add them by hand.
     wifi_promiscuous_filter_t ctrl_filter = {0};
-    ctrl_filter.filter_mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL;
+    ctrl_filter.filter_mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL | (0x7Cu << 16);
     esp_wifi_set_promiscuous_ctrl_filter(&ctrl_filter);
     esp_wifi_set_promiscuous_rx_cb(&sniffer);
 }

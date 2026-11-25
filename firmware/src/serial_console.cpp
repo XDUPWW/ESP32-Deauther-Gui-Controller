@@ -610,7 +610,10 @@ void do_ctrl_filter(char* token) {
   }
   uint32_t mask;
   if (strcmp(token, "all") == 0) {
-    mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL;
+    // MASK_ALL stops at subtype 7; the 802.11ax control subtypes (Trigger 2,
+    // TACK 3, BFRP 4, NDPA 5, extension 6 = bits 18..22) have to be added by
+    // hand, or "all" silently means "no HE control frames".
+    mask = WIFI_PROMIS_CTRL_FILTER_MASK_ALL | (0x7Cu << 16);
   } else if (strcmp(token, "none") == 0) {
     mask = 0;
   } else {

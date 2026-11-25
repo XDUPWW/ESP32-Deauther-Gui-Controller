@@ -23,6 +23,12 @@ static const char *TAG = "hal_wifi";
 // 队列深度从 16 降到 8 换这个长度——16 x 1536 要吃 25 KB 堆，8 x 1536 约 12 KB。
 #define RX_QUEUE_DEPTH 8
 #define RX_FRAME_MAX 1536
+
+// WIFI_PROMIS_CTRL_FILTER_MASK_ALL 只覆盖子类型 7..15（bit = 16 + subtype），
+// 也就是 11ax 之前的那批控制帧。HE 的 Trigger(2)/TACK(3)/BFRP(4)/NDPA(5)/扩展(6)
+// 全在掩码外，驱动直接丢，第一级类型掩码开成什么都救不回来——BSRP 抓不到就是这个原因。
+#define CTRL_FILTER_HE (0x7Cu << 16)
+#define CTRL_FILTER_ALL (WIFI_PROMIS_CTRL_FILTER_MASK_ALL | CTRL_FILTER_HE)
 #define RX_TASK_STACK 4096
 #define RX_TASK_PRIO 6
 #define NEVER_EXPIRE 0xFFFFFFFFu
@@ -586,7 +592,7 @@ esp_err_t hal_wifi_rx_set_filter(bool mgmt, bool ctrl, bool data) {
     // Without this one the driver drops every control frame, whatever the type
     // mask says.
     wifi_promiscuous_filter_t ctrl_filter = {0};
-    ctrl_filter.filter_mask = ctrl ? WIFI_PROMIS_CTRL_FILTER_MASK_ALL : 0;
+    ctrl_filter.filter_mask = ctrl ? (uint32_t)CTRL_FILTER_ALL : 0;
     return esp_wifi_set_promiscuous_ctrl_filter(&ctrl_filter);
 }
 
