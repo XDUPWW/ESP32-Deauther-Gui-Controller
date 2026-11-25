@@ -145,6 +145,7 @@ void print_help() {
   Serial.println("INFO                               HE BSRP Trigger; ch must match AP, rates below 45 ms are raised");
   Serial.println("INFO BSRPSTOP                      stop the BSRP Trigger poll");
   Serial.println("INFO BSRPTEST                      annotate Trigger bytes; core schedule fields await a real capture");
+  Serial.println("INFO BSRPFIELD [ul|gi|atp|ru|rssi|mcs] [value]  override/report the schedule fields (diagnostic)");
   Serial.println("INFO EAPOL <idx> [tid|-1] [sta-mac] EAPOL-Start/Logoff flood as a forged station");
   Serial.println("INFO EAPOLSTOP                     stop the EAPOL flood");
   Serial.println("INFO EAPOLTEST                     dump the EAPOL data frames (format check)");
@@ -1174,6 +1175,29 @@ void dispatch(char* line) {
     Serial.flush();
     delay(100);
     esp_restart();
+  } else if (strcmp(command, "BSRPFIELD") == 0) {
+    // Diagnostic knob for the schedule fields: without it the sweep that tells
+    // "field read and rejected" apart from "frame rejected earlier" is
+    // impossible, because the module ships every field as 0.
+    char* name_token = strtok(nullptr, " \t");
+    char* value_token = strtok(nullptr, " \t");
+    if (name_token == nullptr) {
+      Serial.printf("BSRPFIELD ul=%u gi=%u atp=%u ru=%u rssi=%u mcs=%u\n",
+                    (unsigned)bsrp_ul_length(), (unsigned)bsrp_gi_ltf(),
+                    (unsigned)bsrp_ap_tx_power(), (unsigned)bsrp_ru_allocation(),
+                    (unsigned)bsrp_target_rssi(), (unsigned)bsrp_mcs());
+      return;
+    }
+    if (value_token == nullptr) {
+      Serial.println("ERR usage: BSRPFIELD <ul|gi|atp|ru|rssi|mcs> <value>");
+      return;
+    }
+    const long value = strtol(value_token, nullptr, 0);
+    if (!bsrp_set_field(name_token, value)) {
+      Serial.printf("ERR BSRPFIELD %s=%ld out of range or unknown field\n", name_token, value);
+      return;
+    }
+    Serial.printf("OK BSRPFIELD %s=%ld\n", name_token, value);
   } else if (strcmp(command, "CTRLFILTER") == 0) {
     do_ctrl_filter(strtok(nullptr, " 	"));
   } else if (strcmp(command, "CTRLTEST") == 0) {

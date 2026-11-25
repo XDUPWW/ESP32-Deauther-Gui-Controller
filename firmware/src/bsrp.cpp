@@ -20,6 +20,16 @@ const uint32_t kMinUnicastGapMs = 45;
 
 // These schedule fields stay 0 until a real BSRP is captured on the target BSS.
 // BSRPTEST prints them as placeholders instead of pretending they are valid.
+//
+// Measured on a C5 (2026-11-25, see 测试报告.md §4.4.14) what a station actually
+// requires before it answers:
+//   - AID must be its own. Any other AID and the MAC does not even count the
+//     frame, so nothing downstream can be observed.
+//   - ul_length must be big enough to carry the response: 40 octets -> abort,
+//     48 -> the station sends a QoS Null. With 0 it never answers.
+//   - ap_tx_power and target_rssi do NOT gate the answer. They only move the
+//     station's tb_pwr_outof_range counter, which increments even on triggers
+//     that are answered. Do not read it as a veto.
 uint16_t s_ul_length = 0;
 uint8_t s_gi_ltf = 0;
 uint8_t s_ap_tx_power = 0;
@@ -260,6 +270,14 @@ uint16_t bsrp_ul_length(void) {
     return s_ul_length;
 }
 
+uint8_t bsrp_gi_ltf(void) {
+    return s_gi_ltf;
+}
+
+uint8_t bsrp_ap_tx_power(void) {
+    return s_ap_tx_power;
+}
+
 uint8_t bsrp_ru_allocation(void) {
     return s_ru_allocation;
 }
@@ -270,4 +288,57 @@ uint8_t bsrp_mcs(void) {
 
 uint8_t bsrp_target_rssi(void) {
     return s_target_rssi;
+}
+
+// Runtime knobs for the schedule fields. They exist so the failure mode can be
+// narrowed by measurement instead of by guessing a "correct" value: the
+// station's own counters say whether a field was read (tb_pwr_outof_range
+// moves) or the frame was rejected before that point (nothing moves).
+bool bsrp_set_field(const char* name, long value) {
+    if (name == nullptr) {
+        return false;
+    }
+    if (strcmp(name, "ul") == 0) {
+        if (value < 0 || value > 0x0FFF) {
+            return false;
+        }
+        s_ul_length = (uint16_t)value;
+        return true;
+    }
+    if (strcmp(name, "gi") == 0) {
+        if (value < 0 || value > 3) {
+            return false;
+        }
+        s_gi_ltf = (uint8_t)value;
+        return true;
+    }
+    if (strcmp(name, "atp") == 0) {
+        if (value < 0 || value > 0x3F) {
+            return false;
+        }
+        s_ap_tx_power = (uint8_t)value;
+        return true;
+    }
+    if (strcmp(name, "ru") == 0) {
+        if (value < 0 || value > 0xFF) {
+            return false;
+        }
+        s_ru_allocation = (uint8_t)value;
+        return true;
+    }
+    if (strcmp(name, "rssi") == 0) {
+        if (value < 0 || value > 0x7F) {
+            return false;
+        }
+        s_target_rssi = (uint8_t)value;
+        return true;
+    }
+    if (strcmp(name, "mcs") == 0) {
+        if (value < 0 || value > 15) {
+            return false;
+        }
+        s_mcs = (uint8_t)value;
+        return true;
+    }
+    return false;
 }
