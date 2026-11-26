@@ -55,6 +55,7 @@ MENU = [
     ("sae", "SAE 洪泛"),
     ("authflood", "Auth 洪泛"),
     ("qosnull", "QoS Null PM 位欺骗"),
+    ("bsrp", "BSRP Trigger 轮询"),
     ("status", "设备状态"),
     ("log", "日志"),
 ]
@@ -358,6 +359,11 @@ class DeautherApp:
         self.auth_mode_var = tk.StringVar(value=AUTH_MODES[0])
         self.auth_auto_var = tk.BooleanVar(value=True)
         self.qosnull_mac_var = tk.StringVar()
+        self.bsrp_aid_var = tk.StringVar(value="0")
+        self.bsrp_ch_var = tk.StringVar(value="0")
+        self.bsrp_rate_var = tk.StringVar(value="45")
+        self.bsrp_count_var = tk.StringVar(value="20")
+        self.bsrp_sta_var = tk.StringVar(value="")
 
         root.title("ESP32 Wireless Attack 上位机")
         root.geometry("1040x700")
@@ -423,6 +429,7 @@ class DeautherApp:
         self.pages["sae"] = self._build_sae_page()
         self.pages["authflood"] = self._build_authflood_page()
         self.pages["qosnull"] = self._build_qosnull_page()
+        self.pages["bsrp"] = self._build_bsrp_page()
         self.pages["status"] = self._build_status_page()
         self.pages["log"] = self._build_log_page()
 
@@ -764,6 +771,52 @@ class DeautherApp:
         ).pack(anchor="w", pady=(12, 0))
         return page
 
+    def _build_bsrp_page(self):
+        page = self._make_page()
+        ttk.Label(page, text="HE BSRP Trigger 轮询",
+                  font=("", 12, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(
+            page,
+            text="伪造 AP 发 BSRP Trigger（控制帧 subtype 2、Trigger Type 4），逼受害 STA 在 SIFS 后"
+                 "回一个 HE-TB 上行帧。实测（测试报告 §4.4.14）：受害者确实会回，但回的是 QoS Null；"
+                 "而吞吐影响已被安慰剂组证伪——用错误 AID（受害者根本不回）一样掉，掉的是我们自己的注入占空口。"
+                 "这个模块目前是诊断工具，不是有效攻击。",
+            foreground="#777777", wraplength=920, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self._target_bar(page, "bsrp")
+
+        params = ttk.Frame(page)
+        params.pack(fill="x", pady=(4, 2))
+        ttk.Label(params, text="AID12（0=自动嗅探）：").pack(side="left")
+        ttk.Entry(params, textvariable=self.bsrp_aid_var, width=7).pack(side="left")
+        ttk.Label(params, text="  信道（0=同所选 AP）：").pack(side="left")
+        ttk.Entry(params, textvariable=self.bsrp_ch_var, width=6).pack(side="left")
+        ttk.Label(params, text="  间隔 ms：").pack(side="left")
+        ttk.Entry(params, textvariable=self.bsrp_rate_var, width=6).pack(side="left")
+
+        params2 = ttk.Frame(page)
+        params2.pack(fill="x", pady=(2, 6))
+        ttk.Label(params2, text="帧数（0=一直发）：").pack(side="left")
+        ttk.Entry(params2, textvariable=self.bsrp_count_var, width=8).pack(side="left")
+        ttk.Label(params2, text="  目标 STA（可空）：").pack(side="left")
+        ttk.Entry(params2, textvariable=self.bsrp_sta_var, width=19).pack(side="left")
+
+        actions = ttk.Frame(page)
+        actions.pack(fill="x", pady=(6, 4))
+        ttk.Button(actions, text="开始 BSRP", width=14, command=self.start_bsrp).pack(side="left")
+        ttk.Button(actions, text="停止", width=10, command=self.bsrp_stop).pack(side="left", padx=8)
+
+        ttk.Label(
+            page,
+            text=("判据（受害者侧，串口 `trigstat`）：\n"
+                  "• AID 必须等于受害者自己的，否则 MAC 在计数前就滤掉，rx_trig 都不涨；\n"
+                  "• ul_length 默认 0，受害者会 abort —— 用 `BSRPFIELD ul 64` 才回得了；\n"
+                  "• ap_tx_power / target_rssi 不是闸门，pwr_oor 在正常回应的帧上照样涨，别拿它当判据。\n"
+                  "底栏：bsrpf 已发帧、bsrptxerr 发送失败、bsrpaid 命令里的 AID、bsrplaid 实际用的 AID。"),
+            justify="left",
+        ).pack(anchor="w", pady=(12, 0))
+        return page
+
     def _build_eapol_page(self):
         page = self._make_page()
         ttk.Label(page, text="EAPOL-Start / Logoff 洪泛",
@@ -945,7 +998,7 @@ class DeautherApp:
     def go_back(self):
         parent = {"one": "deauth", "all": "deauth", "only": "deauth", "except": "deauth"}
         for key in ("deauth", "probe", "csa", "delba", "ba", "evil", "btm", "eapol",
-                    "sae", "authflood", "qosnull", "status", "log"):
+                    "sae", "authflood", "qosnull", "bsrp", "status", "log"):
             parent[key] = "home"
         self.show_page(parent.get(self.current_page, "home"))
 
@@ -962,7 +1015,8 @@ class DeautherApp:
         titles.update({"btm": "802.11v BTM Request（强制漫游）",
                        "eapol": "EAPOL-Start/Logoff 洪泛", "sae": "SAE Commit 洪泛",
                        "authflood": "Auth/Assoc 洪泛",
-                       "qosnull": "QoS Null PM 位欺骗（电源管理）"})
+                       "qosnull": "QoS Null PM 位欺骗（电源管理）",
+                       "bsrp": "HE BSRP Trigger 轮询"})
         self.page_title.config(text=titles.get(key, key))
         self._refresh_labels()
 
@@ -1309,6 +1363,47 @@ class DeautherApp:
 
     def btm_stop(self):
         self._send("BTMSTOP")
+
+    def start_bsrp(self):
+        if not self._need_single("BSRP"):
+            return
+        def num(var, name, lo, hi, default):
+            raw = var.get().strip()
+            if raw == "":
+                return default
+            try:
+                value = int(raw)
+            except ValueError:
+                messagebox.showerror("BSRP 参数无效", f"{name} 必须是整数。")
+                return None
+            if not lo <= value <= hi:
+                messagebox.showerror("BSRP 参数无效", f"{name} 必须在 {lo}..{hi}。")
+                return None
+            return value
+
+        aid = num(self.bsrp_aid_var, "AID（0=自动）", 0, 2007, 0)
+        if aid is None:
+            return
+        ch = num(self.bsrp_ch_var, "信道（0=同 AP）", 0, 196, 0)
+        if ch is None:
+            return
+        rate = num(self.bsrp_rate_var, "间隔 ms", 1, 60000, 45)
+        if rate is None:
+            return
+        count = num(self.bsrp_count_var, "帧数（0=一直发）", 0, 1000000, 20)
+        if count is None:
+            return
+        sta = self.bsrp_sta_var.get().strip().replace(":", "").replace("-", "").upper()
+        if sta and len(sta) != 12:
+            messagebox.showerror("BSRP 参数无效", "目标 STA 看起来应该像 02AABBCCDDEE。")
+            return
+        parts = [f"BSRP {self.single_index} {aid} {ch}", str(rate), str(count)]
+        if sta:
+            parts.append(sta)
+        self._send(" ".join(parts))
+
+    def bsrp_stop(self):
+        self._send("BSRPSTOP")
 
     def start_eapol(self):
         if not self._need_single("EAPOL"):

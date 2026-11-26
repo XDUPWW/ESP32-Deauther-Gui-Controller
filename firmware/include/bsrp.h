@@ -29,11 +29,16 @@ uint32_t bsrp_remaining(void);
 uint32_t bsrp_tx_errors(void);
 uint32_t bsrp_reference_triggers(void);
 uint16_t bsrp_aid(void);
+// AID actually being used in the frame: the commanded one, or the one learned
+// from the station's association response when the command passed aid=0.
+uint16_t bsrp_learned_aid(void);
+bool bsrp_aid_known(void);
 uint8_t bsrp_channel(void);
 uint32_t bsrp_rate_ms(void);
 uint16_t bsrp_ul_length(void);
 uint8_t bsrp_gi_ltf(void);
 uint8_t bsrp_ap_tx_power(void);
+uint8_t bsrp_trigger_type(void);
 uint8_t bsrp_ru_allocation(void);
 uint8_t bsrp_mcs(void);
 uint8_t bsrp_target_rssi(void);

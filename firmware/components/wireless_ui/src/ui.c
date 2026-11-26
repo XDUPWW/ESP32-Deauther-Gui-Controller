@@ -316,11 +316,11 @@ static void show_screen(ui_screen_t target) {
     s_screen = target;
 }
 
-// The five frame-level modules share one page; these two tables name it.
-static const char *kModNames[5] = {"BTM", "EAPOL", "SAE", "AUTH", "QOSNULL"};
-static const char *kModVariants[5] = {"", "Plain", "Rand", "NoAuto", "PM=0"};
+// The six frame-level modules share one page; these two tables name it.
+static const char *kModNames[6] = {"BTM", "EAPOL", "SAE", "AUTH", "QOSNULL", "BSRP"};
+static const char *kModVariants[6] = {"", "Plain", "Rand", "NoAuto", "PM=0", ""};
 // Screen names reported by `UISCREEN` / `UI` (lowercase, same spelling as the commands).
-static const char *kModScreenNames[5] = {"btm", "eapol", "sae", "authflood", "qosnull"};
+static const char *kModScreenNames[6] = {"btm", "eapol", "sae", "authflood", "qosnull", "bsrp"};
 
 static void update_mode_label(void) {
     if (s_mode_label == NULL) {
@@ -420,7 +420,7 @@ static void update_mode_label(void) {
     }
 
     if (s_mod_label != NULL) {
-        const char *name = kModNames[(s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind];
+        const char *name = kModNames[(s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind];
         if (s_selected < 0) {
             snprintf(text, sizeof(text), "%s: pick a target", name);
         } else {
@@ -591,16 +591,16 @@ static void ba_stop_clicked(lv_event_t *event) {
 // popup then stopped at 14 rows instead of 30). The kind picks the command and
 // retitles the variant button.
 static void goto_atk(int kind) {
-    s_atk_kind = (kind < 0 || kind > 4) ? 0 : kind;
+    s_atk_kind = (kind < 0 || kind > 5) ? 0 : kind;
     s_tap_pick = 0;  // every one of them targets a single AP
     if (s_mod_variant_label != NULL) {
         lv_label_set_text(s_mod_variant_label, kModVariants[s_atk_kind]);
     }
-    // BTM has exactly one shape now (no candidate list, timer is the only knob),
-    // so the variant key would be a second "Start" with a different number on it.
-    // Hide it instead of inventing a difference.
+    // BTM and BSRP have exactly one shape, so the variant key would be a second
+    // "Start" with a different number on it. Hide it instead of inventing a
+    // difference. (BSRP's AID is learned, not typed -- see goto_bsrp.)
     if (s_mod_variant_btn != NULL) {
-        if (s_atk_kind == 0) {
+        if (s_atk_kind == 0 || s_atk_kind == 5) {
             lv_obj_add_flag(s_mod_variant_btn, LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_clear_flag(s_mod_variant_btn, LV_OBJ_FLAG_HIDDEN);
@@ -630,6 +630,12 @@ static void goto_qosnull(lv_event_t *event) {
     (void)event;
     goto_atk(4);
 }
+// BSRP needs an AID that only the station's own association response reveals, so
+// the page fires `BSRP <idx> 0 0`: aid=0 learns it, ch=0 keeps the AP channel.
+static void goto_bsrp(lv_event_t *event) {
+    (void)event;
+    goto_atk(5);
+}
 
 static void atk_start_clicked(lv_event_t *event) {
     (void)event;
@@ -652,6 +658,9 @@ static void atk_start_clicked(lv_event_t *event) {
             break;
         case 4:
             snprintf(command, sizeof(command), "QOSNULL %d", s_selected);
+            break;
+        case 5:
+            snprintf(command, sizeof(command), "BSRP %d 0 0", s_selected);
             break;
         default:
             snprintf(command, sizeof(command), "BTM %d", s_selected);
@@ -685,16 +694,16 @@ static void atk_variant_clicked(lv_event_t *event) {
             snprintf(command, sizeof(command), "QOSNULLREL");
             break;
         default:
-            return;  // the button is hidden on the BTM page (single shape)
+            return;  // the button is hidden on the BTM / BSRP pages (single shape)
     }
     emit(command);
 }
 
 static void atk_stop_clicked(lv_event_t *event) {
     (void)event;
-    static const char *kStops[5] = {"BTMSTOP", "EAPOLSTOP", "SAESTOP", "AUTHFLOODSTOP",
-                                    "QOSNULLSTOP"};
-    const int kind = (s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind;
+    static const char *kStops[6] = {"BTMSTOP", "EAPOLSTOP", "SAESTOP", "AUTHFLOODSTOP",
+                                    "QOSNULLSTOP", "BSRPSTOP"};
+    const int kind = (s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind;
     emit(kStops[kind]);
 }
 
@@ -1011,6 +1020,7 @@ static bool build_main_ui(void) {
     lv_obj_t *m4 = make_row(s_screens[SCR_MENU]);
     make_button(m4, "Auth", goto_authflood);
     make_button(m4, "QoSNull", goto_qosnull);
+    make_button(m4, "BSRP", goto_bsrp);
 
     // ---- level 2: deauth mode menu
     s_screens[SCR_DEAUTH] = make_screen(root);
@@ -1537,14 +1547,15 @@ bool wireless_ui_show_by_name(const char *name) {
         show_screen(SCR_EVIL);
     } else if (strcmp(name, "btm") == 0 || strcmp(name, "eapol") == 0 ||
                strcmp(name, "sae") == 0 || strcmp(name, "authflood") == 0 ||
-               strcmp(name, "qosnull") == 0) {
+               strcmp(name, "qosnull") == 0 || strcmp(name, "bsrp") == 0) {
         // "qosnull" shares its first letter with "probe", so the names are compared
         // explicitly instead of keying on name[0].
         const int kind = (strcmp(name, "btm") == 0)         ? 0
                          : (strcmp(name, "eapol") == 0)     ? 1
                          : (strcmp(name, "sae") == 0)       ? 2
                          : (strcmp(name, "authflood") == 0) ? 3
-                                                            : 4;
+                         : (strcmp(name, "qosnull") == 0)   ? 4
+                                                            : 5;
         goto_atk(kind);
     } else {
         ok = false;
@@ -1570,7 +1581,7 @@ const char *wireless_ui_screen_name(void) {
         case SCR_BA:
             return "ba";
         case SCR_FRAME:
-            return kModScreenNames[(s_atk_kind < 0 || s_atk_kind > 4) ? 0 : s_atk_kind];
+            return kModScreenNames[(s_atk_kind < 0 || s_atk_kind > 5) ? 0 : s_atk_kind];
         case SCR_MENU:
         default:
             return "menu";

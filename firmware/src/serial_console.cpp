@@ -142,7 +142,7 @@ void print_help() {
   Serial.println("INFO RRMSTOP                       stop the Neighbor Report spoof");
   Serial.println("INFO RRMTEST                       dump the Neighbor Report Response bytes (format check)");
   Serial.println("INFO BSRP <idx> <aid> <ch> [rate_ms=5] [count] [sta-mac]");
-  Serial.println("INFO                               HE BSRP Trigger; ch must match AP, rates below 45 ms are raised");
+  Serial.println("INFO                               HE BSRP Trigger; aid=0 learns the AID, ch=0 uses the AP channel");
   Serial.println("INFO BSRPSTOP                      stop the BSRP Trigger poll");
   Serial.println("INFO BSRPTEST                      annotate Trigger bytes; core schedule fields await a real capture");
   Serial.println("INFO BSRPFIELD [ul|gi|atp|ru|rssi|mcs] [value]  override/report the schedule fields (diagnostic)");
@@ -444,6 +444,8 @@ void do_status() {
   Serial.print((unsigned)bsrp_reference_triggers());
   Serial.print(" bsrpaid=");
   Serial.print((unsigned)bsrp_aid());
+  Serial.print(" bsrplaid=");
+  Serial.print(bsrp_aid_known() ? (unsigned)bsrp_learned_aid() : 0u);
   Serial.print(" bsrpch=");
   Serial.print((unsigned)bsrp_channel());
   Serial.print(" bsrprate=");
@@ -1182,10 +1184,11 @@ void dispatch(char* line) {
     char* name_token = strtok(nullptr, " \t");
     char* value_token = strtok(nullptr, " \t");
     if (name_token == nullptr) {
-      Serial.printf("BSRPFIELD ul=%u gi=%u atp=%u ru=%u rssi=%u mcs=%u\n",
+      Serial.printf("BSRPFIELD ul=%u gi=%u atp=%u ru=%u rssi=%u mcs=%u type=%u\n",
                     (unsigned)bsrp_ul_length(), (unsigned)bsrp_gi_ltf(),
                     (unsigned)bsrp_ap_tx_power(), (unsigned)bsrp_ru_allocation(),
-                    (unsigned)bsrp_target_rssi(), (unsigned)bsrp_mcs());
+                    (unsigned)bsrp_target_rssi(), (unsigned)bsrp_mcs(),
+                    (unsigned)bsrp_trigger_type());
       return;
     }
     if (value_token == nullptr) {

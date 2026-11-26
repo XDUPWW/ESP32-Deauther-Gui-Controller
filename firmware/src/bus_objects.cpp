@@ -690,11 +690,16 @@ wb_err_t bsrp_bus_start(const wb_args_t* args, wb_reply_t* reply) {
     return WB_ERR_ARG;
   }
   const long aid = wb_arg_num(args, "aid");
-  if (aid < 1 || aid > 2007) {
-    wb_reply_line(reply, "ERR aid must be 1..2007");
+  if (aid < 0 || aid > 2007) {
+    wb_reply_line(reply, "ERR aid must be 0..2007 (0 = learn it from the association response)");
     return WB_ERR_ARG;
   }
-  const long ch = wb_arg_num(args, "ch");
+  long ch = wb_arg_num(args, "ch");
+  // ch=0 is "same channel as the selected AP". The touch screen has no way to
+  // read a channel out of the scan list, and the value is already implied by idx.
+  if (ch == 0) {
+    ch = WiFi.channel(index);
+  }
   if (ch < 1 || ch > 196) {
     wb_reply_line(reply, "ERR channel must be 1..196");
     return WB_ERR_ARG;
@@ -734,11 +739,19 @@ wb_err_t bsrp_bus_start(const wb_args_t* args, wb_reply_t* reply) {
     char text[18];
     mac_text(sta, text);
     wb_reply_printf(reply, "OK BSRPSTA %s\n", text);
+  } else if (aid == 0) {
+    wb_reply_line(reply,
+                  "INFO BSRP aid=auto: waiting for the station's association response");
   } else {
     wb_reply_line(reply, "INFO BSRP waiting for an Association Response or real BSRP with this AID");
   }
-  wb_reply_printf(reply, "OK BSRP %d aid=%ld ch=%ld rate=%u count=%ld ssid=%s\n", index, aid, ch,
-                  (unsigned)bsrp_rate_ms(), count, WiFi.SSID(index).c_str());
+  if (aid == 0) {
+    wb_reply_printf(reply, "OK BSRP %d aid=auto ch=%ld rate=%u count=%ld ssid=%s\n", index, ch,
+                    (unsigned)bsrp_rate_ms(), count, WiFi.SSID(index).c_str());
+  } else {
+    wb_reply_printf(reply, "OK BSRP %d aid=%ld ch=%ld rate=%u count=%ld ssid=%s\n", index, aid, ch,
+                    (unsigned)bsrp_rate_ms(), count, WiFi.SSID(index).c_str());
+  }
   console_ui_log("bsrp started");
   wbus_emit("bsrp.state", "active=1");
   return WB_OK;

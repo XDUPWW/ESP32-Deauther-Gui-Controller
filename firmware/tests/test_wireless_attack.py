@@ -438,7 +438,7 @@ class FirmwareFunctionalTests(unittest.TestCase):
     def test_ui_screens_switch(self):
         """LVGL：每个屏幕都能构建出来（切屏后不崩、堆不塌），含五个新模块页。"""
         for name in ("menu", "deauth", "mode", "probe", "csa", "delba", "ba", "evil",
-                     "btm", "eapol", "sae", "authflood", "qosnull"):
+                     "btm", "eapol", "sae", "authflood", "qosnull", "bsrp"):
             line, _ = self.client.command(f"UISCREEN {name}",
                                           lambda l: l.startswith(("OK UISCREEN", "ERR ")), 5)
             self.assertIsNotNone(line, f"UISCREEN {name} 无响应")
@@ -1022,8 +1022,8 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
         self.assertEqual(line.removeprefix("BSRPTEST hex="), expected)
 
         channel = self._scan_first_ap()
-        for bad in ("BSRP 0 0 %d" % channel, "BSRP 0 2008 %d" % channel,
-                    "BSRP 0 1 0", "BSRP 0 1 %d 0" % channel):
+        for bad in ("BSRP 0 9999 %d" % channel, "BSRP 0 2008 %d" % channel,
+                    "BSRP 0 1 200", "BSRP 0 1 %d 0" % channel):
             line, _ = self.client.command(bad, lambda l: l.startswith("ERR "), 3)
             self.assertIsNotNone(line, f"{bad} 应被拒绝")
         wrong_channel = 1 if channel != 1 else 6
@@ -1054,6 +1054,15 @@ class FirmwareControlFrameModuleTests(unittest.TestCase):
         self.assertTrue(any("raised to 45" in l for l in lines))
         time.sleep(0.2)
         self.assertEqual(self._status().get("bsrp"), "off")
+
+        # aid=0 / ch=0 是给界面用的：触摸屏没有数字输入，让它自己嗅 AID、跟所选 AP 的信道。
+        ok, lines = self.client.command(f"BSRP 0 0 0 45 1", lambda l: l.startswith("OK BSRP "), 5)
+        self.assertIsNotNone(ok, f"aid=auto 启动失败: {lines[-3:]}")
+        self.assertIn("aid=auto", ok)
+        self.assertTrue(any("aid=auto" in l for l in lines))
+        time.sleep(0.2)
+        stop, _ = self.client.command("BSRPSTOP", lambda l: l.startswith("OK BSRPSTOP"), 4)
+        self.assertIsNotNone(stop)
         stop, _ = self.client.command("BSRPSTOP", lambda l: l.startswith("OK BSRPSTOP"), 4)
         self.assertIsNotNone(stop)
 

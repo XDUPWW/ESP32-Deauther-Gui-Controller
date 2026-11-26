@@ -15,7 +15,10 @@
 namespace {
 
 const uint8_t kTriggerTypeBsrp = 4;
+const uint8_t kTriggerTypeMuBar = 2;
 const size_t kBsrpFrameLen = 32;
+// Longest shape this builder can produce: 24 + 5 + 4 (MU-BAR) rounded up to 36.
+const size_t kBsrpFrameMax = 40;
 const uint32_t kMinUnicastGapMs = 45;
 
 // These schedule fields stay 0 until a real BSRP is captured on the target BSS.
@@ -30,6 +33,17 @@ const uint32_t kMinUnicastGapMs = 45;
 //   - ap_tx_power and target_rssi do NOT gate the answer. They only move the
 //     station's tb_pwr_outof_range counter, which increments even on triggers
 //     that are answered. Do not read it as a veto.
+// Trigger type lives in the Common Info low nibble. 4 = BSRP (default), 0 = Basic,
+// 2 = MU-BAR. The rest of the frame is type-agnostic apart from MU-BAR's extra
+// per-user BAR fields, which are appended only for type 2.
+//
+// The MU-BAR additions below are UNVERIFIED: no local dissector and no captured
+// reference frame, so the two 16-bit fields exist to be checked against a real
+// MU-BAR (or Wireshark's mask) before anything is concluded from them.
+uint8_t s_trigger_type = 4;
+uint16_t s_bar_control = 0;
+uint16_t s_bar_seq = 0;
+
 uint16_t s_ul_length = 0;
 uint8_t s_gi_ltf = 0;
 uint8_t s_ap_tx_power = 0;
@@ -40,10 +54,13 @@ uint8_t s_mcs = 7;
 bool s_active;
 bool s_have_sta;
 bool s_unlimited;
+bool s_auto_aid;      // aid=0: take the AID from the association response
+bool s_aid_known;
 uint8_t s_bssid[6];
 uint8_t s_sta[6];
 uint8_t s_channel;
 uint16_t s_aid;
+uint16_t s_learned_aid;
 uint32_t s_rate_ms;
 uint32_t s_left;
 uint32_t s_frames;
@@ -72,14 +89,19 @@ uint64_t get_le40(const uint8_t* in) {
 }
 
 size_t build_bsrp(uint8_t* frame, const uint8_t ra[6], const uint8_t ta[6], uint16_t aid) {
-    memset(frame, 0, kBsrpFrameLen);
+    // MU-BAR carries four extra octets per user (BAR control + starting sequence);
+    // every other trigger type stops after the 5-octet User Info.
+    const size_t extra = (s_trigger_type == kTriggerTypeMuBar) ? 4 : 0;
+    const size_t body = 24 + 5 + extra;
+    const size_t len = (body + 3) & ~(size_t)3;  // Trigger frames are 4-octet aligned
+    memset(frame, 0, len);
     frame[0] = 0x24;  // control, subtype 2 = Trigger
     memcpy(frame + 4, ra, 6);
     memcpy(frame + 10, ta, 6);
 
     // HE Common Info bit positions. UL Spatial Reuse occupies bits 37..52;
     // Doppler is bit 53 and UL HE-SIG-A2 Reserved occupies bits 54..62.
-    uint64_t common = kTriggerTypeBsrp;
+    uint64_t common = s_trigger_type & 0x0F;
     common |= ((uint64_t)(s_ul_length & 0x0FFF)) << 4;
     common |= ((uint64_t)(s_gi_ltf & 0x03)) << 20;
     common |= ((uint64_t)(s_ap_tx_power & 0x3F)) << 28;
@@ -92,7 +114,13 @@ size_t build_bsrp(uint8_t* frame, const uint8_t ra[6], const uint8_t ta[6], uint
     user |= ((uint64_t)(s_mcs & 0x0F)) << 21;
     user |= ((uint64_t)(s_target_rssi & 0x7F)) << 32;
     put_le40(frame + 24, user);
-    return kBsrpFrameLen;
+    if (extra != 0) {
+        frame[29] = (uint8_t)(s_bar_control & 0xFF);
+        frame[30] = (uint8_t)(s_bar_control >> 8);
+        frame[31] = (uint8_t)(s_bar_seq & 0xFF);
+        frame[32] = (uint8_t)(s_bar_seq >> 8);
+    }
+    return len;
 }
 
 void learn_sta(const uint8_t mac[6]) {
@@ -115,11 +143,17 @@ void print_mac(const char* label, const uint8_t mac[6]) {
 bool bsrp_start(int index, uint16_t aid, uint8_t channel, uint32_t rate_ms, uint32_t count,
                 const uint8_t sta[6]) {
     const uint8_t* bssid = WiFi.BSSID(index);
-    if (bssid == nullptr || aid == 0 || aid > 2007 || channel == 0) {
+    if (bssid == nullptr || aid > 2007 || channel == 0) {
         return false;
     }
     memcpy(s_bssid, bssid, 6);
+    // aid 0 means "learn it": the station's AID is only visible in its own
+    // association response, and the touch screen has no way to type it. Until it
+    // is learned the module stays started but silent.
     s_aid = aid;
+    s_auto_aid = (aid == 0);
+    s_aid_known = (aid != 0);
+    s_learned_aid = aid;
     s_channel = channel;
     s_rate_ms = rate_ms < kMinUnicastGapMs ? kMinUnicastGapMs : rate_ms;
     s_unlimited = (count == 0);
@@ -146,7 +180,7 @@ void bsrp_stop(void) {
 }
 
 void bsrp_step(void) {
-    if (!s_active || !s_have_sta) {
+    if (!s_active || !s_have_sta || !s_aid_known) {
         return;
     }
     if (!s_unlimited && s_left == 0) {
@@ -158,9 +192,9 @@ void bsrp_step(void) {
         return;
     }
 
-    uint8_t frame[kBsrpFrameLen];
-    build_bsrp(frame, s_sta, s_bssid, s_aid);
-    if (tx_guard_send(frame, (uint16_t)sizeof(frame)) == ESP_OK) {
+    uint8_t frame[kBsrpFrameMax];
+    const size_t len = build_bsrp(frame, s_sta, s_bssid, s_learned_aid);
+    if (tx_guard_send(frame, (uint16_t)len) == ESP_OK) {
         s_frames++;
         s_last_tx_ms = now;
         if (!s_unlimited && s_left > 0 && --s_left == 0) {
@@ -181,7 +215,12 @@ void bsrp_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subtyp
     if (type == 0 && (subtype == 1 || subtype == 3) && len >= 30) {
         const uint16_t status = frame[26] | (frame[27] << 8);
         const uint16_t aid = (frame[28] | (frame[29] << 8)) & 0x0FFF;
-        if (status == 0 && aid == s_aid) {
+        if (status == 0 && (s_auto_aid || aid == s_learned_aid)) {
+            if (s_auto_aid && aid >= 1 && aid <= 2007) {
+                s_learned_aid = aid;
+                s_aid_known = true;
+                s_auto_aid = false;
+            }
             learn_sta(frame + 4);
         }
         return;
@@ -191,7 +230,7 @@ void bsrp_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subtyp
     // observation only; scheduling values are not silently copied into our frame.
     if (type == 1 && subtype == 2 && len >= 29 && (frame[16] & 0x0F) == kTriggerTypeBsrp) {
         const uint64_t user = get_le40(frame + 24);
-        if ((user & 0x0FFF) == s_aid) {
+        if ((user & 0x0FFF) == s_learned_aid) {
             s_reference_triggers++;
             learn_sta(frame + 4);
         }
@@ -201,12 +240,12 @@ void bsrp_on_rx(const uint8_t* frame, uint16_t len, uint8_t type, uint8_t subtyp
 void bsrp_selftest(void) {
     static const uint8_t fake_ap[6] = {0x02, 0x11, 0x22, 0x33, 0x44, 0x55};
     static const uint8_t fake_sta[6] = {0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE};
-    uint8_t frame[kBsrpFrameLen];
-    build_bsrp(frame, fake_sta, fake_ap, s_aid == 0 ? 1 : s_aid);
+    uint8_t frame[kBsrpFrameMax];
+    const size_t len = build_bsrp(frame, fake_sta, fake_ap, s_aid == 0 ? 1 : s_aid);
 
     const uint64_t user = get_le40(frame + 24);
     Serial.printf("BSRPTEST state=%s len=%u frame_control=0x%02X%02X type=1 subtype=2 duration=%u\n",
-                  s_active ? "on" : "off", (unsigned)kBsrpFrameLen, frame[1], frame[0],
+                  s_active ? "on" : "off", (unsigned)len, frame[1], frame[0],
                   (unsigned)(frame[2] | (frame[3] << 8)));
     Serial.print("BSRPTEST addr ");
     print_mac("ra", frame + 4);
@@ -224,11 +263,22 @@ void bsrp_selftest(void) {
         "ss_start=0 ss_count=0 target_rssi=%u reserved=0\n",
         (unsigned)(user & 0x0FFF), (unsigned)((user >> 12) & 1), (unsigned)((user >> 13) & 0x7F),
         (unsigned)((user >> 21) & 0x0F), (unsigned)((user >> 32) & 0x7F));
-    Serial.println("BSRPTEST padding[29..31] hex=000000 fcs=driver");
+    if (s_trigger_type == kTriggerTypeMuBar) {
+        Serial.printf("BSRPTEST mubar[29..32] bar_control=0x%04X bar_seq=0x%04X "
+                      "(layout UNVERIFIED: no local dissector, no reference frame)\n",
+                      (unsigned)s_bar_control, (unsigned)s_bar_seq);
+        Serial.printf("BSRPTEST padding[33..%u] hex=", (unsigned)(len - 1));
+        for (size_t i = 33; i < len; i++) {
+            Serial.printf("%02X", frame[i]);
+        }
+        Serial.println();
+    } else {
+        Serial.println("BSRPTEST padding[29..31] hex=000000 fcs=driver");
+    }
     Serial.println("BSRPTEST reference=missing core_fields=placeholder (ul_length gi_ltf "
                    "ap_tx_power ru_allocation target_rssi)");
     Serial.print("BSRPTEST hex=");
-    for (size_t i = 0; i < kBsrpFrameLen; i++) {
+    for (size_t i = 0; i < len; i++) {
         Serial.printf("%02X", frame[i]);
     }
     Serial.println();
@@ -258,6 +308,14 @@ uint16_t bsrp_aid(void) {
     return s_aid;
 }
 
+uint16_t bsrp_learned_aid(void) {
+    return s_learned_aid;
+}
+
+bool bsrp_aid_known(void) {
+    return s_aid_known;
+}
+
 uint8_t bsrp_channel(void) {
     return s_channel;
 }
@@ -276,6 +334,10 @@ uint8_t bsrp_gi_ltf(void) {
 
 uint8_t bsrp_ap_tx_power(void) {
     return s_ap_tx_power;
+}
+
+uint8_t bsrp_trigger_type(void) {
+    return s_trigger_type;
 }
 
 uint8_t bsrp_ru_allocation(void) {
@@ -338,6 +400,30 @@ bool bsrp_set_field(const char* name, long value) {
             return false;
         }
         s_mcs = (uint8_t)value;
+        return true;
+    }
+    // Trigger type: 4 = BSRP (default), 0 = Basic, 2 = MU-BAR. Other values are
+    // accepted because the field is 4 bits wide; what the station does with an
+    // unknown type is its business.
+    if (strcmp(name, "type") == 0) {
+        if (value < 0 || value > 15) {
+            return false;
+        }
+        s_trigger_type = (uint8_t)value;
+        return true;
+    }
+    if (strcmp(name, "barctl") == 0) {
+        if (value < 0 || value > 0xFFFF) {
+            return false;
+        }
+        s_bar_control = (uint16_t)value;
+        return true;
+    }
+    if (strcmp(name, "barseq") == 0) {
+        if (value < 0 || value > 0xFFFF) {
+            return false;
+        }
+        s_bar_seq = (uint16_t)value;
         return true;
     }
     return false;
