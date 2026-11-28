@@ -1,4 +1,5 @@
 set(board_srcs "src/board_cyd.c")
+
 set(board_priv "")
 
 if(CONFIG_WB_BOARD_CYD)

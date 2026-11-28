@@ -597,7 +597,7 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
         │                  │
         ├─ deauth.cpp ─────┼── 被所有攻击模块调用：attack_sniffer_enable()
         │   │              │   attack_stop() / attack_step() / build_* 工具
-        │   └─ sniffer()   │
+        │   └─ sniffer()   │──→ hexcap.cpp（过滤匹配时复制原始帧到 8 槽队列）
         │        └── 分发 ─┼─→ csa_on_rx / delba_on_rx / btm_on_rx
         │                  │   tim_on_rx / eapol_on_rx / sae_on_rx / authflood_on_rx
         │
@@ -617,7 +617,8 @@ screen_y = (raw[axis_y] - off_y) * gain_y + inset
 
 | 底座 | 提供 | 使用者 |
 | --- | --- | --- |
-| `deauth.cpp` | `attack_sniffer_enable()`、`attack_stop()`、`attack_step()`、`attack_rx_*`、`find_ap`、注入队列 | 所有攻击模块（每个 `*_start()` 都会调 `attack_sniffer_enable()`；`attack_step()` 里依次调 7 个 `*_step()`） |
+| `deauth.cpp` | `attack_sniffer_enable()`、`attack_stop()`、`attack_step()`、`attack_rx_*`、`find_ap`、注入队列、`sniffer()` | 所有攻击模块；`sniffer()` 也把匹配的原始帧交给 `hexcap.cpp`，回调只做筛选与入队 |
+| `hexcap.cpp` | 8 槽 / 512 字节原始帧队列，type/subtype/TID/TA/RA 过滤，命中与溢出计数 | `sniffer()` 入队；`serial_console.cpp` 通过 `HEXD` / `HEXLOG` / `HEXSTOP` 管理并在主循环打印 |
 | `tx_guard.cpp` | `tx_guard_send()` + 三个计数 | `csa`、`btm`、`eapol`、`qosnull`、`sae`、`authflood` |
 | `ie_util.cpp` | `ie_find` / `rsn_has_akm_sae` / `rsn_has_akm_psk` / `rsn_mfpr_required` / `extcap_has_bss_transition` | `authflood`、`sae`、`btm`（`csa` 自己写了一份等价的 IE 遍历；`rsn_mfpr_required` 目前无人调用） |
 

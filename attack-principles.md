@@ -7,11 +7,11 @@
 
 **三类事实分开标注**
 
-| 标注 | 含义 | 怎么核对 |
-| --- | --- | --- |
-| 【标准】 | 802.11 / 802.1X 等标准文本的规定 | 给出条款名（和能确认的条款号），可全文检索 |
-| 【代码】 | 本仓库实现的事实 | 给 `path:line`，与 `firmware/README.md §5` 冲突时**以代码为准** |
-| 【实测】 | 空口 / 串口测到的数字 | 给脚本与日期；未测的一律写"未实测" |
+| 标注   | 含义                       | 怎么核对                                                 |
+| ---- | ------------------------ | ---------------------------------------------------- |
+| 【标准】 | 802.11 / 802.1X 等标准文本的规定 | 给出条款名（和能确认的条款号），可全文检索                                |
+| 【代码】 | 本仓库实现的事实                 | 给 `path:line`，与 `firmware/README.md §5` 冲突时**以代码为准** |
+| 【实测】 | 空口 / 串口测到的数字             | 给脚本与日期；未测的一律写"未实测"                                   |
 
 实测环境（除非另注）：攻击板 COM5 = ESP32-2432S028R（CYD，带 LVGL）；抓包板 COM8 = ESP32-C5，
 把空口帧以 pcap 流发布到命名管道 `\\.\pipe\esp_sdr_wifi`（linktype 127、含 4 字节 FCS、信道固定 12），
@@ -43,22 +43,22 @@
 
 ## 1. 总表：模块 × 协议层 × 防护 × 实测状态
 
-| 节 | 模块 | 入口文件 | CLI | 工作模式 | 帧（类型/子类型/类别） | 协议层位置 | 依赖的协议机制 | PMF 等防护 | 实测状态 |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 2 | Deauth 洪泛 | `deauth.cpp` | `DEAUTH` `DEAUTH_ALL` `DEAUTH_ONLY` `DEAUTH_EXCEPT` `REASON` | 单个 AP / 全部 AP / 白名单 / 黑名单；reason 固定或每束随机 | mgmt / 12 | MLME 关联状态机 | Class 2/3 帧状态机、Reason Code | **被拦**（deauth 是 robust 帧，MFPR 下无效） | 帧上空气 ✅，计数器 ✅，断连未量化 |
-| 3 | Probe/Beacon 泛洪 | `deauth.cpp` | `PROBE_BROADCAST` | 单模式（广播泛洪），每 120 ms 跳信道 | mgmt / 8、5 | 扫描（MLME-scan） | 客户端扫描表 | 无（beacon/probe 从不加密） | 帧数 ✅（3 s 2512 帧） |
-| 4.1 | CSA（Action 帧） | `csa.cpp` | `CSA` | announce（倒计时）→ hold（新信道克隆 beacon）→ 循环 | mgmt / 13，cat 4 act 4 | 信道管理（802.11h） | CSA 通告 + 倒计时 | **被拦**（spectrum mgmt action 属 robust） | 帧上空气 ✅ |
-| 4.2 | CSA（Beacon IE） | `csa.cpp` | `CSA` | 同上，两条路径同一轮发出 | mgmt / 8 + IE 37 | 信道管理 | beacon 里的 CSA 元素 | **不受保护**（beacon 不是 robust 帧） | 帧上空气 ✅，客户端是否跟随未实测 |
-| 5 | DELBA 欺骗 | `delba.cpp` | `DELBA` `DELBATEST` | 双向单播（学了 TID）或广播兜底 | mgmt / 13，cat 3 act 2 | Block Ack 会话管理 | 每个 TID 的聚合会话 | **被拦**（cat 3 属 robust） | 吞吐 −99%（非 PMF 链路）✅ |
-| 6 | BA 会话劫持 | `delba.cpp` | `BAATTACK` `BAPLANT` `BARPUSH` `BATEST` `BATX` `BARSEQ` | DELBA+ADDBA+BAR 持续 / 只种窗口 / 只推 BAR | mgmt / 13 cat 3 act 0 + ctrl / 8 | Block Ack 重排窗口 | ADDBA 的 SSN → WinStartB | **被拦**（同上） | ESP-IDF 目标 ✅ 冻结；mac80211 未实测 |
-| 7 | BTM 强制漫游（steering） | `btm.cpp` | `BTM` `BTMTEST` | Disassociation Imminent + timer；诱饵 AP 在跑时自动把候选指向它，也可用 `cand-bssid` 显式指定 | mgmt / 13，cat 10 act 7 | 802.11v / 漫游决策 | BTM Request + Extended Capabilities | **被拦**（cat 10 属 robust，需 PMF 关闭） | 端到端 ✅（真实 STA 漫游到我们软 AP，`reason=207`）|
-| 8 | ~~TIM 投毒~~（已下线） | —（`tim.cpp` 已删除） | — | — | mgmt / 8 + IE 5 | 省电（PS）调度 | DTIM/TIM 位图 | **不受保护**（beacon） | 帧字段 ✅，客户端省电行为无影响（§8） |
-| 13 | QoS Null PM 位欺骗（电源管理） | `qosnull.cpp` | `QOSNULL` `QOSNULLREL` `QOSNULLSTOP` `QOSNULLTEST` | 伪造单播 QoS Null，持续 PM=1（每第 6 帧换 PM=0 释放） | data 12（ToDS） | 省电（PS）状态机 | PM 位声明 + TIM 缓存 | **不受保护**（数据帧的 PM 位不在 robust 集合里） | 三种帧型空口 ✅，吞吐 −21…−38%、零掉线 ✅ |
-| 9 | EAPOL-Start/Logoff | `eapol.cpp` | `EAPOL` `EAPOLTEST` | Start 与 Logoff 交替；非 QoS 与 QoS(TID) 交替 | data / 0、8 + LLC/SNAP 0x888E | 802.1X 认证（端口状态机） | EAPOL PDU、受控/非受控端口 | 未加密数据帧可能被丢 | 帧上空气 ✅，该 AP 无回应 |
-| 10 | SAE Commit 洪泛 | `sae.cpp` | `SAE` `SAETEST` | point（合法点）/ rand（对照）；身份每 4 帧轮换 | mgmt / 11，alg 3 seq 1 | SAE 握手（WPA3） | ECC 标量乘 + 反 clogging token | 无（认证帧本就不加密） | 帧上空气 ✅，AP 回 status 13（非 WPA3） |
-| 11 | Auth/Assoc 洪泛 | `authflood.cpp` | `AUTHFLOOD` `AUTHFLOODTEST` | both（Auth→Assoc→换身份）/ auth / assoc；WPA3 自动升级 SAE | mgmt / 11 alg 0 + mgmt / 0 | 认证 + 关联（station 表） | 每个身份一条状态机 | 无（auth/assoc 从不加密） | AP 回 status 0（接受了伪造身份）✅ |
-| 12 | Evil Twin | `evil_twin.cpp` | `EVILTWIN` `EVILTWIN_STOP` `CREDS` | deauth 3 s → 克隆 softAP → DNS 劫持 → HTTP 钓鱼页 | softAP + DNS + HTTP | 上层（钓鱼） | 客户端自动连接 / 用户输入 | 无 | 凭据捕获未量化 |
-| 14 | RRM 伪造 Neighbor Report | `rrm.cpp` | `RRM` `RRMTEST` | nbr（幻影邻居，元素 52/13）；count 限次或持续；token/info/opclass/phy 可注入 | mgmt / 13，cat 5 act 5 | 802.11k 邻居表 / 漫游候选 | Neighbor Report element | **被拦**（cat 5 属 robust，需 PMF 关闭） | 帧上空气 ✅（对端解出 cat=5 act=5），客户端采信未实测 |
+| 节   | 模块                 | 入口文件            | CLI                                                          | 工作模式                                                | 帧（类型/子类型/类别）                       | 协议层位置               | 依赖的协议机制                             | PMF 等防护                                    | 实测状态                          |
+| --- | ------------------ | --------------- | ------------------------------------------------------------ | --------------------------------------------------- | ---------------------------------- | ------------------- | ----------------------------------- | ------------------------------------------ | ----------------------------- |
+| 2   | Deauth 洪泛          | `deauth.cpp`    | `DEAUTH` `DEAUTH_ALL` `DEAUTH_ONLY` `DEAUTH_EXCEPT` `REASON` | 单个 AP / 全部 AP / 白名单 / 黑名单；reason 固定或每束随机            | mgmt / 12                          | MLME 关联状态机          | Class 2/3 帧状态机、Reason Code          | **被拦**（deauth 是 robust 帧，MFPR 下无效）         | 帧上空气 ✅，计数器 ✅，断连未量化            |
+| 3   | Probe/Beacon 泛洪    | `deauth.cpp`    | `PROBE_BROADCAST`                                            | 单模式（广播泛洪），每 120 ms 跳信道                              | mgmt / 8、5                         | 扫描（MLME-scan）       | 客户端扫描表                              | 无（beacon/probe 从不加密）                       | 帧数 ✅（3 s 2512 帧）              |
+| 4.1 | CSA（Action 帧）      | `csa.cpp`       | `CSA`                                                        | announce（倒计时）→ hold（新信道克隆 beacon）→ 循环               | mgmt / 13，cat 4 act 4              | 信道管理（802.11h）       | CSA 通告 + 倒计时                        | **被拦**（spectrum mgmt action 属 robust）      | 帧上空气 ✅                        |
+| 4.2 | CSA（Beacon IE）     | `csa.cpp`       | `CSA`                                                        | 同上，两条路径同一轮发出                                        | mgmt / 8 + IE 37                   | 信道管理                | beacon 里的 CSA 元素                    | **不受保护**（beacon 不是 robust 帧）               | 帧上空气 ✅，客户端是否跟随未实测             |
+| 5   | DELBA 欺骗           | `delba.cpp`     | `DELBA` `DELBATEST`                                          | 双向单播（学了 TID）或广播兜底                                   | mgmt / 13，cat 3 act 2              | Block Ack 会话管理      | 每个 TID 的聚合会话                        | **被拦**（cat 3 属 robust）                     | 吞吐 −99%（非 PMF 链路）✅            |
+| 6   | BA 会话劫持            | `delba.cpp`     | `BAATTACK` `BAPLANT` `BARPUSH` `BATEST` `BATX` `BARSEQ`      | DELBA+ADDBA+BAR 持续 / 只种窗口 / 只推 BAR                  | mgmt / 13 cat 3 act 0 + ctrl / 8   | Block Ack 重排窗口      | ADDBA 的 SSN → WinStartB             | **被拦**（同上）                                 | ESP-IDF 目标 ✅ 冻结；mac80211 未实测  |
+| 7   | WNM BTM Request    | `btm.cpp`       | `BTM` `BTMTEST`                                              | 单播请求；可选指定候选 BSS                                        | mgmt / 13，cat 10 act 7             | WNM / 漫游决策（802.11v） | BTM Request + Extended Capabilities | **被拦**（cat 10 属 robust，需 PMF 关闭）           | 端到端有效 ✅（真实 STA 切至同 SSID 软 AP，reason=207） |
+| 8   | HE Trigger 轮询     | `bsrp.cpp`      | `BSRP` `BSRPFIELD` `BSRPSTOP`                               | BSRP / MU-BAR / Basic 参数实验                                  | ctrl / 2                           | UL OFDMA 调度（802.11ax） | Trigger Common/User Info           | 不适用 PMF；字段中仍有占位值                       | 帧上空气 ✅，实验 STA 有回应；端到端效果为零 |
+| 13  | QoS Null PM 位欺骗 | `qosnull.cpp`   | `QOSNULL` `QOSNULLREL` `QOSNULLSTOP` `QOSNULLTEST`           | 单播 QoS Null，PM=1 刷新、PM=0 撤销                              | data / subtype 12                  | 省电（PS）状态机           | PM 位声明 + AP 下行缓存                  | 帧上空气；端到端有效 ✅（吞吐下降，零掉线，撤销恢复） |
+| 9   | EAPOL-Start/Logoff | `eapol.cpp`     | `EAPOL` `EAPOLTEST`                                          | Start 与 Logoff 交替；非 QoS 与 QoS(TID) 交替               | data / 0、8 + LLC/SNAP 0x888E       | 802.1X 认证（端口状态机）    | EAPOL PDU、受控/非受控端口                  | 未加密数据帧可能被丢                                 | 帧上空气 ✅，该 AP 无回应               |
+| 10  | SAE Commit 洪泛      | `sae.cpp`       | `SAE` `SAETEST`                                              | point（合法点）/ rand（对照）；身份每 4 帧轮换                      | mgmt / 11，alg 3 seq 1              | SAE 握手（WPA3）        | ECC 标量乘 + 反 clogging token          | 无（认证帧本就不加密）                                | 帧上空气 ✅，AP 回 status 13（非 WPA3） |
+| 11  | Auth/Assoc 洪泛      | `authflood.cpp` | `AUTHFLOOD` `AUTHFLOODTEST`                                  | both（Auth→Assoc→换身份）/ auth / assoc；WPA3 自动升级 SAE    | mgmt / 11 alg 0 + mgmt / 0         | 认证 + 关联（station 表）  | 每个身份一条状态机                           | 无（auth/assoc 从不加密）                         | AP 回 status 0（接受了伪造身份）✅       |
+| 12  | Evil Twin          | `evil_twin.cpp` | `EVILTWIN` `EVILTWIN_STOP` `CREDS`                           | deauth 3 s → 克隆 softAP → DNS 劫持 → HTTP 钓鱼页          | softAP + DNS + HTTP                | 上层（钓鱼）              | 客户端自动连接 / 用户输入                      | 无                                          | 凭据捕获未量化                       |
+| —   | BTM 诱饵 AP         | `baitap.cpp`    | `BAITAP` `BAITAPSTOP` `BAITAPSTAT`                           | 从扫描结果启动同 SSID/口令 SoftAP，供 BTM 候选指向              | AP beacon / association             | 漫游落点与连接事件          | 候选 BSS 可见且安全策略匹配                    | 自有隔离测试环境；STA 可能漫游                    | 板端闭环 ✅（BTM 后关联诱饵 AP，关闭后回连） |
 
 "PMF 被拦"统一指：客户端**协商了 PMF**（WPA3 强制，WPA2 可选）后，驱动会丢弃未受保护的
 robust 管理帧。依据是 Linux 的判定函数 `_ieee80211_is_robust_mgmt_frame()`：
@@ -266,6 +266,7 @@ Probe Request（subtype 4）的应答。两者都在**扫描**阶段被处理（
 【实测】`tests` 用例里 `csa=hold csaf=30 csac=0`、自动模式 `csaauto=1 csch=144 cycles=7`
 （跨频段循环：2.4G AP → 5G 信道，反之亦然）。空口字段对照见 `测试报告 §4.4.1` 之外的
 `CSATEST` 用例（`cat=4 act=4 mode=0 ch=.. count=..`）。
+
 ---
 
 ## 5. DELBA 欺骗（`delba.cpp`）
@@ -330,11 +331,11 @@ Request/Response 就立刻补一帧定向 DELBA（`delbtr=` 计数）；都还�
 
 【实测】三块板、TCP 下载（`lab/rf_throughput`），数字取自 `测试报告.md §4.1`：
 
-| 形态 | 攻击前 | 攻击中 | 结论 |
-| --- | --- | --- | --- |
-| 只发广播 DELBA（没学到客户端） | 480–550 KiB/s | 0–260 KiB/s | −75%，链路没断 |
-| 学到 2 个客户端后按 TID 0–7 双向单播 | 550–600 KiB/s | 0–5 KiB/s | **−99%** |
-| 学到 TID（只打 TID 0）后双向单播 | 590–650 KiB/s | 0–5 KiB/s | **−99%**，帧量更少 |
+| 形态                       | 攻击前           | 攻击中         | 结论            |
+| ------------------------ | ------------- | ----------- | ------------- |
+| 只发广播 DELBA（没学到客户端）       | 480–550 KiB/s | 0–260 KiB/s | −75%，链路没断     |
+| 学到 2 个客户端后按 TID 0–7 双向单播 | 550–600 KiB/s | 0–5 KiB/s   | **−99%**      |
+| 学到 TID（只打 TID 0）后双向单播    | 590–650 KiB/s | 0–5 KiB/s   | **−99%**，帧量更少 |
 
 客户端全程**没掉线**（没有 deauth/disassoc，TCP 连接保持），只是吞吐塌了——与
 "拆聚合 → 退回单帧确认"的机理一致。第二块板在同一信道被动监听拿到
@@ -416,13 +417,13 @@ Request/Response 就立刻补一帧定向 DELBA（`delbtr=` 计数）；都还�
 
 【实测】`测试报告.md §4.2`（ESP32 AP + C5 STA，ch1，TCP 下载）：
 
-| 条件 | 攻击前 | 静默期 | 停手 8 s | 恢复方式 |
-| --- | --- | --- | --- | --- |
-| `BAPLANT step=512` | 386 KiB/s | 26–30 KiB/s | 0 | 重新关联后 >380 |
-| `BAPLANT step=0`（对照） | 404 KiB/s | 43 / 8 KiB/s | 0 | 同上 |
-| `BAATTACK`（持续 15 s） | 302 KiB/s | 22–26 KiB/s | 67 | 同上 |
-| `BARPUSH step=512` | 304 KiB/s | 12 KiB/s | 3–16 | 同上 |
-| `BARPUSH step=0`（对照） | 340 KiB/s | 0–3 KiB/s | 0 | 同上 |
+| 条件                   | 攻击前       | 静默期          | 停手 8 s | 恢复方式       |
+| -------------------- | --------- | ------------ | ------ | ---------- |
+| `BAPLANT step=512`   | 386 KiB/s | 26–30 KiB/s  | 0      | 重新关联后 >380 |
+| `BAPLANT step=0`（对照） | 404 KiB/s | 43 / 8 KiB/s | 0      | 同上         |
+| `BAATTACK`（持续 15 s）  | 302 KiB/s | 22–26 KiB/s  | 67     | 同上         |
+| `BARPUSH step=512`   | 304 KiB/s | 12 KiB/s     | 3–16   | 同上         |
+| `BARPUSH step=0`（对照） | 340 KiB/s | 0–3 KiB/s    | 0      | 同上         |
 
 【实测】注入限速的教训：一次把整个"TID × 方向"矩阵打进 32 个短缓存会让 `baerr` 暴涨
 （15 s 内 `baerr=1559`，其中 `bae=257` = `ESP_ERR_NO_MEM`），后来改成"每轮最多 4 帧 + 失败
@@ -431,329 +432,46 @@ Request/Response 就立刻补一帧定向 DELBA（`delbtr=` 计数）；都还�
 
 ---
 
-## 7. BTM 强制漫游攻击（BTM steering，`btm.cpp`）
+## 7. 802.11v BTM Request 欺骗（`btm.cpp`）
 
 - CLI：`BTM <idx> [timer] [sta-mac] [cand-bssid] [cand-ch] [cand-info]`、`BTMSTOP`、`BTMTEST`
-- 同一族的 802.11k 通道（伪造 Neighbor Report Response）见 §14；两者是同一层、同一个 PMF 边界，只有 category 不同
-- 入口：`btm.cpp`（构造 `build_btm_request()` :172，能力学习 `learn_capabilities()` :155，
-  发送节拍 `btm_step()` :253）
+- 入口：`btm.cpp`（构造 `build_btm_request()`、能力学习 `learn_capabilities()`、周期发送 `btm_step()`）
 
-### 7.1 协议层定位
+### 7.1 协议位置
 
-【标准】802.11v 的 WNM 是"网络辅助漫游"的一套管理动作（条款名：*Wireless network management*，
-BSS Transition Management 在其中）。AP 可以主动告诉客户端"去连另一个 BSS"，
-并给出时间压力：`Disassociation Imminent` + `Disassociation Timer`（单位 TBTT）。
-
-【标准】它走 Action 帧（mgmt subtype 13，category 10 = WNM，action 7 = BTM Request）。
-**category 10 属于 robust 管理帧集合**：Linux 的判定是"除 Public/HT/Unprotected WNM/
-Self-protected/VHT/厂商自定义之外的所有 category 都算 robust"
-（`_ieee80211_is_robust_mgmt_frame()`），802.11-2020 也专门有 category 11
-"Unprotected WNM"来给确实要裸发的那几条留口子。也就是说：
-
-- PMF 关闭或可选（绝大多数 WPA2 部署）→ 伪造帧被接受，客户端真的会去扫/漫游；
-- PMF 强制（WPA3 / MFPR）→ 客户端驱动按"未受保护的 robust 管理帧"直接丢弃
-  （`net/mac80211/rx.c` 的 `ieee80211_drop_unencrypted_mgmt()`），802.11v 代码根本跑不到。
-
-所以这条通道**不是 PMF 绕过**，而是"不需要断开连接也能把客户端推走"的另一条路。
-（`btm.cpp` 顶部注释、`btm.h`、GUI 文案都已按这个事实改写；`firmware/README.md §5`
-原先写的"PMF 不保护 BTM"是错的，本文为准。）
+【标准】BSS Transition Management 属于 802.11v WNM。BTM Request 是管理 Action 帧（category 10、action 7）。category 10 属 robust 管理帧；协商了 PMF 的客户端可能丢弃未保护请求，因此本机制不是 PMF 绕过。
 
 ### 7.2 帧格式
 
-【代码】`build_btm_request()`，固定 **31 字节**（空口 35，含 FCS）。不再带候选列表——理由见 §7.4 的实测：
+【代码】`btm.cpp` 当前构造长度为无候选 31 B、带候选 46 B（空口记录另含 FCS）：
 
 ```
-0    2  FC 0xD0 0x00        ; mgmt / subtype 13 = action
-4    6  Addr1 = RA        受害 STA（BTM Request 只有单播形式）
-10   6  Addr2 = SA        AP 的 BSSID（伪造的 TA）
-16   6  Addr3 = BSSID
-22   2  Sequence          0xF0FF
-24   1  Category          10 = WNM
-25   1  Action            7  = BTM Request
-26   1  Dialog token      1..255 循环
-27   1  Request Mode      bit 0 = Preferred Candidate List Included
-                          bit 2 = Disassociation Imminent   → 恒为 0x04（不带候选列表）
-28   2  Disassociation Timer（TBTT 数，缺省 10；0 = 客户端不扫）
-30   1  Validity Interval 10（请求的新鲜期，单位 beacon interval）
+0..23  24 B  管理 Action 帧头；FC 0x00D0，RA=STA，TA/BSSID=目标 AP
+24     1 B   Category=10（WNM）
+25     1 B   Action=7（BTM Request）
+26     1 B   Dialog Token
+27     1 B   Request Mode：bit 2=Disassociation Imminent；bit 0=候选列表存在
+28..29 2 B   Disassociation Timer（小端；传 0 时固件改用 10）
+30     1 B   Validity Interval=10
+31..45 15 B  可选 Neighbor Report：EID 52 / len 13 / BSSID / BSSID Info / Op Class / Channel / PHY
 ```
 
-整帧 **31 字节**（空口 35，含 4 字节 FCS）；给了 `cand-bssid` 时再追加下面那个元素，变成 **46 字节**
-（空口 50）。默认不带候选列表：旧实现里的"带一个随机幻影候选"被实测证明无效，已删除；
-现在带候选必须由命令行指定一个**真实存在**的 BSSID，见 §7.4。
+BSSID Information 由调用者提供并按小端写入，位含义当前未核实；PHY Type 固定写 0（unknown）。候选信道可从最近一次扫描结果解析。准确字节以 `BTMTEST` 与 `btm.cpp` 构造器为准，不沿用已删除的随机幻影候选描述。
 
-【代码】可选候选元素（id 52，长度 13；只在 `cand-bssid` 给出时出现）：
+目标客户端通过 Extended Capabilities（IE 127、BSS Transition bit 19）识别；模块对已知不支持者跳过。发送入口使用 `tx_guard_send()`，并受单播节拍限制。
 
-```
-..  1  Element ID        52
-..  1  Length            13
-..  6  Candidate BSSID   随机本地管理地址（`02:..`，一个不存在的 BSS）
-..  4  BSSID Information 0x00000003（bit0 AP reachable | bit1 same security policy）
-..  1  Operating Class   operating_class(ch)：≤14→81，≤48→115，≤64→116，≤144→117，其余→121
-..  1  Channel Number    默认挑一个与目标不同的 2.4G 信道（5G 信道 2.4G-only 客户端扫不到）
-..  1  PHY Type          7 = HT
-```
+### 7.3 有效边界与失效机制
 
-【代码】节奏与目标筛选：每 300 ms 对每个客户端重发一次（`kRepeatMs`），全局 50 ms 节拍
-（`kGlobalGapMs`）——节拍属于电台而不是每个客户端，八个客户端也不能把注入率乘八。
-目标只挑**声明支持 11v** 的 STA：嗅探客户端自己的 Probe Request / (Re)Association Request，
-看 Extended Capabilities 元素（id 127）的 **bit 19（BSS Transition）**；不支持的直接跳过
-（`btmskip=` 计数）。
+【实测】客户端是否漫游取决于候选 BSS 是否真实可见且策略/安全配置可接受。幻影候选可能收到 Response 但不触发切换；实测有效情形要求目标附近存在同 SSID、同口令的第二个 BSS。当前可先用 `BAITAP` 从扫描结果创建该落点，BTM 会自动指向它。PMF 强制、11v 不支持、目标 STA 睡眠或候选字段无法映射到扫描结果都会阻止或削弱效果。
 
-### 7.3 为什么有效 / 何时失效
+### 7.4 三层判据与实测
 
-【标准】客户端为什么会听？因为 BTM Request 的语义就是 AP 在"建议"漫游，客户端没有理由
-怀疑——它只用 TA == 当前 AP BSSID 这一条来判定来源，而裸注入可以随便填 TA。
-
-【代码】wpa_supplicant 的具体行为（`wpa_supplicant/wnm_sta.c`，参考实现）：
-
-- `Disassociation Imminent` 置位**且** timer ≠ 0 才会触发扫描；timer = 0 表示"没有期限"，
-  什么都不做——这就是本模块把 timer 缺省成 10 的原因；
-- 带候选列表时只扫那个 BSSID（一个不存在的 BSSID = 每次请求都变成一次"离信道空跑"）；
-- 不带列表时客户端回一个 BTM Response（reason = "reject, unspecified"），但仍然会扫。
-
-【标准/代码】失效条件：①PMF 强制（上面）；②客户端不支持 11v（`btmskip` 会涨）；
-③客户端把"候选 BSS 不在我扫得到的范围内"当作无效请求（部分实现）；
-④客户端设置了 `disable_btm` 之类的策略。
-
-### 7.4 实现与实测
-
-【实测】`测试报告.md §4.4.1`（**旧命令形态**，当时还有 `cand` 模式）：`BTM 2 cand 10 6 02AABBCCDDEE`，
-5 s 内 64 帧 BTM Request 上空气，
-字段 `cat=10 act=7 req_mode=0x05`、`timer=10`、`validity=10`、
-候选 `Neighbor Report eid=52 len=13 op_class=81 ch=6 phy=7`，TA = AP BSSID、RA = 伪造 STA。
-
-【实测】对端反应：2026-11-15 用一台**真的声明了 11v 的 STA**（ESP32-C5 跑
-`lab/rf_throughput` 的 `sta` + `btm 1`，`CONFIG_ESP_WIFI_11KV_SUPPORT=y`）做端到端：
-
-```
-BTM 0 cand 10 0   -> 8 s 发 23 帧      （旧形态）
-   btmc=1       能力判别正确：STA 的 Association Request 里确实有 Extended Capabilities bit 19
-   btmresp=0    但 STA 一句也没回（btms=0）
-```
-
-ESP-IDF 的 11v 只公开了 `WIFI_EVENT_STA_NEIGHBOR_REP`（11k），**没有 BTM 事件/回调**，
-BTM 逻辑全在闭源 wifi 库里——它是否静默扫了一次从计数上看不出来（攻击期间 STA 侧 RATE
-没有停顿）。所以**「客户端应答」这种端到端证据在 ESP-IDF STA 上拿不到**；要判它是否真的
-处理了 BTM，需要一个会回 BTM Response 的客户端（wpa_supplicant 的 `wnm_sta.c` 会回，
-Android / 桌面 Linux 更合适）。
-
-【实测】2026-11-22，用 `lab/victim_btm`（11KV 打开、`ps 0` 一直醒、记录断开 reason 与最终关联 BSS）
-在两种受害者上跑：软 AP 和**本机真实的华为 WPA2 AP**（`BE:41:99:0B:20:36`，ch12）。
-
-**带候选列表（旧 `cand` 形态，候选是随机幻影）：收到、回应、不漫游**
-
-| 场景 | 当时的形态 | 请求/响应 | 结果 |
-| --- | --- | --- | --- |
-| 软 AP + 11v 开 | 带候选（幻影 BSSID） | 42 / **44** | 不断开 |
-| 软 AP + 11v 开 | 不带候选 | 55 / 0 | 不断开 |
-| 软 AP，`btm 0` 对照 | 带候选 | 72 / 0 | 不断开（连响应都没有） |
-| 真华为 AP | 带候选 | 97 / 50（`btms=7`） | 不断开 |
-| 真华为 AP | 不带候选 | 152 / 19 | 不断开 |
-
-带候选时几乎每条请求都回一条 BTM Response —— 只有解析了 dialog token 的 STA 才会回，所以帧确实
-被收下并处理了；但候选 BSSID 是随机幻影，扫不到，STA 没有可去的地方。所以幻影候选没有意义。
-2026-11-22 又把候选放回命令里（`cand-bssid`），但它只在指向**真实存在、能连上**的 BSS 时有用，
-见本节的单板闭环小节。
-
-**第二 BSS 真实存在时：STA 被拐走**（同 SSID、同 WPA2 口令、ch6，我们自己的软 AP；旧 AP 在 ch12）
-
-- 对照：第二 BSS 开着、`-6 dBm`（比旧 AP 强 29 dB），**90 s 不发 BTM** → victim 一动不动，
-  仍在 ch12。
-- 发 `BTM <idx> 10 <victim-mac>`（TA = 华为 BSSID；现在只有这一种形态）→
-  `EVT sta_disconnected reason=207 ROAMING`（旧 AP `rssi=-36`）→
-  `EVT sta_connected bssid=<我们的软 AP> ch=6`，`back_after=0.072s`，随后从我们的 DHCP 拿到 IP。
-
-结论（这条路真实有效，但边界要写清）：
-1. **只要攻击者能提供同 SSID、同安全模式、能被扫到的第二个 BSS，一条伪造 BTM 就能把已关联的
-   真实 STA 拽过来**，不需要真 AP 的密码，也不需要 deauth。之后就是 Evil Twin 的猎场。
-2. ESP-IDF 上报的码是 **`207 WIFI_REASON_ROAMING`**，不是标准里的 12
-   （`WIFI_REASON_BSS_TRANSITION_DISASSOC`）。判据要按两个一起 grep。
-3. 命中条件是**环境里真的有一个同 SSID、同安全模式、扫得到的 BSS**——凭空造一个候选 BSSID
-   （旧 `cand` 形态）只会换来一条 BTM Response。所以这条攻击天然和"造一个同名 BSS"成对使用。
-4. 指定候选（`cand-bssid`）能进一步收窄：2026-11-22 实测把候选指向我们 ch6 的软 AP，
-   STA 在 0.099 s 内就漫游过去了，且**没有回 BTM Response**——所以"回不回应"不能当判据，
-   最终连到哪个 BSS + reason 才是。
-4. 这台华为 AP 不强制 PMF（victim 用默认 PMF 配置能关联上，推断），所以未保护的 BTM 没被 PMF 挡掉。
-
-【实测/教训】第一轮 victim 用驱动默认 `WIFI_PS_MIN_MODEM`，空口能看到它发 `NULL ... pm=1`：
-睡着的 STA 只在 DTIM 附近开窗，第三方注入的单播帧大部分听不见（那几轮 `btmresp` 只有 0~3）。
-**任何"注入进去了但对方没反应"的实验，先确认对方醒着**。详见 `firmware/测试报告.md §4.4.12`。
-
-**单板闭环：攻击板自己当诱饵（`BAITAP`，2026-11-22）**
-
-前面的弯路由第二块板开软 AP 完成。现在攻击板自己开：`BAITAP <idx> <pass>` 克隆扫描到的目标
-BSS（同 SSID、同口令、同信道），`WIFI_MODE_APSTA` + 自带 DHCP，然后一条 `BTM` 就能闭环。
-实测（COM5 = ESP32-CYD，COM8 = ESP32-C5 victim，华为 AP @ ch12）：
-
-```
-BAITAP 1 ****            -> bssid=A0:A3:B3:AB:58:F9 ch=12 ip=192.168.4.1 cost=7236
-（不发 BTM，等 12 s）    -> joins=0                     客户端不会自己过去
-BTM 1 10 D0:CF:13:E2:6D:8C
-                         -> cand 自动填成 A0:A3:B3:AB:58:F9 ch=12
-[STA] reason=207 ROAMING -> sta_connected bssid=A0:A3:B3:AB:58:F9 back_after=1.385s
-[STA] sta_got_ip 192.168.4.2
-BAITAPSTOP               -> [STA] BEACON_TIMEOUT，0.25 s 回连原 AP
-```
-
-三个必须知道的细节：
-
-- **不设国家码就白干**：ch12/13 上的 SoftAP 会报 `up`，但 beacon 不上空口，对端扫描列表里
-  根本没有它。必须先 `esp_wifi_set_country(CN)`（代码里复用 `prepare_radio_for_scan()`）。
-- **APSTA 下 AP netif 可能是 `1.0.0.0`**：DHCP 等于没起，客户端连上也拿不到 IP，
-  表现就像"攻击成功但网不通"。显式 `softAPConfig(192.168.4.1/24)`。
-- **不能是纯 AP 模式**：所有模块都用 `esp_wifi_80211_tx(WIFI_IF_STA, ...)`，纯 AP 下这个接口
-  不存在，注入会全部失败。必须 `WIFI_MODE_APSTA`。
-
-**无候选的 BTM 到底行不行**：本轮给了反面证据。`MON 12 5` + `RXLOG` 确认帧上了空口
-（`type=0 sub=13 len=35 cat=10 act=7`），但客户端既不回 Response 也不断开。
-所以"不带候选，客户端会自己找"这条在 ESP32-C5 上不成立；手机是否如此没复测。
-现在的做法是诱饵 AP 在跑时自动填候选，而不是赌客户端自己会扫。
-
-**RRM 的否结果**：诱饵 AP 在场、`RRM <idx> nbr <诱饵BSSID> 12 0 1` 连发 65 帧，
-客户端 35 s 一动不动（`rrmreq=0`，它从不发 Neighbor Report Request）。
-11k 的邻居报告是"参考信息"，没有强制力；能把人赶走的只有 BTM。RRM 单独只能算帧级验证。
-
-## 8. TIM 投毒（已下线，`tim.cpp` 已删除）
-
-> 这个模块在 2026-11-22 按计划下线，固件里已经没有 `TIM` / `TIMSTOP` / `TIMTEST` 命令。
-> 本节保留协议原理与当时的实测结论，供以后重新评估用；下面的 CLI 与行号都是历史记录。
-
-- CLI：`TIM <idx> [tim|clear] [aid]`、`TIMSTOP`、`TIMTEST`
-- 入口：`tim.cpp`（`build_tim()` :146，`build_beacon()` :197，AID 学习 `note_aid()` :89）
-
-### 8.1 协议层定位
-
-【标准】省电模式（PS）是 MAC 层的一套睡眠调度：客户端按 **DTIM 周期**醒来看 Beacon 里的
-**TIM 元素**（element id 5），自己的 AID 位被置位就说明"AP 给你缓存了帧"，于是保持清醒
-或发 PS-Poll 取回来。Beacon 不加密、不带完整性保护（PMF 明确不覆盖 beacon），
-所以这条通道对开启了 PMF 的网络同样成立。
-
-【标准】**TIM 元素的两个位图概念必须分清**（这是本节的重点）：
-
-1. **Bitmap Control**（1 字节）：
-   - **bit 0 = Traffic Indicator**，对应 **AID 0**，也就是"组播/广播有没有缓存"这盏灯；
-   - **bit 1..7 = Bitmap Offset**，表示 Partial Virtual Bitmap 从哪个 AID 开始，
-     单位是 **2 个字节（16 个 AID）**。
-2. **Partial Virtual Bitmap**（变长）：**按 AID 编号索引**——第 i 个字节的第 j 位代表
-   `AID = 16 × BitmapOffset + 8i + j`。所以 Offset=0 时 **AID 1 在 bit 1，bit 0 是 AID 0**。
-
-   核对方式：Wireshark 的 TIM 解析就是 `aid = 8*n1 + 8*i + j`，其中
-   `n1 = bitmap_control & 0xFE`（= 2 × offset），见 `epan/dissectors/packet-ieee80211.c`
-   的 `ieee80211_tag_tim()`；标准条款名是 *TIM element*（802.11-2012 起在 8.4.2.7，2020 版编号位移）。
-
-**这条是本仓库修过的一个真实 bug**：早期实现按"bit (AID−1)"编码，等于把 AID 1 的位写到了
-AID 0（组播位）上，把 AID 3 的位写到了 AID 2 上——攻击"打偏一格"。现在按 `AID/8` 字节、
-`AID%8` 位编码（`tim.cpp:157` 起），`TIMTEST` 对 AID 3 打印 `bitmap=08`。
-
-### 8.2 帧格式
-
-【代码】克隆 beacon（`tim.cpp:194`），除 TIM 外全部照抄真实 AP：
-
-```
-0    2  FC 0x80 0x00        ; mgmt / subtype 8 = beacon
-4    6  Addr1 = DA         0xFF*6（广播）
-10   6  Addr2 = SA         AP 的 BSSID（与真 AP 相同）
-16   6  Addr3 = BSSID
-22   2  Sequence           0xF0FF（固定，见下）
-24   8  Timestamp          —（驱动写，见附录 B）
-32   2  Beacon interval    学自真 AP（真 AP 100 TU）
-34   2  Capability         学自真 AP
-36   .. SSID (id 0)        学自真 AP
-..   .. Supported rates (id 1) legacy 8 条
-..   .. DS parameter (id 3) 目标信道
-..   4+ TIM (id 5)         见下
-..   .. RSN (id 48)        学自真 AP（`tim.cpp:113`）
-```
-
-【代码】TIM 元素（`build_tim()`）：
-
-```
-..  1  Element ID      5
-..  1  Length          3 + bitmap 字节数
-..  1  DTIM Count      0（本条 beacon 就是 DTIM → 每个 client 都全醒）
-..  1  DTIM Period     学自真 AP（学不到时 2）
-..  1  Bitmap Control  0x00 —— bit0（组播灯）清零，offset = 0
-..  n  Partial Virtual Bitmap
-       tim 模式：按 AID 置位（AID n → byte n/8 的 bit n%8），只发到最高非零字节
-       clear 模式：一个字节 0x00（声称"谁都没有缓存"）
-```
-
-【代码】节奏：每 20 ms 一帧（真 AP 100 TU ≈ 102 ms，即 5 倍占空比），广播帧不等 ACK，
-不占单播缓存池。**必须先从空口学到目标 AP 的真 beacon 才会发第一帧**
-（`s_have_beacon`，`tim.cpp:292`）：SSID 为空、interval 缺省的克隆帧对客户端来说是"另一个坏网络"，
-不是冒充。
-
-【代码】AID 从哪来：Association / Reassociation Response 里偏移 28..29 的 AID 字段
-（掩到 14 位），由混杂回调 `tim_on_rx()` 学成 (MAC, AID) 表（最多 8 个）；
-学不到时 `tim` 模式兜底点亮 AID 1（`bitmap[0] = 0x02`）。
-
-### 8.3 为什么有效 / 何时失效
-
-【标准】两种反方向的效果：
-
-- `tim`（置位）：客户端以为"AP 有我的缓存帧"，于是一直醒着、反复发 PS-Poll，空耗电与空口；
-  叠加 DTIM Count = 0，等于让所有客户端每个 beacon 都全醒。
-- `clear`（清空）：客户端以为"没有我的帧"，于是继续睡；真实下行被它自己忽略，
-  表现为"信号满格但丢包"。
-
-【标准/代码】失效条件：
-
-1. 客户端只在**自己关联的 BSS** 里信 TIM，所以克隆帧必须逐字节像真 AP（SSID/RSN/capability/
-   interval 全照抄）——做不到就只是一个假网络；
-2. 占空比要压过真 AP（20 ms vs 102 ms），但功率/位置仍是物理前提；真 AP 的 beacon 更强时
-   客户端可能只信真 AP（`测试报告 §4.4.2` 的抓包里两种 beacon 并存，克隆约 5:1）；
-3. 省电有"错过 N 个 beacon 就认为 AP 消失"的阈值（missed beacon / listen interval），
-   长时间只收到克隆帧的客户端可能干脆退网重扫——这正是效果"介于省电失效到诱发退网之间"
-   的原因，需要 bench 量化；
-4. 一直用 CAM（不休眠）的设备完全无感。
-
-### 8.4 实现与实测
-
-【实测】`测试报告.md §4.4.1`：`TIM 2 tim 0`，5 s 内 264 帧克隆 beacon（seq 恒 `0xFFF`），
-`interval=100`、`TIM: dtim_count=0 period=1 ctrl=0x00 bmp=0x01`（旧编码下 AID 1 落在 bit 0）、
-SSID/RSN/capability 与真 AP 一致，`tsf=0`。
-
-**注意**：那行 `bmp=0x01` 是**修正前**的实测值，保留作为历史记录。修正后的空口复测已经做过
-（2026-11-15，`lab/tim_air.py`：COM5 攻击 + COM6 跑 `lab/rf_throughput` 的 `sniff 12`）：
-
-```
-BE:41:99:0B:20:36 00010008  x289  bitmap=08 aids=[3]   <- 克隆帧（AID 3 落在 bit 3）
-BE:41:99:0B:20:36 00010000  x111  bitmap=00 aids=[]   <- 真 AP（没有缓存帧）
-00:5C:C2:DB:EC:58 00010004  x17   bitmap=04 aids=[2]   <- 别的真 AP：AID 2
-00:5C:C2:DB:EB:DC 00010020  x7    bitmap=20 aids=[5]   <- 别的真 AP：AID 5
-```
-
-那两条**真实 AP** 的位图是编码规则的旁证：AID 5 落在 `0x20`（bit 5），不是 `0x10`。
-
-计数器：`tim`（off/tim/clear）、`timf`（帧数）、`timaid`（学到的 AID 位图，**显示用**：
-bit0 = AID 1）、`timreal`（学到的真 beacon 数，为 0 说明一帧都没发）。
-
-【实测】**客户端的省电行为没有被改变**（2026-11-15，`lab/tim_ps.py`，三块板：
-ESP32 当 softAP + TCP 打流、ESP32-C5 当 `WIFI_PS_MIN_MODEM` 的 STA、CYD 当攻击板）：
-
-| 阶段 | AP 侧 RATE 均值 | 样本 | STA 掉线 |
-| --- | --- | --- | --- |
-| baseline（ps 1） | 385 KiB/s | 18 | 0 |
-| `TIM clear` | 424（+10%） | 12 | 0 |
-| `TIM tim` | 397（+3%） | 12 | 0 |
-| baseline（ps 0） | 460 | 17 | 0 |
-
-省电本身是生效的（ps 1 → 385 对 ps 0 → 460，−16%），所以不是"STA 没睡"。
-**阳性对照**：同一链路同一位置发 `DEAUTH`，10 s 内掉线 6 次、RATE 333 → 32 KiB/s，
-说明伪造帧被采信——null 不是"收不到"。
-
-最可能的解释（未逐条证伪）：①克隆 beacon 的 Timestamp 被 MAC 改成接口自己的 TSF（未关联时为 0），
-而省电 STA 的唤醒时刻（TBTT）正是用 beacon 的 TSF 对齐的，20 ms 一拍的克隆与真 AP 的 TBTT 不同相，
-睡眠中的 STA 大概率不在那一刻开窗收它——**这条攻击的天花板与附录 A 里"TSF 上不了空口"是同一条**；
-②真 AP 每 100 TU 还在发自己的 beacon，它的 TIM 才是权威值。
-还有一个实现细节：AID 只在**关联瞬间**的 Association Response 里学到，先关联后开攻击就会 `timaid=0`
-（落到 AID 1 兜底）——要精确打某个 AID，得在受害者关联前启动，或用 `TIM <idx> tim <aid>` 指定。
-
-**交叉引用**：§13 的 PS 位欺骗打的是同一个省电机制的**另一端**（伪造 STA 的 PM=1 声明，让 AP
-把下行缓存起来）。两者的叠加效果没有做过组合实验，边界各自独立，见 §13.3 末尾。
+- **帧上空气**：BTM Request 字段由 `BTMTEST` 检查，空口与请求计数见 `firmware/测试报告.md §4.4.8/§4.4.12`。
+- **对端有回应**：`btmresp`/`btms` 可记录 Response，但 Response 不是漫游成功的必要条件；指定候选成功的实验中 Response 为 0。
+- **端到端有效**：2026-11-22 的 `lab/victim_btm` 实验中，真实 STA 切到可见的同 SSID/同口令软 AP，断开 reason 为 207 `ROAMING`，切换约 0.099 s；`BAITAP` 单板闭环记录见 `测试报告.md §4.4.13`。幻影候选则不切换。该结论只适用于受测配置。
+- **STATUS 契约**：`btm`、`btmf`、`btmc`、`btmskip`、`btmresp`、`btms`。
 
 ---
-
 ## 9. EAPOL-Start / Logoff 洪泛（`eapol.cpp`）
 
 - CLI：`EAPOL <idx> [tid|-1] [sta-mac]`、`EAPOLSTOP`、`EAPOLTEST`
@@ -818,6 +536,7 @@ TA = 受害 STA、RA = AP。对端**完全无回应**：`eaprxreq=0`（AP 没有
 
 【代码】判据是接收侧而不是发送侧：`eaprxreq` > 0 才说明"状态机真被踢动了"；
 只看 `eapf` 涨是没有意义的。功能面目前只证明"帧格式对、能上空气"。
+
 ---
 
 ## 10. SAE Commit 洪泛（`sae.cpp`）
@@ -1016,295 +735,107 @@ deauth 逼客户端重连），它换了一条路：用 `WiFi.softAP()` 起一�
 【实测】**未量化**：没有做"客户端多久连上来、多少比例会输密码"的统计；
 `CREDS` 只验证了取表路径与上限。这条在 `测试报告.md §7` 里属于未覆盖项。
 
+### 12.4 BTM 诱饵 AP（`baitap.cpp`）
+
+- CLI：`BAITAP <idx> [pass] [ch] [max]`、`BAITAPSTOP`、`BAITAPSTAT`
+- **① 协议位置与载体**：显式命令启动临时 `WIFI_MODE_APSTA` SoftAP，作为 BTM 候选列表指向的真实可见 BSS；平时固件仍以 STA 静默运行。
+- **② 帧格式与关键字段**：由 ESP-IDF SoftAP 生成 Beacon、处理关联并提供 DHCP；SSID 与信道取自扫描目标，口令由用户运行时提供（省略则开放网络），信道限 1–13，最多 4 个客户端。它不自行伪造 BTM 帧，BTM 由 `btm.cpp` 的唯一实现发送。
+- **③ 有效边界与失效机制**：单射频要求 AP 与当前射频使用同一信道；STA 只有在候选可见且已有相符凭据时才可能切换。启动会消耗约 7.2 KB 堆（本次台架），停止后驱动 netif 缓冲不完全回收；这是显式实验态，须用 `BAITAPSTOP` 收尾。
+- **④ 三层判据与实测**：2026-11-22 `测试报告.md §4.4.13` 记录 Beacon 可见、BTM 后受测 STA 关联诱饵 AP 并获得 DHCP 地址；停止诱饵后 STA 回连原 AP。静默对照未观察到 STA 自行漫游。该闭环只适用于自有/授权测试网，不等同于对任意客户端的效果保证。
+
 ---
 
 ## 13. QoS Null PM 位欺骗（`qosnull.cpp`）
 
 - CLI：`QOSNULL <idx> [sta-mac]`、`QOSNULLREL`、`QOSNULLSTOP`、`QOSNULLTEST`
-- 入口：`qosnull.cpp`（构造 `build_qos_null()`，节拍 `qosnull_step()`，撤销 `qosnull_release()`）
-- 与 §8 的 TIM 投毒是同一台机器的两面：**TIM 改的是 AP 的 beacon**（告诉客户端"有你的帧"），
-  **这里改的是 STA 的电源管理声明**（告诉 AP"我睡了，别发"）。两者可以叠加（§13.3 末）。
-- 承载帧只留了一种：**单播 QoS Null**（data 12，26 字节，ToDS）。早期还试过 Null Data 和
-  厂商自定义 Action，实测 QoS Null 最强（§13.4），其余两种下线，CLI 也就没有帧型参数了。
+- 入口：`qosnull.cpp`（构造 `build_qos_null()`，周期发送 `qosnull_step()`，撤销 `qosnull_release()`）
+- 当前固件只保留单播 QoS Null 这一种 PM 位承载帧。
 
-### 13.1 协议层定位
+### 13.1 协议位置
 
-【标准】802.11 的省电（PS）机制靠一个 bit 声明：STA 在**帧控制**的 bit 12 置 **Power Management**，
-AP 收到后把该 STA 视为"在睡觉"，下行帧不再直接发送，而是缓存起来并在 beacon 的 **TIM 元素**里置位
-（802.11-2020 第 10 章 *Power management*、第 9 章 *TIM element*）。STA 醒来后取帧：DTIM 模式下
-AP 在 DTIM beacon 之后直接发，legacy PS 模式下 STA 发 PS-Poll 取。
-
-【标准】这个 bit 存在于**所有**帧的帧控制里，不只是数据帧——管理帧也有。于是同一件事有三种常见承载：
-
-| 帧型 | 类型/子类型 | 谁在真实世界里这样发 | 为什么选它 |
-| --- | --- | --- | --- |
-| `null` | data 4（Null Data） | mac80211 `ieee80211_nullfunc_get()` | 规范里的标准省电声明帧；无载荷、无 LLC/SNAP |
-| `qosnull` | data 12（QoS Null） | QoS/WMM 关联的站点 | 带 2 字节 QoS Control；只认 QoS 站点的 AP 也认它 |
-| `action` | mgmt 13（Action） | 各类管理动作 | 管理帧同样带 PM 位；类别 127（厂商自定义）**不在** robust 集合里，所以仍绕 PMF |
-
-【实现】本模块只做一件事：用受害 STA 的 TA 发 PM=1 的上述帧。AP 于是把该 STA 移入 PS 状态；
-受害者本人毫不知情（没有任何帧发给它）。每第 6 帧改成 PM=0，让 AP 把攒下的帧"放"出来（§13.3）。
-
-【历史】这个机制原本还有第四个注入点：伪造 **PS-Poll**（控制子类型 10）让 AP 把缓存帧逐帧交给
-一个不在听的站。已实现、已实测、已删除——单播的 PS-Poll 在本 MAC 上根本不发送。证据在附录 A。
+【标准】802.11 帧控制字段中的 Power Management（PM）位表示发送 STA 的电源管理状态。关联 AP 可据此缓存下行数据，并通过真实 beacon 的 TIM 通告缓存状态。伪造 PM 位不会直接改变受害 STA 的状态；本模块通过发出看似来自目标 STA 的帧，测试 AP 对该状态声明的处理。
 
 ### 13.2 帧格式
 
-早期三种帧型只差帧头，PM 位的位置完全一样（帧控制第二字节 bit 4，即 `0x10`）。下表保留下来
-是为了说明"哪种字段属于哪种帧"，现行模块只走 `qosnull` 那一列：
+【代码】`qosnull.cpp` 构造 26 字节的 ToDS QoS Null 数据帧：Frame Control subtype 12，ToDS=1，PM 位按发送阶段置 1 或清 0；Addr1 为 AP BSSID，Addr2 为受害 STA，Addr3 为 BSSID；末尾是 TID 0 的 QoS Control。驱动附加 FCS。PM=1 与 PM=0 仅改变 Frame Control 的 PM 位。Duration 由 MAC 重算（附录 A）。
 
-```
-null     24B: FC 0x1148 | Dur 2B | Addr1 BSSID | Addr2 受害STA | Addr3 BSSID | Seq 2B
-qosnull  26B: FC 0x11C8 | Dur 2B | Addr1 BSSID | Addr2 受害STA | Addr3 BSSID | Seq 2B | QoS 2B
-action   29B: FC 0x10D0 | Dur 2B | Addr1 BSSID | Addr2 受害STA | Addr3 BSSID | Seq 2B
-              | category=127 | action=0 | OUI 00:11:22
-```
+【代码】周期路径每 100 ms 至多发一帧，每六帧中有一帧为 PM=0。单播发包经过 `tx_guard_send()`；`QOSNULLREL` 尝试给已记录客户端发送 PM=0 后停止。信道设置错误通过状态/回执可见，避免扫描刚结束时误在其它信道发送。
 
-| 字段 | `null` | `qosnull` | `action` |
-| --- | --- | --- | --- |
-| Frame Control 低字节 | `0x48`（data 4） | `0xC8`（data 12） | `0xD0`（mgmt 13） |
-| Frame Control 高字节 | `0x11` = ToDS + **PM** | `0x11` = ToDS + **PM** | `0x10` = **PM**（管理帧没有 ToDS/FromDS） |
-| Duration/ID | 0（会被 MAC 重算，附录 A） | 同左 | 同左 |
-| Addr1 / Addr2 / Addr3 | BSSID / 受害 STA / BSSID | 同左 | 同左 |
-| 额外字段 | 无载荷 | QoS Control 2B：TID=0、Normal Ack、无 A-MSDU | category 127 + action 0 + 3B OUI |
-| PM=0 版本 | 高字节 `0x01` | 高字节 `0x01` | 高字节 `0x00` |
+### 13.3 有效边界与失效机制
 
-【实现】`QOSNULLTEST` 把 PM=1 与 PM=0 两帧一次性打出来（2026-11-22 台架实测输出）：
+【实测】在已关联的实验 AP 上，伪造 PM=1 帧会使下行吞吐下降，但 STA 保持关联；受害 STA 自己发出的活动数据帧会把 AP 的电源管理状态更新回活动态，因此效果受刷新竞争影响。PM=0 撤销后吞吐恢复。
 
-```
-QOSNULLTEST pm=1 len=26 fc=0x11C8 tods=1 tid=0 ra=02:11:22 ta=02:AA:BB da=02:11:22
-QOSNULLTEST hex=C811000002112233445502AABBCCDDEE021122334455F0FF0000
-QOSNULLTEST pm=0 len=26 fc=0x01C8 tods=1 tid=0 ra=02:11:22 ta=02:AA:BB da=02:11:22
-QOSNULLTEST hex=C801000002112233445502AABBCCDDEE021122334455F0FF0000
-```
+【边界】AP 必须接受目标 BSSID 下的该 STA 地址和 QoS Null 状态更新；受害者上行活动、AP 缓存/重传策略及无线环境都会改变结果。该结果不能外推到其它 AP 或客户端。该实验只支持当前 QoS Null 实现的结论。
 
-【实现】本模块**不使用 `ie_util.cpp`**：QoS Null 没有元素（QoS Control 不是 IE），见附录 D。
+### 13.4 三层验证与实测
 
-【历史·已删除】PS-Poll 是 16 字节控制帧：`FC 0x00A4 | Duration/ID = 0xC000|AID | Addr1=BSSID |
-Addr2=受害 STA`。它的 `Duration/ID` 确实能原样出空气（附录 A 有实测），但**单播**的这种帧本 MAC
-一帧都不发，所以整条路径删除。
+- **帧上空气**：`firmware/测试报告.md §4.4.9` 记录 PM 位帧空口抓取；当前实现只保留 QoS Null。
+- **对端有回应**：AP 侧下行 RATE 变化及 `qndl` 计数提供实验观测；不同环境仍需复测。
+- **端到端有效**：同一测试报告记录吞吐下降、零掉线及 PM=0 后恢复。历史承载帧对比仅作为当时实验记录，不代表现行固件仍保留那些旧实现。
+- **状态字段**：保留 `STATUS` 中现有 `qn`、`qnf`、`qn1`、`qn0`、`qnc`、`qndl`、`qnrn`、`qnrp` 名称，不以文档整理为由改名。
 
-### 13.3 为什么有效 / 何时失效
+---
+## 五、Wi-Fi 6/7 注入扩展候选
 
-【标准】**有效条件**：
+本节筛选的是候选研究方向，不代表固件已经实现这些功能。`[双平台可行]` 仅表示存在由 `esp_wifi_80211_tx()` 支持的 legacy 管理帧载体，且可沿 `tx_guard_send()` 路径尝试；除 HE Trigger 已有明确抓包结果外，候选的空口字段、对端反应和端到端效果均为**未验证**。ESP32/C5 不因此获得 HE/EHT PHY 注入能力。官方 ESP-IDF 文档列出的注入类型为 Beacon、Probe Request/Response、Action 和非 QoS Data，并明确不支持 QoS 或加密帧；自定义 IE 的驱动接受及空口保留仍须逐项抓包验证。
 
-1. 受害者已关联、AP 认得这个 MAC（Unknown STA 的帧会被当 Class 3 处理）；
-2. AP 实现了 PS 缓存（几乎所有 AP 都实现）；
-3. 攻击者与受害者在同一信道（本模块自己锁到目标 AP 的信道，`chset=` 会报出是否成功）。
+### 1. HE/EHT 管理元素候选 `[双平台可行]`
 
-【标准】**核心边界：受害者自己的上行帧会把状态翻回来。** PM 位是"当前状态"不是"请求"：
-受害 STA 只要还在活动模式发数据，它自己发的每个数据帧都是 PM=0，AP 收到就把该 STA 移回"醒着"，
-于是我们伪造的 PM=1 只能维持到它下一次上行。这条决定了攻击的真实上限——**是"下行吞吐下降"，
-不是"断网"**。实测三种帧型都是这个量级（§13.4）。
+- **① 协议位置与载体**：802.11ax/be 的 BSS 能力和操作信息，候选载体是 Beacon、Probe Response 等管理帧，以 legacy PPDU 承载。两平台均有对应管理帧注入入口；具体 IE 是否被保留尚未测。
+- **② 帧格式与关键字段**：在已有管理帧 IE 列表中增加 HE Operation（Element ID 255，Extension ID 36）或 EHT Operation（Element ID 255，Extension ID 106）结构。需按标准版本构造完整长度与字段，不能只插入 tag 声称有效。候选原语目前没有实现，也没有既定帧长；若原型化应使用 `tx_guard_send()` 的 Guard 策略并记录驱动返回值。
+- **③ 有效边界与失效机制**：接收端可能忽略格式不完整、与能力 IE/信道参数矛盾或不适用于当前频段的 Operation IE。Beacon/Probe 的 IE 未受 PMF 保护，但客户端的关联选择、扫描去重和信道合法性校验各异。帧内声明更宽带宽不等于发射端实际提供该带宽。
+- **④ 当前验证层级与下一步最小实验**：当前定性：**未验证**。最小实验：仅在隔离自有测试网发送单帧；Layer 1 用 `cap_frames.py` 对照完整 IE 字节、长度与 FCS；Layer 2 记录测试 STA 的扫描/关联事件；Layer 3 用受控吞吐基线比较，结果若无差异就标为“帧上空气、端到端效果未观察到”。
 
-【标准】另外两个衰减机制：AP 对缓存帧有**老化超时**，且重传耗尽后会**丢弃**，所以效果是
-"延迟 + 丢包"，不是永久阻断；反过来，关联一直保持——ESP-IDF 站点按 DTIM 收帧，压根不发 PS-Poll。
+### 2. EHT Multi-Link Element 候选 `[双平台可行]`
 
-【实测】每第 6 帧的 PM=0 是**故意**的：它让 AP 把攒下的帧"放"给一个并不在听的站（这些帧被浪费
-掉），把"延迟"变成"丢失"；`QOSNULLREL` 就是把这件事手动做一次（撤销）。
+- **① 协议位置与载体**：802.11be MLO 的发现/协商信息，候选放在支持相应 IE 的 Beacon、Probe Response 或关联管理帧中，由 legacy PPDU 承载。
+- **② 帧格式与关键字段**：Multi-Link Element 使用 Element ID 255 及其扩展标识，内部包含 Multi-Link Control、Common Info 和按 variant 定义的子字段。长度取决于 Link Info；当前固件没有构造器，未定义可确认的帧长或候选字节串。候选实现应先只用 `tx_guard_send()` 发送标准格式帧，不改驱动 PHY 设置。
+- **③ 有效边界与失效机制**：MLO 需要对端支持 EHT/MLO，且元素内容需满足链路标识、地址和关联上下文的一致性。未声明真实可用链路的元素很可能被忽略或仅触发扫描解析，不足以证明链路建立。PMF、驱动解析策略和跨频段硬件能力会限制后续状态转换。
+- **④ 当前验证层级与下一步最小实验**：当前定性：**未验证**。最小实验：Layer 1 抓包核对 MLE 的扩展 ID、variant 与长度；Layer 2 在 Wi-Fi 7 测试客户端记录扫描/关联日志；Layer 3 仅在真实 MLO AP/STA 都可观测时比较单链路与多链路吞吐。没有 MLO 设备时停在 Layer 1，不推断端到端结果。
 
-【防护】PMF（802.11w）**不覆盖**：数据帧的 PM 位不在保护范围（robust 集合只点了管理帧的类别）。
-这是本模块相对 §2 deauth、§5 DELBA、§7 BTM 的差异——那三条在强制 PMF 的 WPA3 网络上会被客户端
-驱动丢弃，这里不会。
+### 3. Trigger 参数边界研究 `[双平台可行]`
 
-【失效条件】①受害者的上行帧持续翻盘（实测就是这个，见 §13.4）；②AP 的 PS 状态有很短的超时；
-③AP 不认非 QoS 的省电声明（QoS Null 是 WMM 关联下的通用形式，实测最稳）；④TA 不属该 BSS；
-⑤多 AP/漫游场景里 TA 落到另一个 BSSID。
+- **① 协议位置与载体**：802.11ax Trigger 控制帧（BSRP、MU-BAR、Basic），Trigger 本身走 legacy PPDU，目标 STA 的响应才使用 HE-TB。现有 BSRP 构造器已通过 `tx_guard_send()`，ESP32 与 C5 均可作帧级研究平台。
+- **② 帧格式与关键字段**：现有 `bsrp.cpp` 构造 32 B BSRP；MU-BAR 路径为 36 B，但报告注明 BAR 字段布局尚未由参考抓包核实。AID12、RU Allocation、UL Length、GI/LTF、Target RSSI 等字段中有占位值；不得将 `BSRPFIELD` 可改写等同于字段语义已验证。沿用 Guard 策略，单播约 45 ms 的守卫间隔会限制速率。
+- **③ 有效边界与失效机制**：已有实验显示 AID 匹配且 UL Length 达门槛时实验 STA 有回应；当前端到端吞吐效果为零。测试 AP 的 Trigger 活性对照为 `trig=0`，这限制了真实协议状态机推断。特殊 AID/RU 组合可能被 STA/AP 丢弃，不能将响应变化直接解释为功耗或吞吐变化。
+- **④ 当前验证层级与下一步最小实验**：当前定性：**帧级成立；实验 STA 有回应；端到端效果为零**（`测试报告.md §4.4.14–§4.4.16`）。下一步每轮只变一个字段，Layer 1 抓包核字节；Layer 2 用 `trigstat`、次板 RXLOG 与 STA 日志确认响应类型；Layer 3 交替进行不注入/注入吞吐对照并报告波动范围。未完成对照前不提高效果等级。
 
-【标准/推测】**与 §8 TIM 投毒的叠加**（组合攻击，**未做双模块实测**）：TIM 让客户端"以为有帧/
-以为没帧"，PS 位让 AP"以为客户端睡了"。叠加的直觉效果是"AP 攒着、客户端也不来取"，但两条路径各有
-自己的失效条件（TIM 的 TBTT 相位问题见 §8.4），是否线性放大没有测过，不要按乘积估算。
+### 4. MU-RTS / CTS-to-self 预约研究 `[平台不支持 / 理论受限]`
 
-### 13.4 实现与实测
+- **① 协议位置与载体**：候选属于控制帧与虚拟/物理载波侦听。控制帧的 PPDU 载体、驱动允许的子类型与普通管理帧注入路径不同，当前没有可确认的通用发射路径。
+- **② 帧格式与关键字段**：Duration/ID、RA/TA 及相关带宽信令都必须按各自控制帧格式处理。当前没有 MU-RTS 或 CTS-to-self 原型，不能给出“已可注入”的长度或速率。即便构造字节，也不能绕过 MAC 对 Duration 的重算；本仓库实测显示多类注入帧的 Duration 被 MAC 覆写。
+- **③ 有效边界与失效机制**：NAV 预约首先受 Duration 覆写这一已证实限制；另外，控制帧 subtype 白名单、PHY 前导、带宽信令和目标设备处理均未证实。该候选不得作为恢复 NAV 攻击的依据。
+- **④ 当前验证层级与下一步最小实验**：当前定性：**理论受限，未验证**。最小实验先不发高负载：只用现有诊断环境验证一帧受控样本能否由驱动接受并被抓包端识别，再比较写入与空口 Duration；只有字段未被覆写且 subtype 可用，才继续做屏蔽箱/隔离环境中的 CCA/NAV 观测。Layer 3 暂无可定义的吞吐实验，不能提前声称有效。
 
-【实现】注入路径与其它帧级模块相同：`tx_guard_send()` → `esp_wifi_80211_tx(WIFI_IF_STA, ...)`，
-单播（AP 会 ACK）所以走整流器。
+### 5. 6 GHz 邻居字段级研究 `[平台不支持 / 理论受限]`
 
-【实测·历史】下面是三帧型版本（2026-11-15）留下的数据，脚本 `lab/pspoll_air.py` /
-`lab/pspoll_ps.py` 已随模块收敛删除。现行版本只发 `qosnull` 那一行：
+- **① 协议位置与载体**：C5 板卡无 6 GHz 射频前端，因此不具备 6 GHz 空口发射条件。可研究 2.4/5 GHz 管理帧中的 RNR 或 HE 6 GHz Operation 信息字段，但它们只表达邻居信息，不构成 6 GHz 发射。
+- **② 帧格式与关键字段**：候选元素需按标准定义的 RNR Neighbor AP Information 或 HE 6 GHz Operation 子结构编码。当前无构造代码、无受验证的长度及字段样本；legacy Beacon/Probe 管理帧的普通注入入口不证明客户端会接受这些跨频段信息。
+- **③ 有效边界与失效机制**：客户端可能要求多个一致的 AP/SSID/信道字段、扫描策略或安全参数；缺少 6 GHz 实际 BSS 时，最多测试解析/扫描提示，不能验证 6 GHz 关联或业务。射频限制是硬边界。
+- **④ 当前验证层级与下一步最小实验**：当前定性：**仅字段级理论研究，未验证**。最小实验在隔离环境中向 2.4/5 GHz 抓包端发单帧，Layer 1 核对 IE；Layer 2 使用支持对应频段的 STA 扫描日志观察是否发现候选；没有真实 6 GHz AP/STA 时不做 Layer 3 关联/吞吐结论。
 
-**三种帧型都上空气，PM 位都是我们写进去的**（COM6 同时跑 softAP 与 `sniffpoll 6`，COM5 注入，每种 4 s）：
+### 6. C5 HE20 SU PPDU 管理帧注入 `[C5-only 扩展]`
 
-| 帧型 | 抓到的 PM=1 帧 | 抓到的 PM=0 帧 | 空口示例 |
-| --- | --- | --- | --- |
-| `null` | 32 | 6 | `NULL ta=02:AA:.. ra=88:13:.. pm=1 tods=1 qos=0 len=28` |
-| `qosnull` | 29 | 6 | `NULL ta=02:AA:.. ra=88:13:.. pm=1 tods=1 qos=1 len=30` |
-| `action` | 27 | 6 | `PMACT ta=02:AA:.. ra=88:13:.. pm=1 cat=127 len=33` |
-
-（`len` 含 4 字节 FCS，所以是 24/26/29 + 4。）
-
-【实测】**三种帧型都能把下行压下去，QoS Null 最强**（AP 侧 RATE，每段 10 s，同一个受害者、同一轮）：
-
-| 阶段 | AP 侧 RATE（KiB/s） | 相对 baseline | STA 掉线 |
-| --- | --- | --- | --- |
-| baseline awake（ps 0） | 351 | — | 0 |
-| `null` | 247 | **−29.6%** | 0 |
-| `qosnull` | 217 | **−38.2%** | 0 |
-| `action` | 280 | **−20.5%** | 0 |
-| 每次撤销（PM=0）之后 | 407–449 | +16…+28% | 0 |
-
-这就是只留 `qosnull` 的依据。`qndl`（发向受害者的下行数据帧）在整个攻击期间一直增长——AP 仍在往
-那个 MAC 发帧，效果是"抢不到/被丢弃"，不是"完全静默"。
-
-【实测】**节拍必须 10 帧/s，不是 20**：20 帧/s 下约 170–400 帧（9–20 s）就 `FATAL tx 0x101 ...
--> restart`；10 帧/s 下 60 s / 600 帧零拒收。机理推测（未证伪）：AP 把该 STA 当"睡了"，这些帧的
-应答/重传行为与普通管理帧不同，每个缓存占用更久，池子更早打满。
-
-【实测】**`SCAN` 之后不要立刻开打**：扫描收尾时 STA 会拒绝 `esp_wifi_set_channel()`，模块若不检查
-就会把帧发在"扫描停下来的那个信道"上——现象是"计数器在涨、空口一帧没有"。现在回执带
-`OK QOSNULL 0 mode=pm sta=.. ch=6 chset=0 ssid=..`，`chset≠0` 时再打 `WARN`。
-复现脚本先用 `MON <ch> 2` 钉住信道。
-
-【实测】计数器（`STATUS`）：`qn`（off/pm）、`qnf`（总帧数）、`qn1`（PM=1 帧数）、
-`qn0`（PM=0 帧数）、`qnc`（学到的受害 MAC 数）、`qndl`（发向受害者的下行数据帧数，攻击生效时应
-停止增长）、`qnrn`/`qnrp`（听到的 Null/QoS Null 及其 PM=1 计数）。
-
-【未实测/推测】①强制 PMF 的 WPA3 AP（手上没有可信 WPA3 AP，华为那台实测回 status 13）；
-②真实手机/笔电客户端（只测了 ESP32-C5 板）；③多受害者（代码最多 8 个、轮转，未量化）；
-④与 TIM 投毒的组合（该模块已下线，暂时做不了）；⑤AP 缓存老化的具体时长（只观察到停手后数秒内恢复）。
+- **① 协议位置与载体**：候选是用 C5 的 `EmitterPhy::He20` 发送管理帧。仓库/已知实现只在 CSI 发射路径出现此 PHY 选择，不能推定它可承载 Beacon/Probe Response 等任意管理帧。
+- **② 帧格式与关键字段**：若做原型，需先确定 API 接受的帧缓冲、PHY 配置与 FCS/序号归属，再验证标准管理帧在 HE20 SU PPDU 下的接收结果。当前没有通用构造长度、调用路径或字段记录；不得写成已存在的 `tx_guard_send()` 通用 HE PPDU 能力。
+- **③ 有效边界与失效机制**：通用性未验证；设备可能只接受 CSI 专用载荷，或驱动限制帧型、信道、带宽和发射时机。即便抓到 HE 前导，也要确认 MAC 管理帧内容正确；不能预设其绕过 legacy 注入节拍或缓存限制。
+- **④ 当前验证层级与下一步最小实验**：当前定性：**未验证（仅有 CSI 发射端相关实现线索）**。最小实验先查明受支持 API/实现契约，然后发送单个非 CSI Beacon 样本；Layer 1 用能解 HE PPDU 的独立接收设备核对 PHY 与管理帧；Layer 2 观察 STA 扫描结果；Layer 3 只有前两层稳定后再做隔离吞吐对照。不得以 `EmitterPhy::He20` 名称本身作为成功证据。
 
 ---
 
-
-## 14. RRM 伪造 Neighbor Report Response（`rrm.cpp`）
-
-- CLI：`RRM <idx> nbr <bssid> <ch> [count] [token] [info] [opclass] [phy] [sta-mac]`、`RRMSTOP`、`RRMTEST`
-- 入口：`rrm.cpp`（组帧 `build_nbr_response()`，STA 学习与请求/响应计数 `rrm_on_rx()`，
-  发送节拍 `rrm_step()`，自检 `rrm_selftest()`）
-
-### 14.1 协议层定位
-
-【标准】802.11k-2008 定义的射频测量（Radio Measurement）在 802.11-2020 里是 §11.11
-"Radio measurement"（条款号以你手上的标准版本为准，本文只按 Action 字段编号说话）。
-它让 AP 与客户端交换邻居/信道/beacon 测量结果。其中 **Neighbor Report** 是唯一"能指挥客户端
-去哪"的那条：AP 回一个邻居列表，客户端把它填进漫游候选表。
-
-【标准】承载帧是 Action 管理帧（mgmt subtype 13）。Action 字段：category = 5（Radio Measurement），
-action = 4（Neighbor Report Request）/ 5（Neighbor Report Response）。本模块只伪造 **action 5**，
-同时统计嗅到的 action 4（`s_requests`），因为"客户端到底问没问过"是实现行为的关键变量。
-
-【代码】`rrm.cpp` 与 `btm.cpp` 是同一层的东西：都在 net80211 之上直接拼 24 字节 MAC 头 + Action 体，
-都只发单播、都由 `tx_guard` 节拍。区别只有一个——category 5 是 802.11k 的通道，category 10 是 802.11v 的。
-
-### 14.2 帧格式
-
-【代码】`build_nbr_response()`，42 字节（+4 FCS），`RRMTEST` 逐字节可见：
-
-```
-偏移  长度 字段                    取值（本模块）
-0     2   Frame Control           0xD0 0x00   mgmt, subtype 13 = Action
-2     2   Duration                0x0000      由驱动重算，写什么都不会上空气（附录 B 第 1 条）
-4     6   Addr1 = RA              目标 STA（命令参数的 sta-mac，或嗅探学到的客户端）
-10    6   Addr2 = TA              目标 AP 的 BSSID（伪造）
-16    6   Addr3 = BSSID           同上
-22    2   Sequence                0xF0 0xFF（固定）
-24    1   Category                5  = Radio Measurement
-25    1   Action                  5  = Neighbor Report Response
-26    1   Dialog Token            参数 token，默认 0
-27    1   Element ID              52 = Neighbor Report
-28    1   Length                  13 = 固定部分，无 optional subelement
-29    6   BSSID                   幻影邻居的 BSSID（命令参数 bssid）
-35    4   BSSID Information       参数 info，小端，**默认 0**（位含义未核实，不猜）
-39    1   Operating Class         参数 opclass，**默认 0**（按真帧回填）
-40    1   Channel Number          幻影邻居的信道（命令参数 ch）
-41    1   PHY Type                参数 phy，**默认 0**（按真帧回填）
-```
-
-- 【代码】组帧是手写偏移（和 `btm.cpp` 一样），没有走 `ie_util.cpp`——那几个函数是**解析**用的
-  （遍历 IE / RSN AKM / MFPR / Extended Capabilities），本模块发的是一个固定元素，不需要构造器。
-- 【标准】元素固定 13 字节是"最小合法值"：BSSID(6) + BSSID Information(4) + Operating Class(1) +
-  Channel(1) + PHY Type(1)。可选子元素整段省略。
-- 【实测】空口抓到 `len=46`，即 42 + 4 字节 FCS（硬件加，不由我们写）。
-
-### 14.3 为什么有效 / 失效
-
-**成功条件**（协议层）：
-1. TA/Addr3 必须是受害者当前 AP 的 BSSID——客户端只从"自己 AP 发的帧"里读邻居表。
-   本模块直接照抄扫描结果里的 BSSID。
-2. 链路没有强制 PMF。**category 5 在 robust 管理帧集合里**（Linux `_ieee80211_is_robust_mgmt_frame()`
-   的判定是"除 Public/HT/未保护类/Self-protected/VHT/厂商自定义之外所有 Action 类别"），
-   所以 PMF required 的客户端会在驱动里直接丢掉未保护的这类帧。这与 deauth、DELBA、CSA、BTM 的
-   天花板相同——本模块不是 PMF 绕过。
-3. 客户端真的维护 11k 邻居表，并且对"未请求的 response"宽容（见下面的失效条件 3）。
-
-**失效条件**（写全，别只写一半）：
-1. 强制 PMF（WPA3）→ 驱动丢弃；
-2. 客户端不做 11k。**本模块目前不判能力**：`rrm_on_rx()` 只按 MAC 学 STA，不看 Extended Capabilities。
-   实现时留在 `rrm.h` 的 TODO 里——802.11k 的能力位定义本轮没有核实到原文，不猜；
-3. 客户端只接受"自己发过 Request 且 dialog token 匹配"的 Response。本模块发的是**未请求**的
-   response（token 可配但客户端没请求过），**接受度未实测**，这是本模块最大的未知；
-4. 真实 AP 自己的 Neighbor Report 覆盖我们伪造的记录（真实响应更可信、也更频繁）；
-5. 客户端对候选做 RSSI/负载阈值判断，而元素里没有"信号强度"字段，只有 BSSID/信道/PHY 类型。
-
-【诚实边界】不要写"可打 WPA3 / PMF 无效"。本模块与 BTM 一样，只在 PMF 关闭或可选的链路上有窗口。
-
-### 14.4 实现与实测
-
-【代码】发射路径：`esp_wifi_80211_tx()` 经 `tx_guard_send()`（`kTxPolicyGuard`：45 ms 单播节拍，
-首个 `0x101` 打 `FATAL` 后 `esp_restart()`）。节拍模型与 BTM 完全相同——每客户端 300 ms 一次、
-全局 50 ms 一帧、一次 `rrm_step()` 只出一帧。
-
-【代码】`count` 语义：`0` = 一直发到 `RRMSTOP`；`1..16` = 本次总共注入多少帧，发满后
-`rrm_step()` 自己把模式切回 `off`（不用手动 STOP）。`STATUS` 的 `rrmleft=` 是剩余帧数，
-所以 `rrmleft=0` 有两种含义（无限 / 已发完），要看 `rrm=` 是 `nbr` 还是 `off` 来区分。
-
-【代码】客户端来源：①命令里的 `sta-mac`（`rrm_add_station()`，台架用）；②混杂回调里记下 BSS 内
-所有单播管理帧的源地址（上限 8 个，`rrmc=`）。代码不判 11k 能力（见 14.3 失效条件 2）。
-
-【实测】2026-11-21，COM5 = ESP32-2432S028R 注入，COM6 = ESP32 当嗅探器：
-
-| 项 | 结果 |
-| --- | --- |
-| `RRMTEST` | `len=42 cat=5 act=5 token=0 protected=0`，元素 `eid=52 ie_len=13` |
-| 空口 | `MON 3 8` → `RXLOG`：`type=0 sub=13 len=46 dest=02:AA:BB:CC:DD:EE src=CC:08:FB:F6:25:64 cat=5 act=5 nch=52 cnt=13 rate=1M dur=314` |
-| 计数 | `count=0` 跑 6 s：`rrmf=45`、`rrmc=2` |
-| 限次 | `count=3` → `rrmf=3` 后 `rrm=off` |
-| 参数回显 | `rrmtok/rrmch/rrminfo/rrmoc/rrmphy` 与命令行一致 |
-
-【实测/推测】注入窗口里嗅探侧 `RXMIX` 是 `rts=1187 / cts=65`，逐帧可见 `type=1 sub=11`
-（RTS，`RA=02:AA:BB:CC:DD:EE`、`TA=目标 AP BSSID`、`dur=1198`），而同期只注入了 45 帧。
-RTS 的 TA 与注入帧的 Addr2 相同，**推测**是注入路径给每帧做了 RTS/CTS 保护、没人回 CTS
-（RA 是假 STA）导致重传吃空口——与附录 B 的单播 20 帧/s 上限同源，但"是驱动发的 RTS"这一点
-本轮没有独立证据。
-
-【代码】应答式：`rrm_on_rx()` 认客户端的 Neighbor Report Request（cat 5 / act 4），记下它的
-dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=`）。设计意图是"先投毒
-邻居表，再用 BTM 把人赶过去"——只有应答过的响应才可能被写进邻居表。
-
-【实测】2026-11-23：victim（11KV 打开、`rm_enabled=1`、`ps 0`、挂在真 AP）在 9 s 内
-**一帧 Neighbor Report Request 都没发**（`rrmreq=0`），所以应答式在这块端点上无对象可打，
-`rrmtokhit=0`；随后单独的 BTM 仍把它拐走（`reason=207`）。要量化"投毒+BTM"的协同增量，
-需要一个会主动问邻居的客户端（wpa_supplicant / Android）。
-
-【实测】2026-11-22，用 `lab/victim_btm`（802.11v/802.11k 打开、`ps 0` 一直醒的 ESP32-C5）当受害者：
-伪造 16 帧 NRREP（`token=7`、`info=0x00000001`），空口可见 16 条 `cat=5 len=46`（42+4，AP 板
-`sniffpoll` 同时抓的），但 STA 侧**没有** `WIFI_EVENT_STA_NEIGHBOR_REP`，也没有断开。
-即"未请求的 Neighbor Report Response"在 ESP-IDF 端点上不产生可观测行为
-（`firmware/测试报告.md §4.4.12`）。对比：同一轮里 BTM 是**有**响应的（§7.4），
-说明不是"STA 整体不理 action 帧"，而是这一条它在等一个自己发过的请求。
-
-【未实测】①真实 11k 客户端是否采信未请求的 response（ESP-IDF 端点给否定，wpa_supplicant/Android 未测）；
-②PMF required 下的空口行为（按标准应被丢弃）；
-③C5 抓包管道当时没在运行，`lab/cap_frames.py` 新增的 cat 5 解码分支没有吃到真抓包
-（上面的字段来自对端固件 `RXLOG`，它只解出 cat/act 与首个元素的 id/len，不打印帧体）。
-
----
-
-
-## 附录 A：已删除、已失效与"做了但没证明"的路径
+## 附录 A：已删除、已失效与“做了但没证明”的路径
 
 按仓库现状，下面这些**不再存在**或**明确无效**，列出原因以免被重新"发明"：
 
-| 路径 | 状态 | 原因与证据 |
-| --- | --- | --- |
-| NAV / Duration 预约信道（`nav.cpp` 及 `NAV*` 全部命令、LVGL/上位机的 NAV 页） | **已删除** | `esp_wifi_80211_tx()` 注入帧的 Duration 由驱动/MAC 重算：单播一律 `SIFS+ACK@1Mbps` = **314 µs**（30/26/20 字节的 action/BAR/data 全是），广播 CF-End 一律 **0**，RTS 随重发速率在 **990–1102 µs** 浮动。设 1 µs 与设 32767 µs 结果完全相同（`测试报告 §4.3.1`，C5 抓包）。所以"覆盖率 = 帧率 × 声明时长"的算法全部作废 |
-| CTS 注入 | **不可用** | 每帧永久吃掉一个短缓存：30/200/500 ms 节拍都是 32 帧封顶，静置 10 s 不恢复，之后连 `esp_wifi_set_channel()` 都卡死（`§4.3.3`） |
-| TSF 投毒（`TIMTSF ... tsf\|both`、`ttsf=` 状态字段） | **已删除**（本次） | MAC 用接口自己的 TSF 覆盖 beacon 的 24..31 字节（未关联的 STA 接口为 0）：`last_tsf=654632723879` vs 空口 `tsf=0`（`§4.4.3`）。与 Duration 同源的字段重写；乐鑫侧也有公开记录（esp-idf issue #6368 里的示例注释 "Timestamp (GETS OVERWRITTEN TO 0 BY HARDWARE)"） |
-| TIM 投毒（克隆 beacon 改 TIM 位图，`TIM`） | **已下线**（2026-11-22） | 帧字段与占空比都对，但对真实省电 STA 的吞吐无可测影响（§8 实测），留着只是多一条命令 |
-| PS-Poll 欺骗（控制子类型 10） | **已删除** | 帧本身能发出去，但**单播**的 PS-Poll 一帧都上不了空口：`CTRLTEST 10 broadcast 0xC025` 两轮各 **10/10**（空口 `dur=0xC025 aid=37`，说明 Duration/ID **没有**被改写），把 RA 换成 AP 的 BSSID 后两轮各 **0/10**——同长度、同 TA、同 Duration，只有 RA 不同。PS-Poll 只有单播给 AP 才有意义，所以整条路径删除；探针留在 `CTRLTEST [subtype] [broadcast\|bssid] [dur]`，`测试报告 §4.4.9` |
-| TIM 的 AID 位编码 | **已修正**（不是删除） | 旧实现按 `(AID−1)` 落位，等于把 AID 1 写到组播位（AID 0）、AID 3 写到 AID 2。现在按 `AID/8` 字节、`AID%8` 位（见 §8.1）；空口复测已完成：`bitmap=08`（AID 3），见 §8.4 |
-| "BA 推窗"在 mac80211 上的证明 | **未证明** | 在 ESP-IDF 目标上 `step=0` 对照组同样冻结，无法把"窗口被推走"单独分离；Android 那次对照（`BARPUSH 512` 卡死 / `0` 正常）是用户现场观察、单设备、无抓包（`§4.2`） |
-| "BTM Request 天然绕 PMF" | **说法已改正** | category 10 属 robust 管理帧集合，PMF 强制时会被客户端驱动丢弃（§7.1）。`btm.cpp`/`btm.h`/README/GUI 的旧说法已改 |
+| 路径                                                           | 状态            | 原因与证据                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NAV / Duration 预约信道（`nav.cpp` 及 `NAV*` 全部命令、LVGL/上位机的 NAV 页） | **已删除**       | `esp_wifi_80211_tx()` 注入帧的 Duration 由驱动/MAC 重算：单播一律 `SIFS+ACK@1Mbps` = **314 µs**（30/26/20 字节的 action/BAR/data 全是），广播 CF-End 一律 **0**，RTS 随重发速率在 **990–1102 µs** 浮动。设 1 µs 与设 32767 µs 结果完全相同（`测试报告 §4.3.1`，C5 抓包）。所以"覆盖率 = 帧率 × 声明时长"的算法全部作废                                                  |
+| CTS 注入                                                       | **不可用**       | 每帧永久吃掉一个短缓存：30/200/500 ms 节拍都是 32 帧封顶，静置 10 s 不恢复，之后连 `esp_wifi_set_channel()` 都卡死（`§4.3.3`）                                                                                                                                                                                                   |
+| TSF 投毒（`TIMTSF ... tsf\|both`、`ttsf=` 状态字段）                  | **已删除**（本次）   | MAC 用接口自己的 TSF 覆盖 beacon 的 24..31 字节（未关联的 STA 接口为 0）：`last_tsf=654632723879` vs 空口 `tsf=0`（`§4.4.3`）。与 Duration 同源的字段重写；乐鑫侧也有公开记录（esp-idf issue #6368 里的示例注释 "Timestamp (GETS OVERWRITTEN TO 0 BY HARDWARE)"）                                                                                  |
+| TIM beacon 投毒                                                   | **已删除(已下线)** | TIM 投毒已下线；仅归档其实现曾因 MAC TSF/空口时序边界而未产生端到端效果。 |
+| PS-Poll 欺骗                                                      | **已删除(已下线)** | 单播 PS-Poll 在本 MAC 上未能上空口，因此整条路径已删除。 |
+| "BA 推窗"在 mac80211 上的证明                                       | **未证明**       | 在 ESP-IDF 目标上 `step=0` 对照组同样冻结，无法把"窗口被推走"单独分离；Android 那次对照（`BARPUSH 512` 卡死 / `0` 正常）是用户现场观察、单设备、无抓包（`§4.2`）                                                                                                                                                                                   |
+| “BTM Request 天然绕 PMF”                                          | **说法已改正**     | category 10 属 robust 管理帧集合，PMF 强制时会被客户端驱动丢弃（§7.1）；现行模块为 `btm.cpp`。 |
 
 ---
 
@@ -1314,37 +845,45 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
 
 1. **必须 STA 模式**：`esp_wifi_80211_tx()` 在 AP 模式下会返回 `ESP_OK` 但帧不上空口
    （esp-idf issue #6368）。本固件固定 `WIFI_MODE_STA` + 不关联。
+
 2. **需要覆盖 `ieee80211_raw_frame_sanity_check()`**：`deauth.cpp:22` 返回 0 才能发任意裸帧
    （链接参数 `-Wl,-z,muldefs`）。
+
 3. **共享的 32 个短缓存**：池空即 `esp_wifi_80211_tx()` 返回 `ESP_ERR_NO_MEM`（`0x101`）。
    这是**我们自己**的驱动拒发，与 AP 无关。
+
 4. **单播可持续约 20 帧/s**（实测边界，`测试报告 §4.4.4`）：
 
-   | 节拍 | 结果 |
-   | --- | --- |
-   | 50 帧/s（20 ms） | 第 **63** 帧 `0x101`（1.26 s） |
-   | 40 帧/s（25 ms） | 第 **117** 帧（2.93 s） |
-   | 30 帧/s（33 ms） | 45 s / 1350 帧，零拒收 |
-   | 20 帧/s（50 ms） | 45 s / 900 帧、60 s / 1200 帧，零拒收 |
-   | 广播克隆 beacon 50 帧/s | 60 s / 3000 帧，零拒收 |
-   | **PM 位帧（Null/QoS Null/Action）20 帧/s** | **约 170–400 帧后 `0x101`**（9–20 s）——帧类相关，见 §13.4 |
-   | **PM 位帧 10 帧/s** | 60 s / 600 帧，零拒收（`qosnull.cpp` 的默认节拍） |
+   | 节拍                                    | 结果                                             |
+   | ------------------------------------- | ---------------------------------------------- |
+   | 50 帧/s（20 ms）                         | 第 **63** 帧 `0x101`（1.26 s）                     |
+   | 40 帧/s（25 ms）                         | 第 **117** 帧（2.93 s）                            |
+   | 30 帧/s（33 ms）                         | 45 s / 1350 帧，零拒收                              |
+   | 20 帧/s（50 ms）                         | 45 s / 900 帧、60 s / 1200 帧，零拒收                 |
+   | 广播克隆 beacon 50 帧/s                    | 60 s / 3000 帧，零拒收                              |
+   | **现行 QoS Null PM 位帧 20 帧/s** | **约 170–400 帧后 `0x101`**（9–20 s）——历史 PM 位实验的缓存池边界，现行默认节拍为 10 帧/s |
+   | **PM 位帧 10 帧/s**                      | 60 s / 600 帧，零拒收（现行 `qosnull.cpp` 的默认节拍）           |
 
    机理：伪造 TA 的单播帧拿不到属于本机的 ACK，硬件重传到上限才放缓存；我们也不 ACK
    AP 的回复，AP 同样重发（实测每条 SAE commit 对应 **12.7** 个 AP 回复帧）。
    20 帧/s 的注入在空口上≈**220 帧/s** 的实际负载。广播帧不等 ACK，缓存立刻回收。
+
 5. **守卫规则**：`tx_guard_send()`（`tx_guard.cpp`）对单播强制 45 ms 间隔
    （`TX_GUARD_UNICAST_GAP_MS`），第一次 `0x101` 立即 `esp_restart()` 并先打
-   `FATAL tx 0x101 ... -> restart`。覆盖五个新模块 + `CSA`；`DELBA`/BA/deauth 仍用自己的封装
+   `FATAL tx 0x101 ... -> restart`。覆盖 CSA 与采用 Guard 策略的帧级模块；`DELBA`/BA/deauth 仍用自己的封装
    （长跑 19–25 帧/s，在排水速率以下，遇 `0x101` 计一次错下轮重试），`BARSEQ` 这类诊断探针
    故意留在守卫外。
+
 6. **Duration 与 beacon Timestamp 由 MAC 写**（附录 A）。
+
 7. **`tx_cb` 对注入帧不回调**：`esp_wifi_register_80211_tx_cb()` 一次都不触发，
    所以"这一帧发完了没有"在应用层不可观测——所有速率结论都是"驱动接受了 N 帧"，
    不是"N 帧上了空口"。
+
 8. **混杂模式两级过滤**：`esp_wifi_set_promiscuous_filter()` 的 CTRL 位只是第一级，
    `esp_wifi_set_promiscuous_ctrl_filter()` 默认丢弃全部控制帧，必须设成 `MASK_ALL`
    （`start_promiscuous()`）。漏掉第二级时 `RXMIX ctrl=0`，看起来像"硬件收不到"。
+
 9. **11n 射频解不出 HE PPDU**：只有 Wi-Fi 6 客户端的 BSS 里嗅探不到 client→AP 帧，
    只能靠广播兜底。
 
@@ -1352,16 +891,14 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
 
 ## 附录 C：诊断探针（不是攻击，但共用注入通道）
 
-| 命令 | 作用 | 为什么留在这里 |
-| --- | --- | --- |
-| `CTRLTEST [subtype] [broadcast\|bssid] [dur]` | 发 10 帧指定子类型的控制帧（默认 RTS=11，RA=广播，TA=`02:00:00:AA:BB:CC`，Duration 默认 0） | 验证控制帧能不能注入、能不能被第二块板收到。子类型/Duration 参数是 §13.4 判定"PS-Poll 单播发不出去"的探针；NAV 删除后它仍是控制帧通道唯一的活证据 |
-| `QOSNULLTEST` | 打印 QoS Null 的 PM=1 / PM=0 两帧的字段与十六进制 | 帧构造错了先看这里（PM=1 与 PM=0 只差 `frame[1]` 的 0x10 位） |
-| `QOSNULLREL` | 给受害者补一帧 PM=0 后停止 | 撤销/对照：证明"AP 攒下的帧被放出来"（§13.3） |
-| `BARSEQ <n> [gap]` | 按固定节拍只发 BAR | 证明"BAR 会回收缓存"（30 ms 节拍 100 帧零失败），这是附录 B 第 4 条的来源 |
-| `BATX` | 发一帧 DELBA/ADDBA/BAR 并打印驱动返回值 | 帧构造错了先看这里 |
-| `MON <ch> [sec]` | 被动监听（可跳信道） | 观测 `RXMIX`：帧真的上了空口吗 |
-| `STATIONS [sec]` | 扫客户端 | deauth/DELBA/BTM 的目标来源 |
-| `RXLOG` / `RXMIX` / `CTRLFILTER` | 收帧明细 / 分类计数 / 控制帧过滤掩码 | 混杂模式两级过滤的现场诊断 |
+| 命令                                            | 作用                                                                    | 为什么留在这里                                                                                  |
+| --------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `CTRLTEST [subtype] [broadcast\|bssid] [dur]` | 发 10 帧指定子类型的控制帧（默认 RTS=11，RA=广播，TA=`02:00:00:AA:BB:CC`，Duration 默认 0） | 验证控制帧能不能注入、能不能被第二块板收到；也可用于检查 Duration 是否与空口抓包一致 |
+| `BARSEQ <n> [gap]`                            | 按固定节拍只发 BAR                                                           | 证明"BAR 会回收缓存"（30 ms 节拍 100 帧零失败），这是附录 B 第 4 条的来源                                         |
+| `BATX`                                        | 发一帧 DELBA/ADDBA/BAR 并打印驱动返回值                                          | 帧构造错了先看这里                                                                                |
+| `MON <ch> [sec]`                              | 被动监听（可跳信道）                                                            | 观测 `RXMIX`：帧真的上了空口吗                                                                      |
+| `STATIONS [sec]`                              | 扫客户端                                                                  | deauth/DELBA/BTM 的目标来源                                                                   |
+| `RXLOG` / `RXMIX` / `CTRLFILTER`              | 收帧明细 / 分类计数 / 控制帧过滤掩码                                                 | 混杂模式两级过滤的现场诊断                                                                            |
 
 这些命令**故意不接整流器**：它们要测的就是"池子什么时候空、驱动什么时候拒"。
 
@@ -1373,13 +910,13 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
 只负责"在字节流里找元素"和"从 RSN 元素里判 AKM"，所以每个模块的帧构造仍然是各自手写的
 （这也是为什么本文每节的帧结构图能对到具体偏移）。对照如下：
 
-| 函数（`ie_util.cpp`） | 作用 | 谁在用（`path:line`） | 用在帧的哪一部分 |
-| --- | --- | --- | --- |
-| `ie_find(start, end, id, *len)` | 顺序遍历元素（id+len+body），返回 body 指针；遇到截断就停 | `tim.cpp:120/126/133`、`authflood.cpp:246/252`、`sae.cpp:219`、`btm.cpp:157` | 解析真 AP / 客户端的帧：SSID(0)、RSN(48)、TIM(5)、Extended Capabilities(127) |
-| `rsn_has_akm_sae(rsn, len)` | 在 RSN 的 AKM 列表里找 `00-0F-AC:8/9/24` | `sae.cpp:223`（`AUTHFLOOD` 通过 `sae_classify()` 间接用） | 判定目标是不是 WPA3（决定是否启动/升级 SAE 洪泛） |
-| `rsn_has_akm_psk(rsn, len)` | 找 `00-0F-AC:2/4/6` | `sae.cpp:224` | 区分 `wpa2-psk` / `wpa2/wpa3` transition |
-| `rsn_mfpr_required(rsn, len)` | 读 RSN Capabilities 的 MFPR 位（bit 6） | **当前无人调用**（定义了、备着） | 原计划给"要不要提示 PMF 会挡"用；现在文档里靠静态判断，不靠运行时 |
-| `extcap_has_bss_transition(extcap, len)` | 判 Extended Capabilities 的 bit 19 | `btm.cpp:165` | 客户端能力学习：不支持的 STA 被 `btmskip` 跳过 |
+| 函数（`ie_util.cpp`）                        | 作用                                    | 谁在用（`path:line`）                                                          | 用在帧的哪一部分                                                         |
+| ---------------------------------------- | ------------------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| `ie_find(start, end, id, *len)`          | 顺序遍历元素（id+len+body），返回 body 指针；遇到截断就停 | `authflood.cpp:246/252`、`sae.cpp:219`、`btm.cpp` | 解析真 AP / 客户端的帧：SSID(0)、RSN(48)、Extended Capabilities(127) |
+| `rsn_has_akm_sae(rsn, len)`              | 在 RSN 的 AKM 列表里找 `00-0F-AC:8/9/24`    | `sae.cpp:223`（`AUTHFLOOD` 通过 `sae_classify()` 间接用）                        | 判定目标是不是 WPA3（决定是否启动/升级 SAE 洪泛）                                   |
+| `rsn_has_akm_psk(rsn, len)`              | 找 `00-0F-AC:2/4/6`                    | `sae.cpp:224`                                                             | 区分 `wpa2-psk` / `wpa2/wpa3` transition                           |
+| `rsn_mfpr_required(rsn, len)`            | 读 RSN Capabilities 的 MFPR 位（bit 6）    | **当前无人调用**（定义了、备着）                                                        | 原计划给"要不要提示 PMF 会挡"用；现在文档里靠静态判断，不靠运行时                             |
+| `extcap_has_bss_transition(extcap, len)` | 判 Extended Capabilities 的 bit 19      | `btm.cpp:165`                                                             | 客户端能力学习：不支持的 STA 被 `btmskip` 跳过                                  |
 
 两点现状值得记一下（与"以代码为准"有关）：
 
@@ -1387,33 +924,19 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
   没走 `ie_find()`。行为等价，但属于重复实现；将来统一时改这一处即可。
 - `rsn_mfpr_required()` 定义了却没有调用点。写代码时不要以为"PMF 判别已经自动做了"——
   模块里没有任何运行时 MFPR 判断，PMF 这条边界只在文档/注释里说明（§1 总表、§2.3、§7.1、§5.1）。
-- `qosnull.cpp` **不在**这张表里：QoS Null 帧没有元素（也没走 AP 的 beacon），它不需要
-  任何解析工具，只用 `WiFi.BSSID()/channel()` 拿目标。
 
 ---
 
-## 附录 E：与 `firmware/README.md` 的说法冲突（以代码与实测为准）
+## 附录 E：文档与当前实现的核对点
 
-写这份文档时按代码和实测逐条核过仓库里的说法，下面几处原来是**错的**，已在同一次改动里改掉
-（README/注释/GUI 文案都同步了）。留在这里是为了让后来者不要再按旧说法"修正"回去。
+本文件以当前 `firmware/` 实现及 `firmware/测试报告.md` 的三层证据为准。历史测量只说明对应日期、固件和实验对象，不自动代表当前模块仍保留全部旧帧型。`STATUS` 机器可读字段按源码原名记录；本次文档整理不改变回执契约。
 
-| 旧说法（出处） | 事实（依据） | 现在的写法 |
-| --- | --- | --- |
-| "BTM Request 不在 PMF 的 robust 集合里，PMF 不校验"（`btm.cpp` 头注释、`btm.h`、`firmware/README §5`、GUI 文案） | Action 帧里只有 Public(4)/HT(7)/Unprotected WNM(11)/Self-protected(15)/VHT(21)/厂商自定义(127) 不算 robust；category 10 **在**集合里。Linux 的 `_ieee80211_is_robust_mgmt_frame()` + `net/mac80211/rx.c` 会在协商了 PMF 时丢弃未保护的这类帧 | "PMF 关闭或可选（大多数 WPA2）时有效；强制 PMF 时被驱动丢弃"，见 §7.1 |
-| "CSA 不受 802.11w/PMF 保护"（`csa.cpp` 头注释、`firmware/README §5`、GUI 文案） | Spectrum Management action 帧**是** robust；真正不受保护的是 **beacon 里的 CSA IE** | 两条路径分开写，见 §4.1 |
-| "DELBA 不是 robust 管理帧，PMF 不校验"（`delba.cpp` 头注释、`delba.h`） | category 3（Block Ack）**在** robust 集合里 | "实测的 −99% 属于非 PMF 链路"，见 §5.1 |
-| ~~`TIMTSF ... tsf|both` 可用~~（该模块已下线） | beacon 的 timestamp 被 MAC 用自己的 TSF 覆盖（未关联时为 0），写字无效 | 模块改名 `TIM`，TSF 那半删除，见附录 A 与 §11 第 8 条 |
-| ~~TIM 位图按 `AID-1` 落位~~（该模块已下线，记录保留） | Partial Virtual Bitmap 按 AID 编号索引（bit 0 = AID 0 = 组播） | 改 `AID/8`+`AID%8`，空口复测 `bitmap=08`，见 §8.1 与 `测试报告 §4.4.7` |
-| "五个新模块只有 CLI，没有 LVGL 页面"（`AGENTS §11`） | 现在有了，而且六个帧级模块**共用一个页面**（`SCR_FRAME`） | 见 `firmware/README §7.2`；`UISCREEN` 认 `btm/tim/eapol/pspoll/sae/authflood` |
-| "帧级模块一律 20 帧/s"（`firmware/README §5`、`AGENTS §11`） | 只对普通管理帧/数据帧成立。**PM 位帧在 20 帧/s 下会在几百帧后打满缓存池并重启** | `pspoll.cpp` 自降到 10 帧/s（`kSendMs=100`），见 §13.4 与附录 B |
-| "PS 位欺骗只能用 Null Data"（上一版 §13） | 同一 bit 还能装在 QoS Null 与单播 Action(127) 里，三种实测都上空气、都能压吞吐 | 后来只留 QoS Null（最强），见 §13.2/§13.4 |
-
-另外两条"不是冲突，但容易误读"的：
-
-- ~~`STATUS timaid=` 与 `TIMTEST bmp_mask=` 的口径差异~~ —— 随 TIM 模块下线一并作废，记录留在 §8。
+- BTM 现行实现为 `btm.cpp`，BTM Action 属 robust 管理帧；PMF 强制时未保护帧可能被对端丢弃。
+- 旧实验条目见附录 A。
+- PM 位实验当前实现仅为 `qosnull.cpp` 的单播 QoS Null；旧 Null Data / Action 帧对比属于历史实验，不能描述为现行可选模式。
+- BSRP 既有结果限于帧级与指定实验 STA 的回应；吞吐对照未显示 Trigger 语义带来的端到端增益。
 
 ---
-
 ## 参考文献
 
 **标准**
@@ -1452,5 +975,9 @@ dialog token 与源 MAC，5 s 内对这个 STA 用它的 token 回（`rrmtokhit=
     "GETS OVERWRITTEN TO 0 BY HARDWARE"。
 12. `esp_wifi_get_tsf_time()` —— 读接口自身 TSF 的 API；本固件没有用它（未关联时为 0），
     但它是理解"为什么 beacon timestamp 写到空口上变成 0"的钥匙。
-13. ESP-IDF 文档 `esp_wifi_80211_tx` / `esp_wifi_set_promiscuous_ctrl_filter` /
-    `esp_wifi_register_80211_tx_cb` —— 注入、控制帧过滤、发送回调的官方说明。
+13. ESP-IDF v6.1 — [`ESP32 Wi-Fi API`](https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/network/esp_wifi.html)
+    与 [`ESP32-C5 Wi-Fi API`](https://docs.espressif.com/projects/esp-idf/en/stable/esp32c5/api-reference/network/esp_wifi.html)：
+    `esp_wifi_80211_tx()` 的支持帧型说明列出 Beacon、Probe Request/Response、Action、非 QoS Data，且注明不支持 QoS/加密帧；
+    用作平台公开接口边界，不替代本仓库的空口实测。
+14. IEEE Std 802.11be-2024 — [标准预览目录](https://store.accuristech.com/ieee/products/preview/2524517)：
+    用于核对 EHT Operation 与 Multi-Link element 的定义条目；元素内容和字段编码以正式标准文本为准。
