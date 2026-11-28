@@ -331,6 +331,10 @@ static void build_wifi(lv_obj_t *page) {
         if (object == NULL || object->title == NULL) {
             continue;
         }
+        // BLE 攻击走另一套射频和另一页，不能混进 WiFi 的攻击格子
+        if (strncmp(object->name, "ble", 3) == 0) {
+            continue;
+        }
         if ((s_atk_n % GRID_COLS) == 0) {
             row = make_row(page, ROW_H);
         }
@@ -382,6 +386,17 @@ static void build_ble(lv_obj_t *page) {
         make_btn(r2, "Info", on_line, (void *)"ble.info", BTN_H);
         lv_obj_t *r3 = make_row(page, ROW_H);
         make_btn(r3, "Random Addr", on_line, (void *)"ble.addr addr=random", BTN_H);
+        if (wb_find("blespam") != NULL) {
+            // 攻击格子：泛洪与弹窗各一个按钮，都走同一条协议行
+            lv_obj_t *r4 = make_row(page, ROW_H);
+            make_btn(r4, "Spam Flood", on_line, (void *)"blespam.start mode=flood", BTN_H);
+            make_btn(r4, "Popups", on_line, (void *)"blespam.start mode=popup", BTN_H);
+            make_btn(r4, "Win Popup", on_line,
+                     (void *)"blespam.start mode=popup template=microsoft_swiftpair", BTN_H);
+            lv_obj_t *r5 = make_row(page, ROW_H);
+            make_btn(r5, "Spam Stop", on_line, (void *)"blespam.stop", BTN_H);
+            make_btn(r5, "Templates", on_line, (void *)"blespam.list", BTN_H);
+        }
     }
     lv_obj_t *nav = make_row(page, ROW_H);
     make_btn(nav, "Back", on_nav_menu, NULL, BTN_H);

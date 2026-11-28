@@ -92,6 +92,24 @@ bool bf_adv_tx_power(bf_adv_t *set, int8_t dbm) {
     return ad_push(set, BF_AD_TX_POWER, &raw, 1);
 }
 
+bool bf_adv_service_data16(bf_adv_t *set, uint16_t uuid, const uint8_t *data, size_t n) {
+    if (set == NULL || (data == NULL && n > 0)) {
+        return false;
+    }
+    if (n + 3 > BF_AD_MAX) {
+        set->truncated = true;
+        return false;
+    }
+    // 类型 0x16 后面跟 UUID(2，小端) + 数据(n)，ad_push 负责补长度字节
+    uint8_t raw[BF_AD_MAX];
+    raw[0] = (uint8_t)(uuid & 0xFF);
+    raw[1] = (uint8_t)(uuid >> 8);
+    if (n > 0) {
+        memcpy(raw + 2, data, n);
+    }
+    return ad_push(set, BF_AD_SERVICE_DATA16, raw, n + 2);
+}
+
 bool bf_adv_mfr(bf_adv_t *set, uint16_t company_id, const uint8_t *data, size_t n) {
     if (set == NULL || (data == NULL && n > 0)) {
         return false;

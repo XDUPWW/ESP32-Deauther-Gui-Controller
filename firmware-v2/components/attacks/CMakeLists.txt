@@ -9,9 +9,10 @@ idf_component_register(
         "delba/delba.c"
         "eapol/eapol.c"
         "btm/btm.c"
+        "blespam/blespam.c"
         "qosnull/qosnull.c"
         "probe/probe.c"
         "sae/sae.c"
     INCLUDE_DIRS "include"
-    REQUIRES wifi_frame hal_wifi wtarget wbus platform esp_timer esp_hw_support
+    REQUIRES wifi_frame hal_wifi ble_frame hal_ble wtarget wbus platform esp_timer esp_hw_support
 )

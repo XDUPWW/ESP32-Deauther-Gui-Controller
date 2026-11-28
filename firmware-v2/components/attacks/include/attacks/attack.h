@@ -48,3 +48,5 @@ const attack_driver_t *authflood_attack(void);
 const attack_driver_t *sae_attack(void);
 const attack_driver_t *btm_attack(void);
 const attack_driver_t *qosnull_attack(void);
+// BLE 没编进固件时返回 NULL，注册方要判空。
+const attack_driver_t *blespam_attack(void);

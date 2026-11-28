@@ -265,6 +265,43 @@ def main():
            must=("on=1", "max=5", "total=", "skipped=", "rx="))
     expect(report, device, "monitor close", "monitor.stop", must=("monitor off",))
 
+    print("== ble attack ==")
+    help_out = device.command("system.help")
+    if not any("blespam" in line for line in help_out):
+        report.check("blespam 不在这个构建里（跳过）", True)
+    else:
+        expect(report, device, "ble.info", "ble.info",
+               must=("ready=1", "owner=", "adv_starts=", "cycles=", "last_cycle_us="))
+        expect(report, device, "templates listed", "blespam.list",
+               must=("templates n=", "apple_airpods", "microsoft_swiftpair", "platform=apple"))
+        expect(report, device, "popup bytes", "blespam.test mode=popup template=apple_airpods",
+               must=("adv len=31", "hex=1eff4c0007190120020c0e0a0c0e0a", "00"))
+        expect(report, device, "swiftpair bytes", "blespam.test mode=popup template=microsoft_swiftpair",
+               must=("adv len=31", "hex=1eff06000303", "00"))
+        expect(report, device, "bad mode", "blespam.start mode=bogus",
+               must=("ERR blespam.start: mode",))
+        expect(report, device, "bad raw", "blespam.test raw=zz",
+               must=("ERR blespam.test: raw",))
+        expect(report, device, "start flood", "blespam.start mode=flood cycle=100",
+               must=("blespam 开跑 mode=flood", "OK blespam.start"))
+        time.sleep(0.5)
+        info = device.command("ble.info")
+        report.check("attack owns the radio", any("owner=blespam" in l for l in info),
+                     repr(info[:4]))
+        report.check("cycles advanced", any("cycles=" in l and "cycles=0" not in l for l in info),
+                     repr(info[:4]))
+        expect(report, device, "stop flood", "blespam.stop",
+               must=("cycles=", "OK blespam.stop"))
+        time.sleep(0.5)
+        info = device.command("ble.info")
+        # 攻击停手后广播占用者归还；BLE 传输插件会在下一轮 poll 把 GATT 广播拉回来
+        report.check("control channel recovered",
+                     any("owner=gatt" in l or "owner=-" in l for l in info), repr(info[:4]))
+        # 下面的注入基准要求射频干净：BLE 广播和 Wi-Fi 紧排注入抢 2.4G，
+        # 会让 32 帧池排空变慢，偶发 0x101 重启。共存数据在实验里单独测。
+        expect(report, device, "ble adv off for radio bench", "ble.adv action=stop",
+               must=("adv stopped",))
+
     print("== 注入性能 ==")
     out = expect(report, device, "bench broadcast 30ms", "radio.tx_bench count=30 gap=30",
                  must=("fps=", "ok=30", "throttled=0", "err=0"), timeout=10)

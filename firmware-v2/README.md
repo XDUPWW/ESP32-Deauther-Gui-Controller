@@ -1,7 +1,7 @@
 # firmware-v2
 
 按分层重写的 ESP32 无线测试固件工程。屏幕、串口、总线、HAL 都已跑通，攻击侧已迁入 10 个模块
-（deauth / probe / delba / ba / eapol / csa / authflood / sae / btm / qosnull）。
+（deauth / probe / delba / ba / eapol / csa / authflood / sae / btm / qosnull / blespam）。
 
 ## 分层
 
@@ -53,8 +53,8 @@ L5 驱动       hal_wifi：注入、混杂接收、信道、扫描、SoftAP、�
 - `wifi_frame`：probe request 组帧、IE 查找、beacon/probe response 解析（SSID/信道/RSN AKM/MFPR/
   扩展能力）、TIM 与 CSA 解析；其余帧构造仍是空实现
 - `wtarget`：设备登记表（AP 按 BSSID upsert、RSSI 取最强、STA 带归属 AP）
-- `attacks`：攻击驱动描述符与登记表，已注册 10 个（`deauth` `probe` `delba` `ba` `eapol`
-  `csa` `authflood` `sae` `btm` `qosnull`），每个模块自带上限节拍与计数，`attacks_tick` 统一驱动
+- `attacks`：攻击驱动描述符与登记表，已注册 11 个（`deauth` `probe` `delba` `ba` `eapol`
+  `csa` `authflood` `sae` `btm` `qosnull` `blespam`），每个模块自带上限节拍与计数，`attacks_tick` 统一驱动
 - `wireless_ui`：LVGL 9 + esp_lvgl_port 显示与触摸、触摸校准存 NVS、作为 `transport` 插件显示同一份回执；
   首页是 `WiFi Attack` / `BLE Attack` / `Touch` / 诊断入口，WiFi 页的攻击格子从 wbus 注册表长出来
   （对象填了 `title` 就占一格），点一下就发 `<obj>.start idx=<选中的目标>`
@@ -113,11 +113,36 @@ probe resp/action/data/null/LLC-SNAP/BAR/RTS，签名没变、实现不再是空
 | `sae` | `sae.start idx=..` / `.stop` / `.test` |
 | `btm` | `btm.start idx=.. [timer=..] [sta=mac] [cand=mac] [cand-ch=..] [cand-info=..]` / `.stop` / `.test` |
 | `qosnull` | `qosnull.start idx=.. [sta=mac] [tid=0..15]` / `.stop` / `.release` / `.test` |
+| `blespam` | `blespam.start [mode=flood\|popup\|mix\|xiaomi] [template=x] [raw=hex] [addr=mac] [itvl=20] [cycle=50] [rotate=addr\|data\|both] [connect=1]` / `.stop` / `.test` / `.list` |
 
 `qosnull` 冒充受害 STA 给 AP 回一个单播 QoS Null（ToDS，26 字节，无载荷）：PM=1 让 AP 把它
 当成睡了、下行缓存进 TIM，每 6 帧改发 PM=0 把缓存"放"给不在听的站，`.release` 也发这一帧。
 节拍 10 帧/s——这类短帧 20 帧/s 几百帧就把帧池抽干。判据看 `qndl`（发向受害者的下行帧，
 生效时停止增长）；边界是 AP 会老化缓存、受害者自己的 PM=0 上行会把状态翻回来。
+
+`blespam` 是 BLE 侧的攻击。`mode=flood` 每轮换随机 static 地址与名称，把周边手机的扫描列表
+刷满；`mode=popup` 轮流发厂商载荷模板，让目标 OS 弹配对/设置卡片。两种模式共用
+"停广播 → 换地址/换载荷 → 再开"的轮换，每 `cycle` 毫秒一次；`itvl` 是广播间隔，
+下限 20ms（不是 100ms，`HAL_BLE_ITVL_MIN` 那个 100ms 只是控制通道的保守值）。
+模板表现在两条：`apple_airpods`（字节按公开协议资料填入，**未做 iOS 实测**）与
+`microsoft_swiftpair`（2026-11-28 在本机 Windows 11 25H2 build 26200 实测：连续发送
+10 秒后通知库 `Windows.SystemToast.BthQuickPair` 的 `LastNotificationAddedTime` 前进，
+同长度 Apple 载荷对照组不动）。放不进 legacy 31 字节的模板会被 `blespam.test` 拒绝，
+不静默截断。
+
+`mode=xiaomi` 是小米通道：帧 `02 01 08 0e 16 95 fe 33 58 fa 59 01 <MAC 6 字节反序> 08`
+（19 字节），每轮生成新的随机 static 地址并回填进载荷，广播地址与载荷 MAC 一致。
+2026-11-28 在 Redmi K60 / HyperOS 3.0 实测：立即弹「发现小米手环10」卡片；20 秒内手动
+关掉 5 次、5 次都重弹。限流是**按地址**的（同一地址 3 次后 `ignore the device pop-uo 3 times`，
+换地址即重置）。`addr=<mac>` 可固定广播地址，用于复现单帧；不指定时每轮自动换。
+
+启动时抢占 GATT 控制通道
+的广播（`ble.info` 的 `owner=` 能看到），`stop` 后由 BLE 传输插件重新拉起。经典 ESP32 只有
+legacy 广播；C5 的扩展广播要在 `sdkconfig.c5` 打开 `CONFIG_BT_NIMBLE_EXT_ADV`，本期没开。
+
+实测注意：BLE 广播开着时跑 `radio.tx_bench ... unicast=1 gap=0`，32 帧池排空变慢，会偶发
+`0x101` 并按 hal_tx 的规则重启。做注入基准前先 `ble.adv action=stop`；共存影响要单独标定，
+不要把它算进 Wi-Fi 基线。
 
 ### BTM 强制漫游：必须自带一个可加入的目标 BSS
 
@@ -298,6 +323,12 @@ UI 层不用改一行。
   `qosnull` 的候选 STA 表就放在栈上，`radio.tx_bench` 那 6 KB 静态缓冲是最大的固定开销。
 - 默认事件循环在 `hal_wifi_init()` 里建：WiFi 驱动从 `esp_wifi_start()` 起就往里塞事件，
   循环不存在时每条事件都刷一行 `E wifi: failed to post WiFi event=..`，跳信道的模块能把串口塞死。
+- **BLE 的 `ble_npl_event` 不能每轮重新初始化**：事件由 host 任务回调和调用方共享，
+  旧实现每次提交都 `ble_npl_event_init` + 清零整块 job；host 任务刚 give 信号量、还没从
+  回调返回时，调用方就可能复用同一块内存，把事件队列的 next 指针踩坏。表现是
+  `blespam` 轮换到 10 次/秒时整板重启，2 次/秒看不出来（实测同轮数）。现在改成
+  **单槽 + 持久事件**，槽位是否空闲由独立的 `s_job_pending` 控制；修复后
+  10 次/秒 × 67 轮 `cycle_err=0`、无重启。BLE 的写操作因此天然串行化，不要再加并发提交。
 
 ## 许可证
 

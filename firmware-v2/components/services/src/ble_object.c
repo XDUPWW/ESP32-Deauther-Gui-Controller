@@ -107,13 +107,22 @@ static esp_err_t ble_info(wb_args_t *args, wb_reply_t *reply) {
 
     hal_ble_stats_t stats;
     hal_ble_stats(&stats);
-    wb_reply_line(reply, "ready=%d adv=%d scan=%d addr=%s type=%s", hal_ble_ready() ? 1 : 0,
-                  hal_ble_adv_running() ? 1 : 0, hal_ble_scan_running() ? 1 : 0, text,
+    wb_reply_line(reply, "ready=%d adv=%d scan=%d owner=%s addr=%s type=%s",
+                  hal_ble_ready() ? 1 : 0, hal_ble_adv_running() ? 1 : 0,
+                  hal_ble_scan_running() ? 1 : 0,
+                  (hal_ble_adv_owner() != NULL) ? hal_ble_adv_owner() : "-", text,
                   (type == 0) ? "public" : "random");
     wb_reply_line(reply, "adv_starts=%u adv_err=%u scan_reports=%u peers=%u timeouts=%u last_rc=%d",
                   (unsigned)stats.adv_starts, (unsigned)stats.adv_errors,
                   (unsigned)stats.scan_reports, (unsigned)hal_ble_scan_count(),
                   (unsigned)stats.job_timeouts, (int)stats.last_rc);
+    wb_reply_line(reply, "cycles=%u cycle_err=%u addr_rot=%u data_rot=%u conn_refused=%u claim_denied=%u last_cycle_us=%u",
+                  (unsigned)stats.adv_cycles, (unsigned)stats.cycle_errors,
+                  (unsigned)stats.addr_rotations, (unsigned)stats.data_rotations,
+                  (unsigned)stats.conn_refused, (unsigned)stats.claim_denied,
+                  (unsigned)stats.last_cycle_us);
+    wb_reply_line(reply, "scan_upserts=%u scan_full_drops=%u", (unsigned)stats.scan_upserts,
+                  (unsigned)stats.scan_full_drops);
     wb_reply_line(reply, "heap_after_init=%u heap_now=%u", (unsigned)stats.heap_after_init,
                   (unsigned)esp_get_free_heap_size());
     return ESP_OK;

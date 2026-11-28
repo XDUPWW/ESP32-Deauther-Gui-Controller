@@ -36,6 +36,7 @@ echo "== build =="
     host_tests/test_ble_frame.c \
     components/ble_frame/src/adv.c \
     components/ble_frame/src/addr.c \
+    components/ble_frame/src/payload.c \
     -o build/host/test_ble_frame
 
 echo "== run =="

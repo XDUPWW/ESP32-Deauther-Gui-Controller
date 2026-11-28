@@ -24,6 +24,9 @@
 #define BF_AD_NAME_SHORT 0x08
 #define BF_AD_NAME_COMPLETE 0x09
 #define BF_AD_TX_POWER 0x0A
+#define BF_AD_SERVICE_DATA16 0x16
+#define BF_AD_SERVICE_DATA32 0x20
+#define BF_AD_SERVICE_DATA128 0x21
 #define BF_AD_MFR 0xFF
 
 // Flags 各个位，Core Spec Vol 3 Part C §11.2.3.1。
@@ -52,6 +55,9 @@ bool bf_adv_uuid128(bf_adv_t *set, const uint8_t uuid[16], bool complete);
 bool bf_adv_name(bf_adv_t *set, const char *name, bool truncate);
 
 bool bf_adv_tx_power(bf_adv_t *set, int8_t dbm);
+
+// 16 位服务数据：AD 类型 0x16，后面是 UUID（小端）和数据。Fast Pair 用这条。
+bool bf_adv_service_data16(bf_adv_t *set, uint16_t uuid, const uint8_t *data, size_t n);
 
 // 厂商自定义数据，company_id 是 Bluetooth SIG 分配的小端编号（Apple 0x004C）。
 bool bf_adv_mfr(bf_adv_t *set, uint16_t company_id, const uint8_t *data, size_t n);

@@ -8,6 +8,7 @@
 
 #include "ble_frame/addr.h"
 #include "ble_frame/adv.h"
+#include "ble_frame/payload.h"
 
 static int g_pass;
 static int g_fail;
@@ -113,6 +114,58 @@ static void test_mfr(void) {
     CHECK(buf[0] == 0x1E, "长度字段 = 1 + 2 + 27");
 }
 
+static void test_service_data(void) {
+    printf("服务数据\n");
+    uint8_t buf[BF_ADV_LEGACY_MAX];
+    bf_adv_t set;
+    bf_adv_init(&set, buf, sizeof(buf));
+    const uint8_t data[2] = {0x01, 0x02};
+    CHECK(bf_adv_service_data16(&set, 0xFE2C, data, 2), "service data pushed");
+    CHECK(set.len == 6, "service data 是 6 字节");
+    CHECK(buf[0] == 0x05 && buf[1] == BF_AD_SERVICE_DATA16, "service data header");
+    CHECK(buf[2] == 0x2C && buf[3] == 0xFE, "uuid16 小端");
+    CHECK(buf[4] == 0x01 && buf[5] == 0x02, "service data body");
+}
+
+static void test_payload(void) {
+    printf("弹窗模板\n");
+    CHECK(bf_payload_count() >= 1, "至少一条模板");
+    const bf_payload_t *tpl = bf_payload_find("apple_airpods");
+    CHECK(tpl != NULL, "按名字找到 apple_airpods");
+    CHECK(bf_payload_find("nope") == NULL, "未知名字返回 NULL");
+    CHECK(strcmp(bf_platform_name(BF_PLAT_APPLE), "apple") == 0, "平台名");
+
+    uint8_t buf[BF_ADV_LEGACY_MAX];
+    bf_adv_t set;
+    bf_adv_init(&set, buf, sizeof(buf));
+    CHECK(bf_payload_render(tpl, &set), "渲染进 31 字节");
+    static const uint8_t kExpected[31] = {
+        0x1E, 0xFF, 0x4C, 0x00, 0x07, 0x19, 0x01, 0x20, 0x02, 0x0C, 0x0E,
+        0x0A, 0x0C, 0x0E, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    CHECK(set.len == sizeof(kExpected), "正好 31 字节");
+    CHECK(!set.truncated, "不截断");
+    CHECK(memcmp(buf, kExpected, sizeof(kExpected)) == 0, "整串字节");
+
+    uint8_t small[8];
+    bf_adv_init(&set, small, sizeof(small));
+    CHECK(!bf_payload_render(tpl, &set), "放不下就拒绝，不截断");
+    CHECK(set.truncated, "拒绝要置标记");
+
+    const bf_payload_t *swift = bf_payload_find("microsoft_swiftpair");
+    CHECK(swift != NULL, "找到 microsoft_swiftpair");
+    bf_adv_init(&set, buf, sizeof(buf));
+    CHECK(bf_payload_render(swift, &set), "SwiftPair 渲染进 31 字节");
+    static const uint8_t kSwift[31] = {
+        0x1E, 0xFF, 0x06, 0x00, 0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    CHECK(set.len == sizeof(kSwift), "SwiftPair 正好 31 字节");
+    CHECK(memcmp(buf, kSwift, sizeof(kSwift)) == 0, "SwiftPair 整串字节");
+}
+
 static void test_full(void) {
     printf("填满后拒绝\n");
     uint8_t buf[BF_ADV_LEGACY_MAX];
@@ -179,6 +232,8 @@ int main(void) {
     test_name_truncated();
     test_uuid();
     test_mfr();
+    test_service_data();
+    test_payload();
     test_full();
     test_hex();
     test_addr();

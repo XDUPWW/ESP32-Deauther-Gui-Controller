@@ -88,10 +88,17 @@
 
 ## 4. BLE
 
+> 实现落在 `firmware-v2/`（`hal_ble` + `ble_frame` + `attacks/blespam`）。legacy `firmware/`
+> 没有 BT 栈，不动它。经典 ESP32 只有 legacy 广播（31 字节），C5 的扩展广播要单独开
+> `CONFIG_BT_NIMBLE_EXT_ADV`。
+
 | 状态 | 条目 | 交付物 | 怎么算完成 |
 | --- | --- | --- | --- |
-| `[ ]` | **BLE 广播泛洪**：NimBLE 非连接广播，随机 MAC/名称，限速与计数可观测 | `src/ble_flood.c`、命令 `BLE_FLOOD [on/off]` | `STATUS` 有 `ble=` 计数；另一台手机扫描时列表被刷满 |
-| `[ ]` | **共存评估**：Wi-Fi 与 BLE 共用射频，洪泛时 Wi-Fi 扫描/攻击的掉帧率 | 测试报告一节 | 给出"BLE 洪泛开着时 Wi-Fi 攻击帧率下降 X%"的实测数字 |
+| `[~]` | **BLE 广播泛洪**（v2）：每轮换随机 static 地址与名称，`cycle` 控制轮换节拍 | `components/attacks/blespam/`、`blespam.start mode=flood` / `.stop` / `.test` / `.list` | 代码、对象、UI 格子、`ble.info` 计数已落地；空口速率（reports/s、唯一 MAC/s）与手机扫描列表污染未实测 |
+| `[~]` | **受害设备弹窗模板**：厂商载荷轮换，触发 OS 配对/设置卡片 | `components/ble_frame/payload.{h,c}`、`blespam.start mode=popup` | 表里两条：`apple_airpods`（UNVERIFIED，未做 iOS 实测）、`microsoft_swiftpair`（2026-11-28 Windows 11 25H2 build 26200 实测：SwiftPair 通知时间戳前进，Apple 载荷对照不动）。Samsung / Fast Pair 与 iOS/Android 矩阵未做；放不下的模板由 `.test` 拒绝 |
+| `[x]` | **小米手环 MiBeacon 回放**：`0x17` 帧（11 字节）无效；手环还有一条 `0x33` 眼镜帧（12 字节 Service Data），弹窗走这条 | `blespam.start mode=xiaomi`（自动生成地址并回填载荷 MAC） | Redmi K60 / HyperOS 3.0 实测：`0201080e1695fe3358fa5901<MAC 反序>08`，广播地址与载荷 MAC 一致时立即弹「发现小米手环10」卡片；`mode=xiaomi` 换 MAC 每轮重生，20 秒手动关掉 5 次、5 次都重弹；限流按地址（3 次）持久化，换地址即重置 |
+| `[ ]` | **共存评估**：Wi-Fi 与 BLE 共用 2.4G 射频，泛洪时 Wi-Fi 扫描/攻击的掉帧率 | `tools/` 脚本 + 测试报告一节 | 给出"BLE 泛洪开着时 Wi-Fi 攻击帧率下降 X%"与反向的实测数字，写成操作包线。已知：BLE 广播开着时 `radio.tx_bench unicast=1 gap=0` 会让 32 帧池排空变慢、偶发 `0x101` 重启（selftest 实测），需量化 |
+| `[ ]` | **BLE 弹窗与泛洪的效果矩阵**：模板 × OS 版本 × 屏幕状态 × 广播间隔 × 地址轮换 | 实验记录 | 每个平台至少一条模板的首次弹窗时延、60s 次数、限流阈值；未观测到的版本如实标注 |
 
 ## 5. 框架重构路线图（P0–P10）
 

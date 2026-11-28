@@ -119,10 +119,12 @@ idf.py -B build_c5 -D SDKCONFIG=sdkconfig.c5 -p COM8 flash
 | transport 插件（serial_text/lvgl_queue/ble_nus/tcp_json） | 只许 `transport` | `wbus.h`、attacks、`esp_wifi_*` |
 | transport_core | `wbus` | 攻击内部头 |
 | wbus | 无 Arduino、无 esp_* | 任何 wifi / 802.11 / MAC 字样（grep 为 0 是硬指标） |
-| services | wbus、hal_wifi、wtarget、platform | `Serial` |
-| attacks | wifi_frame、hal_wifi、wtarget、wbus、platform | `esp_wifi_*`、`Serial`、printf 格式化 |
+| services | wbus、hal_wifi、hal_ble、wtarget、platform | `Serial` |
+| attacks | wifi_frame、hal_wifi、ble_frame、hal_ble、wtarget、wbus、platform | `esp_wifi_*`、`Serial`、printf 格式化 |
 | wifi_frame | 无 | `Arduino.h`、esp_* |
+| ble_frame | 无 | `Arduino.h`、esp_* |
 | hal_wifi | esp_wifi / esp_netif / esp_event / esp_timer | 全仓唯一允许处；唯一调 `esp_wifi_set_channel` 与 `esp_wifi_80211_tx` 的地方 |
+| hal_ble | bt（NimBLE）、ble_frame、esp_timer | 全仓唯一允许调 `ble_gap_*` / `ble_hs_*` 的地方；不碰 `esp_wifi_*` |
 | wireless_ui | transport 客户端 API | 直连 wbus、手写命令文本 |
 | platform | `nvs_flash`、`esp_driver_uart/gpio/spi`、`esp_timer`、`esp_lcd`、`esp_lcd_ili9341` | 任何无线 / 帧 / 总线概念 |
 

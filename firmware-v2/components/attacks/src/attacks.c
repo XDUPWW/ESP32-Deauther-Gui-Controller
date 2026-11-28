@@ -61,6 +61,11 @@ void attacks_start(void) {
     attack_register(sae_attack());
     attack_register(btm_attack());
     attack_register(qosnull_attack());
+    // BLE 没编进固件时返回 NULL，不能直接塞进表里
+    const attack_driver_t *blespam = blespam_attack();
+    if (blespam != NULL) {
+        attack_register(blespam);
+    }
 }
 
 void attacks_stop_all(void) {

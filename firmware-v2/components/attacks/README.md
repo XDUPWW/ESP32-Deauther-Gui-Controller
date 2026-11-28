@@ -14,8 +14,12 @@
 | `eapol` | EAPOL-Start / Logoff 洪泛 | `eapol.start` `eapol.stop` |
 | `authflood` | Auth / Assoc 洪泛，WPA3 目标可转 SAE | `authflood.start` `authflood.stop` |
 | `sae` | SAE Commit 洪泛，回显 anti-clogging token | `sae.start` `sae.stop` |
+| `blespam` | BLE 广播泛洪 / 弹窗模板轮换（占用 NimBLE 广播，走 `hal_ble` 仲裁） | `blespam.start` `blespam.stop` `blespam.test` `blespam.list` |
 
 每个模块都有 `<对象>.test`，不发射，只 dump 组出来的帧字节。
+
+`blespam` 是唯一走 BLE 射频的模块：泛洪换随机地址与名称，弹窗换厂商载荷模板；
+两者共用"停广播 → 换地址/换载荷 → 再开"的轮换，不建立连接。
 
 `tim` 不做了；PS-Poll 那条路换成了单播 QoS Null，见 `qosnull/`。
 

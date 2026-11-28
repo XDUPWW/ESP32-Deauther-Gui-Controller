@@ -9,7 +9,10 @@
 
 #include "esp_err.h"
 
-// 广播间隔单位 0.625ms。规范下限 100ms，上限 10.24s。
+// 广播间隔单位 0.625ms。规范下限是 20ms（Core Spec Vol 6 Part B §4.4.2.2，
+// HCI 0x0020）。HAL_BLE_ITVL_MIN 是控制通道用的保守值 100ms，不是规范值；
+// 泛洪/弹窗这类要压广播率的场景传 HAL_BLE_ITVL_HCI_MIN 起步。
+#define HAL_BLE_ITVL_HCI_MIN 32
 #define HAL_BLE_ITVL_MIN 160
 #define HAL_BLE_ITVL_MAX 16384
 
@@ -32,9 +35,18 @@ typedef struct {
 typedef struct {
     uint32_t adv_starts;
     uint32_t adv_errors;
+    uint32_t adv_cycles;        // 原子轮换成功次数
+    uint32_t cycle_errors;      // 轮换中途失败（地址/数据/启动任一步）
+    uint32_t addr_rotations;
+    uint32_t data_rotations;
+    uint32_t conn_refused;      // 攻击广播被连上后立刻拆掉的次数
+    uint32_t claim_denied;      // 广播被别的占用者拿着
     uint32_t scan_reports;
+    uint32_t scan_upserts;      // 命中已有地址的广播报告
+    uint32_t scan_full_drops;   // 表满后丢掉的报告（不能让饱和看起来像零命中）
     uint32_t job_timeouts;      // 投给 host 任务却没在超时内回来的次数
     uint32_t heap_after_init;   // NimBLE 起来之后剩多少堆，用来量它吃了多少
+    uint32_t last_cycle_us;     // 最近一次轮换从提交到返回的墙钟耗时
     int32_t last_rc;            // 最后一次 NimBLE 返回码
 } hal_ble_stats_t;
 
@@ -61,6 +73,32 @@ esp_err_t hal_ble_adv_start(uint16_t itvl_min, uint16_t itvl_max, bool connectab
 esp_err_t hal_ble_adv_stop(void);
 
 bool hal_ble_adv_running(void);
+
+// 广播占用者：控制台、GATT 串口、攻击模块都可能改广播，同一时刻只允许一个。
+// 抢不到返回 ESP_ERR_INVALID_STATE，现有占用者从 hal_ble_adv_owner() 读。
+esp_err_t hal_ble_adv_claim(const char *owner);
+void hal_ble_adv_release(const char *owner);
+const char *hal_ble_adv_owner(void);
+// 抢占：攻击要独占射频时用。返回被顶掉的占用者（可能是 NULL），回执里要说明。
+const char *hal_ble_adv_preempt(const char *owner);
+
+// 一次原子轮换：stop → 换地址 → 换广播数据 → 换扫描响应 → start。
+// 五步都在 host 任务里做完，中间不会被别的调用插进来。控制器不允许在广播
+// 期间改随机地址，所以"停"是必须的。took_us 可为 NULL。
+typedef struct {
+    const uint8_t *addr;      // NULL = 不换地址
+    const uint8_t *adv;
+    size_t adv_len;
+    const uint8_t *rsp;       // NULL = 不设扫描响应
+    size_t rsp_len;
+    uint16_t itvl;            // 0.625ms 单位；0 用 HAL_BLE_ITVL_HCI_MIN
+    bool connectable;
+} hal_ble_adv_cycle_t;
+
+esp_err_t hal_ble_adv_cycle(const hal_ble_adv_cycle_t *cycle, uint32_t *took_us);
+
+// 扫描响应单独设。弹窗模板放不进 31 字节广播时用它，容量同样是 31。
+esp_err_t hal_ble_scan_rsp_set(const uint8_t *data, size_t len);
 
 // duration_ms 传 0 表示一直扫下去。扫描期间新出现的设备进 peer 表。
 esp_err_t hal_ble_scan_start(uint32_t duration_ms);

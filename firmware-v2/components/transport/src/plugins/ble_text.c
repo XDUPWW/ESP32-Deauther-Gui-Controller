@@ -49,7 +49,13 @@ static esp_err_t ble_start(transport_plugin_t *self) {
 // 返回 true 表示还没轮到读数据，本轮先返回
 static bool ble_lazy_start(void) {
     if (s_gatt_started) {
-        return false;
+        // 攻击模块 stop 后会把广播占用者还回来，但不会替 GATT 重新开广播；
+        // 这里补一次。占用者仍是 gatt（比如控制台手动 adv stop）时不动。
+        if (hal_ble_adv_owner() == NULL && !hal_ble_adv_running()) {
+            s_gatt_started = false;
+        } else {
+            return false;
+        }
     }
     if (!hal_ble_ready()) {
         return true;

@@ -11,6 +11,7 @@
 
 #include "esp_log.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -22,6 +23,7 @@
 #include "host/ble_hs_mbuf.h"
 #include "host/ble_hs_id.h"
 #include "host/util/util.h"
+#include "nimble/hci_common.h"
 #include "nimble/nimble_npl.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
@@ -30,35 +32,46 @@ static const char *TAG = "hal_ble";
 
 // NimBLE 的 host 跑在自己的任务里，ble_gap_* 必须在那个任务的上下文里调。
 // 所以这里做一个小任务队列：谁的线程想动 BLE，就把活丢过去再等结果。
-#define JOB_POOL 4
+// 扫响应和 legacy 广播一样只有 31 字节；扩展广播当前没开，不为此占 DRAM。
 #define JOB_WAIT_MS 3000
+#define JOB_RSP_MAX HAL_BLE_ADV_LEGACY_MAX
+#define JOB_ADV_MAX HAL_BLE_ADV_EXT_MAX
 
 typedef enum {
     OP_ADDR_SET = 0,
     OP_ADV_SET,
     OP_ADV_START,
     OP_ADV_STOP,
+    OP_ADV_CYCLE,
+    OP_RSP_SET,
     OP_SCAN_START,
     OP_SCAN_STOP,
 } ble_op_t;
 
 typedef struct {
-    struct ble_npl_event ev;
     ble_op_t op;
-    bool used;
-    SemaphoreHandle_t done;
     int rc;
-    uint8_t data[HAL_BLE_ADV_EXT_MAX];
+    uint8_t data[JOB_ADV_MAX];
     size_t len;
+    uint8_t rsp[JOB_RSP_MAX];
+    size_t rsp_len;
     uint8_t addr[6];
+    bool has_addr;
     uint16_t itvl_min;
     uint16_t itvl_max;
     uint32_t duration_ms;
     bool connectable;
 } ble_job_t;
 
-static ble_job_t s_jobs[JOB_POOL];
-static SemaphoreHandle_t s_job_lock;
+// 单槽 + 持久事件：以前每次提交都重新初始化 ble_npl_event，而 host 任务
+// 刚 give 信号量、还没从回调返回时，调用方就可能复用同一块内存并 memset，
+// 结果把事件队列里的 next 指针踩坏——节拍快到 10 次/秒时必重启。
+// 现在事件只初始化一次，job 是否空闲由 s_job_pending 单独控制。
+static ble_job_t s_job;
+static struct ble_npl_event s_job_event;
+static bool s_job_event_ready;
+static volatile bool s_job_pending;
+static SemaphoreHandle_t s_job_done;
 static struct ble_npl_eventq *s_evq;
 static TaskHandle_t s_host_task;
 static bool s_inited;
@@ -66,6 +79,7 @@ static bool s_synced;
 static uint8_t s_own_addr_type = BLE_OWN_ADDR_PUBLIC;
 static uint8_t s_id_addr[6];
 static volatile bool s_adv_running;
+static const char *s_adv_owner;
 static struct ble_gap_adv_params s_adv_params;
 static bool s_gatt_ready;
 static volatile bool s_scan_running;
@@ -119,10 +133,13 @@ static void peer_record(const struct ble_gap_disc_desc *desc) {
             }
             s_peers[i].data_len = len;
             memcpy(s_peers[i].data, desc->data, len);
+            s_stats.scan_upserts++;
             return;
         }
     }
     if (n >= HAL_BLE_PEER_MAX) {
+        // 表满不能让报告"消失得无影无踪"，否则泛洪量会被误读成零命中
+        s_stats.scan_full_drops++;
         return;
     }
     hal_ble_peer_t *slot = &s_peers[n];
@@ -151,6 +168,16 @@ static int gap_event(struct ble_gap_event *event, void *arg) {
         case BLE_GAP_EVENT_DISC_COMPLETE:
             s_scan_running = false;
             return 0;
+        case BLE_GAP_EVENT_CONNECT:
+            // 弹窗模板是可连接广播，受害设备点"连接"会占掉唯一的连接槽，也会让
+            // 这台板子看起来"配对成功"。攻击期间一律立即拆掉，只留计数。
+            if (event->connect.status == 0 && s_adv_owner != NULL &&
+                strcmp(s_adv_owner, "blespam") == 0) {
+                s_stats.conn_refused++;
+                ble_gap_terminate(event->connect.conn_handle, BLE_ERR_REM_USER_CONN_TERM);
+                return 0;
+            }
+            return gatt_handle_event(event);
         case BLE_GAP_EVENT_ADV_COMPLETE:
             s_adv_running = false;
             return 0;
@@ -206,6 +233,62 @@ static int job_execute(const ble_job_t *job) {
             s_adv_running = false;
             return (rc == BLE_HS_EALREADY) ? 0 : rc;
         }
+        case OP_ADV_CYCLE: {
+            // 控制器不允许广播期间改随机地址，所以先停。停失败只可能是本来没在广播。
+            int rc = ble_gap_adv_stop();
+            if (rc != 0 && rc != BLE_HS_EALREADY) {
+                s_stats.cycle_errors++;
+                return rc;
+            }
+            s_adv_running = false;
+            if (job->has_addr) {
+                uint8_t wire[6];
+                addr_to_wire(job->addr, wire);
+                if ((wire[5] & 0xC0) != 0xC0) {
+                    s_stats.cycle_errors++;
+                    return BLE_HS_EINVAL;
+                }
+                rc = ble_hs_id_set_rnd(wire);
+                if (rc != 0) {
+                    s_stats.cycle_errors++;
+                    return rc;
+                }
+                s_own_addr_type = BLE_OWN_ADDR_RANDOM;
+                memcpy(s_id_addr, job->addr, 6);
+                s_stats.addr_rotations++;
+            }
+            rc = ble_gap_adv_set_data(job->data, (int)job->len);
+            if (rc != 0) {
+                s_stats.cycle_errors++;
+                return rc;
+            }
+            if (job->rsp_len > 0) {
+                rc = ble_gap_adv_rsp_set_data(job->rsp, (int)job->rsp_len);
+                if (rc != 0) {
+                    s_stats.cycle_errors++;
+                    return rc;
+                }
+            }
+            struct ble_gap_adv_params params;
+            memset(&params, 0, sizeof(params));
+            params.conn_mode = job->connectable ? BLE_GAP_CONN_MODE_UND : BLE_GAP_CONN_MODE_NON;
+            params.disc_mode = BLE_GAP_DISC_MODE_GEN;
+            params.itvl_min = job->itvl_min;
+            params.itvl_max = job->itvl_max;
+            s_adv_params = params;
+            rc = ble_gap_adv_start(s_own_addr_type, NULL, BLE_HS_FOREVER, &params, gap_event, NULL);
+            if (rc != 0) {
+                s_stats.cycle_errors++;
+                return rc;
+            }
+            s_adv_running = true;
+            s_stats.adv_starts++;
+            s_stats.adv_cycles++;
+            s_stats.data_rotations++;
+            return 0;
+        }
+        case OP_RSP_SET:
+            return ble_gap_adv_rsp_set_data(job->rsp, (int)job->rsp_len);
         case OP_SCAN_START: {
             struct ble_gap_disc_params params;
             memset(&params, 0, sizeof(params));
@@ -233,41 +316,22 @@ static int job_execute(const ble_job_t *job) {
 }
 
 static void job_handler(struct ble_npl_event *ev) {
-    ble_job_t *job = ble_npl_event_get_arg(ev);
-    if (job == NULL) {
-        return;
-    }
-    job->rc = job_execute(job);
-    s_stats.last_rc = job->rc;
-    if (job->done != NULL) {
-        xSemaphoreGive(job->done);
+    (void)ev;
+    s_job.rc = job_execute(&s_job);
+    s_stats.last_rc = s_job.rc;
+    // 先放 pending、再 give：回调这之后不再碰 s_job，调用方可以安全复用
+    s_job_pending = false;
+    if (s_job_done != NULL) {
+        xSemaphoreGive(s_job_done);
     }
 }
 
 static ble_job_t *job_alloc(void) {
-    if (s_job_lock == NULL) {
+    if (s_job_pending) {
         return NULL;
     }
-    ble_job_t *found = NULL;
-    xSemaphoreTake(s_job_lock, portMAX_DELAY);
-    for (int i = 0; i < JOB_POOL; i++) {
-        if (!s_jobs[i].used) {
-            found = &s_jobs[i];
-            break;
-        }
-    }
-    if (found != NULL) {
-        memset(found, 0, sizeof(*found));
-        found->used = true;
-    }
-    xSemaphoreGive(s_job_lock);
-    return found;
-}
-
-static void job_release(ble_job_t *job) {
-    xSemaphoreTake(s_job_lock, portMAX_DELAY);
-    job->used = false;
-    xSemaphoreGive(s_job_lock);
+    memset(&s_job, 0, sizeof(s_job));
+    return &s_job;
 }
 
 static esp_err_t job_submit(ble_job_t *job) {
@@ -275,40 +339,35 @@ static esp_err_t job_submit(ble_job_t *job) {
         return ESP_ERR_NO_MEM;
     }
     if (!s_inited || s_evq == NULL) {
-        job_release(job);
         return ESP_ERR_INVALID_STATE;
     }
     // 已经在 host 任务里（比如扫描回调里），再投队列就是自己等自己
     if (xTaskGetCurrentTaskHandle() == s_host_task) {
         job->rc = job_execute(job);
         s_stats.last_rc = job->rc;
-        const esp_err_t err = rc_to_err(job->rc);
-        job_release(job);
-        return err;
+        return rc_to_err(job->rc);
+    }
+    if (s_job_done == NULL) {
+        return ESP_ERR_INVALID_STATE;
     }
 
-    SemaphoreHandle_t done = xSemaphoreCreateBinary();
-    if (done == NULL) {
-        job_release(job);
-        return ESP_ERR_NO_MEM;
+    // 清掉上一次可能残留的 give，避免把上一轮的结果当成这一轮的
+    while (xSemaphoreTake(s_job_done, 0) == pdTRUE) {
     }
-    job->done = done;
-    ble_npl_event_init(&job->ev, job_handler, job);
-    ble_npl_eventq_put(s_evq, &job->ev);
+    if (!s_job_event_ready) {
+        ble_npl_event_init(&s_job_event, job_handler, NULL);
+        s_job_event_ready = true;
+    }
+    s_job_pending = true;
+    ble_npl_eventq_put(s_evq, &s_job_event);
 
-    if (xSemaphoreTake(done, pdMS_TO_TICKS(JOB_WAIT_MS)) != pdTRUE) {
-        // host 任务没在超时内接手。这个 job 不能再回收：事件可能还挂在队列里，
-        // 复用它会让队列指到别的调用身上。
+    if (xSemaphoreTake(s_job_done, pdMS_TO_TICKS(JOB_WAIT_MS)) != pdTRUE) {
+        // 事件还在队列里，s_job 不能复用；pending 保持 true，直到回调真的跑完
         s_stats.job_timeouts++;
-        job->done = NULL;
-        vSemaphoreDelete(done);
         return ESP_ERR_TIMEOUT;
     }
-    job->done = NULL;
-    vSemaphoreDelete(done);
-    const esp_err_t err = rc_to_err(job->rc);
-    job_release(job);
-    return err;
+    s_stats.last_rc = job->rc;
+    return rc_to_err(job->rc);
 }
 
 static void on_reset(int reason) {
@@ -316,6 +375,9 @@ static void on_reset(int reason) {
     s_synced = false;
     s_adv_running = false;
     s_scan_running = false;
+    // host 复位会清事件队列，挂着的 job 不会再回调；不放开 pending 会永久卡住
+    s_job_pending = false;
+    s_job_event_ready = false;
     ESP_LOGW(TAG, "host reset");
 }
 
@@ -350,8 +412,8 @@ esp_err_t hal_ble_init(void) {
     if (s_inited) {
         return ESP_OK;
     }
-    s_job_lock = xSemaphoreCreateMutex();
-    if (s_job_lock == NULL) {
+    s_job_done = xSemaphoreCreateBinary();
+    if (s_job_done == NULL) {
         return ESP_ERR_NO_MEM;
     }
 
@@ -415,6 +477,9 @@ esp_err_t hal_ble_adv_set(const uint8_t *data, size_t len) {
     if (data == NULL || len == 0 || len > HAL_BLE_ADV_EXT_MAX) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (s_adv_owner != NULL && strcmp(s_adv_owner, "blespam") == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
     ble_job_t *job = job_alloc();
     if (job == NULL) {
         return ESP_ERR_NO_MEM;
@@ -426,6 +491,9 @@ esp_err_t hal_ble_adv_set(const uint8_t *data, size_t len) {
 }
 
 esp_err_t hal_ble_adv_start(uint16_t itvl_min, uint16_t itvl_max, bool connectable) {
+    if (s_adv_owner != NULL && strcmp(s_adv_owner, "blespam") == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
     ble_job_t *job = job_alloc();
     if (job == NULL) {
         return ESP_ERR_NO_MEM;
@@ -462,6 +530,99 @@ esp_err_t hal_ble_adv_stop(void) {
 
 bool hal_ble_adv_running(void) {
     return s_adv_running;
+}
+
+esp_err_t hal_ble_adv_claim(const char *owner) {
+    if (owner == NULL || owner[0] == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_adv_owner != NULL && strcmp(s_adv_owner, owner) != 0) {
+        s_stats.claim_denied++;
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_adv_owner = owner;
+    return ESP_OK;
+}
+
+void hal_ble_adv_release(const char *owner) {
+    if (owner != NULL && s_adv_owner != NULL && strcmp(s_adv_owner, owner) == 0) {
+        s_adv_owner = NULL;
+    }
+}
+
+const char *hal_ble_adv_owner(void) {
+    return s_adv_owner;
+}
+
+const char *hal_ble_adv_preempt(const char *owner) {
+    const char *previous = s_adv_owner;
+    s_adv_owner = owner;
+    return previous;
+}
+
+esp_err_t hal_ble_adv_cycle(const hal_ble_adv_cycle_t *cycle, uint32_t *took_us) {
+    if (cycle == NULL || cycle->adv == NULL || cycle->adv_len == 0 ||
+        cycle->adv_len > HAL_BLE_ADV_EXT_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (cycle->rsp != NULL && (cycle->rsp_len == 0 || cycle->rsp_len > JOB_RSP_MAX)) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_adv_owner != NULL && strcmp(s_adv_owner, "blespam") != 0) {
+        // 广播被 GATT/控制台占着，攻击不能悄悄改掉它
+        s_stats.claim_denied++;
+        return ESP_ERR_INVALID_STATE;
+    }
+    ble_job_t *job = job_alloc();
+    if (job == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    job->op = OP_ADV_CYCLE;
+    if (cycle->addr != NULL) {
+        memcpy(job->addr, cycle->addr, 6);
+        job->has_addr = true;
+    }
+    memcpy(job->data, cycle->adv, cycle->adv_len);
+    job->len = cycle->adv_len;
+    if (cycle->rsp != NULL) {
+        memcpy(job->rsp, cycle->rsp, cycle->rsp_len);
+        job->rsp_len = cycle->rsp_len;
+    }
+    uint16_t itvl = (cycle->itvl == 0) ? HAL_BLE_ITVL_HCI_MIN : cycle->itvl;
+    if (itvl < HAL_BLE_ITVL_HCI_MIN) {
+        itvl = HAL_BLE_ITVL_HCI_MIN;
+    }
+    if (itvl > HAL_BLE_ITVL_MAX) {
+        itvl = HAL_BLE_ITVL_MAX;
+    }
+    job->itvl_min = itvl;
+    job->itvl_max = itvl;
+    job->connectable = cycle->connectable;
+
+    const int64_t started = esp_timer_get_time();
+    const esp_err_t err = job_submit(job);
+    if (took_us != NULL) {
+        *took_us = (uint32_t)(esp_timer_get_time() - started);
+        s_stats.last_cycle_us = *took_us;
+    }
+    return err;
+}
+
+esp_err_t hal_ble_scan_rsp_set(const uint8_t *data, size_t len) {
+    if (data == NULL || len == 0 || len > JOB_RSP_MAX) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (s_adv_owner != NULL && strcmp(s_adv_owner, "blespam") == 0) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ble_job_t *job = job_alloc();
+    if (job == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    job->op = OP_RSP_SET;
+    memcpy(job->rsp, data, len);
+    job->rsp_len = len;
+    return job_submit(job);
 }
 
 esp_err_t hal_ble_scan_start(uint32_t duration_ms) {
@@ -642,6 +803,12 @@ esp_err_t hal_ble_gatt_start(const char *device_name, hal_ble_gatt_conn_fn conn_
     if (!s_gatt_ready) {
         ESP_LOGE(TAG, "gatt services not registered");
         return ESP_ERR_INVALID_STATE;
+    }
+
+    // GATT 串口也是一份广播，跟攻击模块走同一套占用者仲裁
+    const esp_err_t claim = hal_ble_adv_claim("gatt");
+    if (claim != ESP_OK) {
+        return claim;
     }
 
     // 广播里带上服务 UUID，手机按服务过滤才看得到
