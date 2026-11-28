@@ -42,6 +42,7 @@ firmware/
 │   ├── baitap.h              诱饵 AP：BTM/RRM 的漫游落点
 │   ├── eapol.h / sae.h       EAPOL-Start/Logoff / SAE Commit 洪泛
 │   ├── qosnull.h             单播 QoS Null 的 PM 位欺骗
+│   ├── hexcap.h              过滤式原始帧环形捕获接口
 │   ├── authflood.h           Auth/Assoc 洪泛 + WPA3 自动升级
 │   ├── tx_guard.h            注入守卫：首个 0x101 立即重启；节拍上限
 │   ├── ie_util.h             IE / RSN(AKM/PMF) / Extended Capabilities 解析
@@ -61,6 +62,7 @@ firmware/
 │   ├── rrm.cpp               802.11k Neighbor Report Response 伪造
 │   ├── eapol.cpp             EAPOL-Start/Logoff 洪泛（ToDS 数据帧 + LLC/SNAP）
 │   ├── qosnull.cpp           伪造单播 QoS Null：PM=1 让 AP 缓存下行，PM=0 撤销
+│   ├── hexcap.cpp             按 type/subtype/TID/TA/RA 过滤并缓存原始 RX 帧
 │   ├── sae.cpp               SAE Commit 洪泛 + WPA3 判别 + 反 clogging token 回显
 │   ├── authflood.cpp         Auth/Assoc 洪泛 + 自动切换到 SAE
 │   ├── tx_guard.cpp          统一的 esp_wifi_80211_tx 封装与 0x101 重启规则
@@ -163,7 +165,7 @@ HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否�
 | `PING` | 探活 | `OK PONG` |
 | `HELP` | 命令帮助 | 多行 `INFO ...` |
 | `SCAN` | 双频扫描（异步任务，约 4–10 s） | `SCAN_BEGIN` / `NET ...` / `SCAN_END <n>` |
-| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. txg=.. txgok=.. txgerr=.. blind=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. bait=<on\|off> baitch=.. baitcl=.. baitj=.. baitl=.. btm=.. btmf=.. btmc=.. btmskip=.. btmresp=.. btms=.. rrm=.. rrmf=.. rrmc=.. rrmleft=.. rrmreq=.. rrmresp=.. rrmch=.. rrmtok=.. rrminfo=0x.. rrmoc=.. rrmphy=.. bsrp=<on\|off> bsrpf=.. bsrpleft=.. bsrptxerr=.. bsrpref=.. bsrpaid=.. bsrpch=.. bsrprate=.. bsrpul=.. bsrpru=.. bsrpmcs=.. bsrprssi=.. eap=.. eapf=.. eaprx=.. eaprxreq=.. eaprxsta=.. sae=.. saesec=.. saef=.. saec=.. saeresp=.. saecode=.. saetok=.. saeecho=.. af=.. aff=.. afa=.. afs=.. afids=.. afst=.. afup=.. delba=.. delbaf=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
+| `STATUS` | 状态 | `STATUS mode=.. eliminated=.. deauth_frames=.. probe_frames=.. ch=.. rx=.. rxm=.. txok=.. txerr=.. txerr_nomem=.. txec=.. txdrop=.. txg=.. txgok=.. txgerr=.. blind=.. hexf=.. hexdrop=.. rev=.. csa=<idle\|announce\|hold> csaf=.. csac=.. csch=.. csaauto=.. csacycle=.. csaauth=.. csarej=.. bait=<on\|off> baitch=.. baitcl=.. baitj=.. baitl=.. btm=.. btmf=.. btmc=.. btmskip=.. btmresp=.. btms=.. rrm=.. rrmf=.. rrmc=.. rrmleft=.. rrmreq=.. rrmresp=.. rrmch=.. rrmtok=.. rrminfo=0x.. rrmoc=.. rrmphy=.. bsrp=<on\|off> bsrpf=.. bsrpleft=.. bsrptxerr=.. bsrpref=.. bsrpaid=.. bsrpch=.. bsrprate=.. bsrpul=.. bsrpru=.. bsrpmcs=.. bsrprssi=.. eap=.. eapf=.. eaprx=.. eaprxreq=.. eaprxsta=.. sae=.. saesec=.. saef=.. saec=.. saeresp=.. saecode=.. saetok=.. saeecho=.. af=.. aff=.. afa=.. afs=.. afids=.. afst=.. afup=.. delba=.. delbaf=.. reason=.. rlast=.. networks=.. creds=.. heap=.. ui=.. caps=..` |
 | `WBUS` | wbus 对象表：列出已迁移到总线的对象、方法、事件 | `WBUS objects=2` / `WBUS deauth "Deauth / disassoc flood" methods=start,stop events=state` |
 | `DESCRIBE [obj]` | 对象的 UI 元数据（标题 / 方法 / 参数名·类型·默认值·枚举），供 GUI 与触屏生成页面；不带参数=全部对象 | `OBJ csa "CSA spoof"` / `METHOD csa.start ".."` / `ARG csa.start ch type=enum default=-1 values=auto` / `EVT csa state` |
 | `CALL <obj>.<method> [k=v ...]` | wbus 关键字调用，与同名旧命令等价（`CALL deauth.start idx=3 reason=7` ≡ `DEAUTH 3 7`）；未知对象/方法/参数各有独立 `ERR` | `OK DEAUTH 3 ssid` / `ERR unknown arg nope (try DESCRIBE deauth)` |
@@ -228,7 +230,12 @@ HT 速率就得用 QoS Null 这类 26 字节载体，且 Addr1 走组播，否�
 | `UI` | 屏状态 | `UI screen=.. popup=.. items=.. rpopup=.. ritems=.. nets=..` |
 | `UISCREEN <name>` | 切到指定屏幕（`menu/deauth/mode/probe/csa/delba/ba/evil/btm/eapol/sae/authflood/qosnull`），给自动化测试用 | `OK UISCREEN delba` |
 | `RXLOG` | 打印最近 256 条监听到的 802.11 帧（诊断），每行带 `rssi/ch/dur/fmt/rate`；收到的 CSA Action 会额外打印 `RXCSA <i> src=.. cat=4 act=4 nch=.. cnt=.. len=..` | `RXLOG_BEGIN <n>` / `RX i type=.. ...` / `RXLOG_END` |
-| `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧、`addba` / `delba` 统计 Block Ack 管理动作、`bar/ba/pspoll/rts/cts/ack` 统计控制帧 subtype | `RXMIX beacon=.. deauth=.. ctrl=.. data=.. action=.. csa_action=.. csa_ie=..` |
+| `RXMIX` | 收到的帧按类别计数（beacon/probe resp/deauth/auth/assoc/ctrl/data/action），并用 `csa_action` / `csa_ie` 单独统计 CSA 帧、`addba` / `delba` 统计 Block Ack 管理动作、`bar/ba/pspoll/rts/cts/trig` 统计控制帧 subtype（`trig` = subtype 2，AP 调 UL OFDMA 时才会发） | `RXMIX beacon=.. deauth=.. ctrl=.. trig=.. data=.. action=.. csa_action=.. csa_ie=..` |
+| `HEXD [type=n sub=n tid=n\|het htc=0\|1 ta=mac ra=mac]` | 开始过滤式原始帧捕获；`htc` 按 QoS 数据帧的 Order 位和头部长度筛选；`tid=het` 按 QoS Control 低 4 位筛 8–15；固定 8 帧槽、单帧最多存 512 字节 | `OK HEXD type=2 sub=-1 tid=het slots=8 max=512` |
+| `HEXLOG` | 在主循环最多打印 8 帧；持续捕获时新帧可留待下次读取；`len` 是空口长度，超 512 字节时附 `cap=512` | `HEX <i> len=<n> fmt=<bb> rate=<r> ts=<ms> <hex>` / `HEXLOG_END hits=<n> hexdrop=<n>` |
+| `TIDMIX` | 自最近一次 `HEXD` 起按 type/sub/TA/RA 条件统计数据帧总数、TID、HT Control、HE Control ID 和长度分布；分母不受 `tid`/`htc` 过滤限制。槽满丢弃新帧，`hexcov=0` 不等于 `hexdrop=0` | `TIDMIX data=… htc=… hexdrop=… hexcov=0 tid=… control_id=…` |
+| `HEXSTOP` | 停止原始帧捕获并清空未读槽 | `OK HEXSTOP` |
+| `RXRADIO` | 打印最近一帧的驱动 RX 射频元数据；驱动未公开的字段显示 `na` | `RXRADIO sig_mode=.. cwb=.. mcs=.. rate=.. fmt=.. rssi=.. ch=.. dur=..` |
 
 `reason` 缺省 1：
 

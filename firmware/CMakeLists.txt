@@ -16,12 +16,7 @@ idf_build_set_property(COMPILE_OPTIONS "-Wno-error=missing-field-initializers" A
 # to allow raw 802.11 frame injection; the duplicate definition must not fail the link.
 idf_build_set_property(LINK_OPTIONS "-Wl,-z,muldefs" APPEND)
 
-# The C5 board only breaks out the native USB port, so Arduino's Serial has to
-# be the USB-Serial-JTAG CDC device rather than UART0. Both macros must be
-# visible to the Arduino core and to main, hence the global definition.
-if("${IDF_TARGET}" STREQUAL "esp32c5" OR "${SDKCONFIG}" MATCHES "sdkconfig\\.c5$")
-    idf_build_set_property(COMPILE_DEFINITIONS "ARDUINO_USB_MODE=1" APPEND)
-    idf_build_set_property(COMPILE_DEFINITIONS "ARDUINO_USB_CDC_ON_BOOT=1" APPEND)
-endif()
+# The C5 board's UART0 is wired to its CH343; Arduino Serial must use UART0 so
+# commands share that port. The lab/victim_btm C5 build works over this wiring.
 
 project(wireless_attack)

@@ -27,6 +27,7 @@
 
 #include "definitions.h"
 #include "evil_twin.h"
+#include "hexcap.h"
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -117,6 +118,10 @@ void print_help() {
   Serial.println("INFO UITARGETS / UI                LVGL target popup: open / report state");
   Serial.println("INFO UISCREEN <name>               switch the LVGL screen (menu/deauth/mode/probe/csa/delba/ba/evil/btm/eapol/sae/authflood/qosnull)");
   Serial.println("INFO RXMIX                         received frame mix (beacon/probe/deauth/ctrl/data)");
+  Serial.println("INFO HEXD [type=n sub=n tid=n|het htc=0|1 ta=mac ra=mac] capture matching raw frames");
+  Serial.println("INFO HEXLOG / HEXSTOP              print and clear captured frames / stop capture");
+  Serial.println("INFO TIDMIX                         data, TID, HT Control and length counters");
+  Serial.println("INFO RXRADIO                        last rx_ctrl radio metadata (unsupported fields = na)");
   Serial.println("INFO REASON [1-65535|random]       deauth reason code: fixed, random per burst, or report");
   Serial.println("INFO CSA <idx> [ch] [cnt] [secs]   CSA spoof; no ch/auto = random opposite-band channel, loops");
   Serial.println("INFO CSASTOP                       stop the CSA spoof");
@@ -368,6 +373,10 @@ void do_status() {
   Serial.print((unsigned)tx_guard_err());
   Serial.print(" blind=");
   Serial.print((unsigned)attack_blind_frames());
+  Serial.print(" hexf=");
+  Serial.print((unsigned)hex_capture_hits());
+  Serial.print(" hexdrop=");
+  Serial.print((unsigned)hex_capture_drops());
   Serial.print(" rev=");
   Serial.print((unsigned)attack_reverse_frames());
   Serial.print(" csa=");
@@ -838,6 +847,130 @@ void do_rxlog() {
   Serial.println("RXLOG_END");
 }
 
+bool parse_hex_filter_number(const char* text, int min_value, int max_value, int* out) {
+  if (text == nullptr || *text == 0 || out == nullptr) return false;
+  char* end = nullptr;
+  const long value = strtol(text, &end, 10);
+  if (end == text || *end != 0 || value < min_value || value > max_value) return false;
+  *out = (int)value;
+  return true;
+}
+
+void do_hexd() {
+  int frame_type = -1, subtype = -1, tid = -1, htc = -1;
+  bool tid_het = false, have_ta = false, have_ra = false;
+  uint8_t ta[6], ra[6];
+  char* token = nullptr;
+  while ((token = strtok(nullptr, " \t")) != nullptr) {
+    char* equal = strchr(token, '=');
+    if (equal == nullptr || equal == token || equal[1] == 0) {
+      Serial.println("ERR usage: HEXD [type=n sub=n tid=n|het htc=0|1 ta=mac ra=mac]");
+      return;
+    }
+    *equal++ = 0;
+    if (strcmp(token, "type") == 0) {
+      if (!parse_hex_filter_number(equal, 0, 2, &frame_type)) {
+        Serial.println("ERR HEXD type must be 0..2");
+        return;
+      }
+    } else if (strcmp(token, "sub") == 0) {
+      if (!parse_hex_filter_number(equal, 0, 15, &subtype)) {
+        Serial.println("ERR HEXD sub must be 0..15");
+        return;
+      }
+    } else if (strcmp(token, "tid") == 0) {
+      if (token_iequals(equal, "het")) {
+        tid_het = true;
+      } else if (!parse_hex_filter_number(equal, 0, 15, &tid)) {
+        Serial.println("ERR HEXD tid must be 0..15 or het");
+        return;
+      }
+    } else if (strcmp(token, "htc") == 0) {
+      if (!parse_hex_filter_number(equal, 0, 1, &htc)) {
+        Serial.println("ERR HEXD htc must be 0 or 1");
+        return;
+      }
+    } else if (strcmp(token, "ta") == 0 || strcmp(token, "ra") == 0) {
+      const bool any = strcmp(equal, "any") == 0;
+      uint8_t* out = strcmp(token, "ta") == 0 ? ta : ra;
+      if (!any && !wb_parse_mac(equal, out)) {
+        Serial.printf("ERR HEXD %s must be a MAC or any\n", token);
+        return;
+      }
+      if (token[0] == 't') have_ta = !any;
+      else have_ra = !any;
+    } else {
+      Serial.printf("ERR HEXD unknown filter '%s'\n", token);
+      return;
+    }
+  }
+  hex_capture_configure(frame_type, subtype, tid, tid_het, htc, have_ta ? ta : nullptr,
+                        have_ra ? ra : nullptr);
+  attack_sniffer_enable();
+  char tid_text[12];
+  if (tid_het) strcpy(tid_text, "het");
+  else if (tid < 0) strcpy(tid_text, "any");
+  else snprintf(tid_text, sizeof(tid_text), "%d", tid);
+  Serial.printf("OK HEXD type=%d sub=%d tid=%s slots=%d max=%u\n", frame_type, subtype,
+                tid_text, kHexSlots, (unsigned)kHexMax);
+}
+
+void do_hexlog() {
+  hex_sample_t sample = {};
+  int index = 0;
+  while (index < kHexSlots && hex_capture_pop(&sample)) {
+    char line[2 * kHexMax + 1];
+    for (uint16_t i = 0; i < sample.stored_len; i++) {
+      snprintf(line + 2 * i, sizeof(line) - 2 * i, "%02X", sample.data[i]);
+    }
+    line[2 * sample.stored_len] = 0;
+    char rate_text[12];
+    const char* rate = rx_rate_text(sample.radio.fmt, sample.radio.rate, sample.radio.mcs,
+                                    sample.radio.sgi, rate_text, sizeof(rate_text));
+    if (sample.stored_len == sample.len) {
+      Serial.printf("HEX %d len=%u fmt=%u rate=%s ts=%lu %s\n", index++,
+                    (unsigned)sample.len, (unsigned)sample.radio.fmt, rate,
+                    (unsigned long)sample.ts, line);
+    } else {
+      Serial.printf("HEX %d len=%u cap=%u fmt=%u rate=%s ts=%lu %s\n", index++,
+                    (unsigned)sample.len, (unsigned)sample.stored_len,
+                    (unsigned)sample.radio.fmt, rate, (unsigned long)sample.ts, line);
+    }
+  }
+  Serial.printf("HEXLOG_END hits=%lu hexdrop=%lu\n", (unsigned long)hex_capture_hits(),
+                (unsigned long)hex_capture_drops());
+}
+
+void do_tidmix() {
+  hex_mix_t mix = {};
+  hex_capture_mix(&mix);
+  Serial.printf("TIDMIX data=%lu htc=%lu hexdrop=%lu hexcov=0 tid=", (unsigned long)mix.data,
+                (unsigned long)mix.htc, (unsigned long)hex_capture_drops());
+  for (int i = 0; i < 16; i++) Serial.printf("%s%lu", i ? "," : "", (unsigned long)mix.tid[i]);
+  Serial.print(" control_id=");
+  for (int i = 0; i < 16; i++) Serial.printf("%s%lu", i ? "," : "", (unsigned long)mix.control_id[i]);
+  Serial.printf(" len_lt64_lt256_lt512_ge512=%lu,%lu,%lu,%lu\n", (unsigned long)mix.lengths[0],
+                (unsigned long)mix.lengths[1], (unsigned long)mix.lengths[2], (unsigned long)mix.lengths[3]);
+}
+
+void do_rxradio() {
+  rx_radio_t radio = {};
+  if (!attack_rx_radio_last(&radio)) {
+    Serial.println("ERR RXRADIO no received frame");
+    return;
+  }
+  if (radio.raw_fields_valid) {
+    Serial.printf("RXRADIO sig_mode=%u cwb=%u mcs=%u rate=%u fmt=%u rssi=%d ch=%u dur=%u\n",
+                  (unsigned)radio.sig_mode, (unsigned)radio.cwb, (unsigned)radio.mcs,
+                  (unsigned)radio.rate, (unsigned)radio.fmt, (int)radio.rssi,
+                  (unsigned)radio.channel, (unsigned)radio.duration);
+  } else {
+    Serial.printf("RXRADIO sig_mode=na cwb=na mcs=na rate=%u fmt=%u rssi=%d ch=%u dur=%u\n",
+                  (unsigned)radio.rate, (unsigned)radio.fmt, (int)radio.rssi,
+                  (unsigned)radio.channel, (unsigned)radio.duration);
+  }
+}
+
 void do_touch() {
 #if CONFIG_WIRELESS_ATTACK_LVGL_SUPPORT
   int raw_x = 0;
@@ -930,6 +1063,10 @@ void do_rx_mix() {
   Serial.print((unsigned)csub[13]);
   Serial.print(" cfend=");
   Serial.print((unsigned)(csub[14] + csub[15]));
+  // Trigger (subtype 2) is the only control frame an AP sends when it schedules
+  // uplink OFDMA, so this counter is how a second chip proves the AP never does.
+  Serial.print(" trig=");
+  Serial.print((unsigned)csub[2]);
   Serial.print(" data=");
   Serial.print((unsigned)data);
   Serial.print(" action=");
@@ -1218,6 +1355,17 @@ void dispatch(char* line) {
     do_rxlog();
   } else if (strcmp(command, "RXMIX") == 0) {
     do_rx_mix();
+  } else if (strcmp(command, "HEXD") == 0) {
+    do_hexd();
+  } else if (strcmp(command, "TIDMIX") == 0) {
+    do_tidmix();
+  } else if (strcmp(command, "HEXLOG") == 0) {
+    do_hexlog();
+  } else if (strcmp(command, "HEXSTOP") == 0) {
+    hex_capture_stop();
+    Serial.println("OK HEXSTOP");
+  } else if (strcmp(command, "RXRADIO") == 0) {
+    do_rxradio();
   } else if (strcmp(command, "TOUCH") == 0) {
     do_touch();
   } else if (strcmp(command, "UITARGETS") == 0) {

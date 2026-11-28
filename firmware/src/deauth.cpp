@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_timer.h>
 #include <sdkconfig.h>
 #include <string.h>
 
@@ -11,6 +12,7 @@
 #include "definitions.h"
 #include "delba.h"
 #include "eapol.h"
+#include "hexcap.h"
 #include "qosnull.h"
 #include "sae.h"
 #include "tx_guard.h"
@@ -143,6 +145,8 @@ volatile uint32_t s_rx_ctrl = 0;
 // the aggregate counter alone cannot show *which* control frames the radio hands up.
 volatile uint32_t s_rx_ctrl_sub[16];
 volatile uint32_t s_rx_data = 0;
+rx_radio_t s_last_rx_radio = {};
+volatile bool s_have_last_rx_radio = false;
 volatile uint32_t s_rx_action = 0;      // management subtype 13
 volatile uint32_t s_rx_csa_action = 0;  // action category 4 / action 4
 volatile uint32_t s_rx_csa_ie = 0;      // beacon/probe response carrying element 37
@@ -473,12 +477,18 @@ IRAM_ATTR static void fill_radio_meta(const wifi_pkt_rx_ctrl_t* rc, rx_radio_t* 
     // MCS sits in he_siga1, which Espressif leaves undocumented: 0 on purpose.
     out->mcs = 0;
     out->sgi = 0;
+    out->sig_mode = 0xFF;
+    out->cwb = 0xFF;
+    out->raw_fields_valid = 0;
 #else
     const uint8_t sig_mode = (uint8_t)(rc->sig_mode);
     out->fmt = (sig_mode == 1) ? 2 : ((sig_mode == 0) ? 0 : 3);
     out->rate = (uint8_t)(rc->rate);
     out->mcs = (uint8_t)(rc->mcs);
     out->sgi = (uint8_t)(rc->sgi);
+    out->sig_mode = sig_mode;
+    out->cwb = (uint8_t)(rc->cwb);
+    out->raw_fields_valid = 1;
 #endif
 }
 
@@ -493,6 +503,15 @@ IRAM_ATTR void sniffer(void* buf, wifi_promiscuous_pkt_type_t type) {
     const uint16_t fc = hdr->frame_ctrl;
     const uint8_t frame_type = (uint8_t)((fc >> 2) & 0x03);
     const uint8_t frame_subtype = (uint8_t)((fc >> 4) & 0x0F);
+    rx_radio_t radio_meta = {};
+    fill_radio_meta(&raw->rx_ctrl, &radio_meta);
+    radio_meta.duration = hdr->duration;
+    s_last_rx_radio = radio_meta;
+    s_have_last_rx_radio = true;
+    if (hex_capture_active()) {
+        hex_capture_on_rx((const uint8_t*)hdr, sig_len, frame_type, frame_subtype, &radio_meta,
+                          (uint32_t)(esp_timer_get_time() / 1000));
+    }
     if (frame_type == 0) {
         if (frame_subtype < 16) {
             s_rx_mgmt_sub[frame_subtype] = s_rx_mgmt_sub[frame_subtype] + 1;
@@ -1202,6 +1221,12 @@ bool attack_rx_log_radio(int i, rx_radio_t* out) {
         return false;
     }
     *out = rx_log_slot(i)->radio;
+    return true;
+}
+
+bool attack_rx_radio_last(rx_radio_t* out) {
+    if (out == nullptr || !s_have_last_rx_radio) return false;
+    *out = s_last_rx_radio;
     return true;
 }
 

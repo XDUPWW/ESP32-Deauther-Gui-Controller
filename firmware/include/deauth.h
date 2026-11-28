@@ -128,7 +128,11 @@ struct rx_radio_t {
   uint8_t rate;       // raw driver code (see rx_rate_text)
   uint8_t mcs;
   uint8_t sgi;
+  uint8_t sig_mode;
+  uint8_t cwb;
+  uint8_t raw_fields_valid;
 };
+bool attack_rx_radio_last(rx_radio_t* out);
 bool attack_rx_log_radio(int i, rx_radio_t* out);
 // Formats the rate for a log line: "54M", "1M", "mcs7/sgi" or "-" when the
 // driver value cannot be trusted. buf must hold at least 12 bytes.

@@ -15,6 +15,7 @@ set(SRCS
     "../src/baitap.cpp"
     "../src/eapol.cpp"
     "../src/qosnull.cpp"
+    "../src/hexcap.cpp"
     "../src/rrm.cpp"
     "../src/sae.cpp"
     "../src/authflood.cpp"
